@@ -1,4 +1,5 @@
-//! Public MCP inputs and results. Timestamps are RFC 3339 UTC; IDs are local to a database.
+//! Public MCP inputs and results. Timestamps are RFC 3339 UTC. Project IDs are UUIDv7;
+//! task, source, and decision IDs are local to a database and require an explicit project scope.
 
 use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -10,6 +11,34 @@ where
     T: Deserialize<'de>,
 {
     Option::<T>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Project {
+    /// Server-assigned UUIDv7. Names need not be unique; use this ID for scoped tools.
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProject {
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListProjects {
+    /// Search project names and descriptions. Omit to discover all projects.
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectList {
+    pub projects: Vec<Project>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -78,6 +107,7 @@ pub struct SourceAttempt {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Source {
     pub id: i64,
+    pub project_id: String,
     pub name: String,
     pub description: String,
     /// Inline Markdown, returned in full; exactly one of content and locator is present.
@@ -99,6 +129,7 @@ pub struct Source {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SourceDescriptor {
     pub id: i64,
+    pub project_id: String,
     pub name: String,
     pub description: String,
     pub representation: Representation,
@@ -112,6 +143,7 @@ pub struct SourceDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Task {
     pub id: i64,
+    pub project_id: String,
     pub title: String,
     pub problem_or_goal: String,
     pub design: String,
@@ -141,6 +173,7 @@ pub struct DependencyState {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TaskSummary {
     pub id: i64,
+    pub project_id: String,
     pub title: String,
     pub status: TaskStatus,
     pub progress: Option<String>,
@@ -152,6 +185,7 @@ pub struct TaskSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Decision {
     pub id: i64,
+    pub project_id: String,
     pub statement: String,
     pub rationale: String,
     pub supersedes_id: Option<i64>,
@@ -173,6 +207,8 @@ pub struct TaskContext {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateTask {
+    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
+    pub project_id: String,
     pub title: String,
     pub problem_or_goal: String,
     pub design: String,
@@ -190,6 +226,8 @@ pub struct CreateTask {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListTasks {
+    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
+    pub project_id: String,
     pub status: Option<TaskStatus>,
     pub ready_to_start: Option<bool>,
     pub query: Option<String>,
@@ -198,12 +236,16 @@ pub struct ListTasks {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GetTaskContext {
+    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
+    pub project_id: String,
     pub task_id: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateTask {
+    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
+    pub project_id: String,
     pub task_id: i64,
     pub expected_revision: i64,
     pub title: Option<String>,
@@ -239,6 +281,8 @@ pub struct UpdateTask {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSource {
+    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
+    pub project_id: String,
     pub name: String,
     pub description: String,
     pub content: Option<String>,
@@ -251,6 +295,8 @@ pub struct CreateSource {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListSources {
+    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
+    pub project_id: String,
     /// Filter by explicit context or output links, not implicit always sources.
     pub task_id: Option<i64>,
     pub representation: Option<Representation>,
@@ -261,12 +307,16 @@ pub struct ListSources {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GetSource {
+    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
+    pub project_id: String,
     pub source_id: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateSource {
+    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
+    pub project_id: String,
     pub source_id: i64,
     pub expected_revision: i64,
     pub name: Option<String>,
@@ -323,6 +373,8 @@ pub enum SourceActionResult {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecordSourceAction {
+    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
+    pub project_id: String,
     pub source_id: i64,
     pub expected_revision: i64,
     pub result: SourceActionResult,
@@ -331,6 +383,8 @@ pub struct RecordSourceAction {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecordDecision {
+    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
+    pub project_id: String,
     pub statement: String,
     pub rationale: String,
     pub supersedes_id: Option<i64>,
@@ -339,6 +393,8 @@ pub struct RecordDecision {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListDecisions {
+    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
+    pub project_id: String,
     #[serde(default)]
     pub include_superseded: bool,
 }

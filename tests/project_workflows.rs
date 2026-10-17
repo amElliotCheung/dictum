@@ -15,7 +15,8 @@ fn database() -> (TempDir, Project) {
     (directory, store)
 }
 
-fn input<T: DeserializeOwned>(value: Value) -> T {
+fn input<T: DeserializeOwned>(mut value: Value) -> T {
+    value["project_id"] = json!("");
     serde_json::from_value(value).unwrap()
 }
 

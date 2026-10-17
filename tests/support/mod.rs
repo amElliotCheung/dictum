@@ -1,5 +1,7 @@
 //! A synchronous test facade over an actual child process and its MCP stdio transport.
 //! No store calls or in-process server shortcuts: every operation crosses the wire.
+// Each integration target uses a different subset of this shared facade.
+#![allow(dead_code)]
 
 use std::{path::Path, time::Duration};
 
@@ -17,6 +19,7 @@ use serde_json::json;
 pub struct Project {
     runtime: tokio::runtime::Runtime,
     client: Option<RunningService<RoleClient, ClientConfig>>,
+    pub project_id: String,
 }
 
 impl Project {
@@ -43,13 +46,39 @@ impl Project {
                 .await??,
             )
         })?;
-        Ok(Self {
+        let mut project = Self {
             runtime,
             client: Some(client),
-        })
+            project_id: String::new(),
+        };
+        let projects: ProjectList = project.raw_call("list_projects", json!({}))?;
+        project.project_id = if let Some(existing) = projects.projects.first() {
+            existing.id.clone()
+        } else {
+            project
+                .raw_call::<dictum_mcp::model::Project>(
+                    "create_project",
+                    json!({"name": "Test project", "description": "End-to-end test workspace"}),
+                )?
+                .id
+        };
+        Ok(project)
     }
 
     pub fn call<T: DeserializeOwned>(&self, name: &str, input: impl Serialize) -> Result<T> {
+        let mut input = serde_json::to_value(input)?;
+        if !matches!(name, "create_project" | "list_projects")
+            && input
+                .get("project_id")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            input["project_id"] = json!(self.project_id);
+        }
+        self.raw_call(name, input)
+    }
+
+    pub fn raw_call<T: DeserializeOwned>(&self, name: &str, input: impl Serialize) -> Result<T> {
         let input = serde_json::to_value(input)?;
         let request = CallToolRequestParams::new(name.to_owned()).with_arguments(
             input

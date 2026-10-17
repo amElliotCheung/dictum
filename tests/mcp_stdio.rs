@@ -75,6 +75,26 @@ async fn call(client: &Client, name: &str, input: Value) -> Result<Value> {
         .context("expected structured output")
 }
 
+async fn scoped_raw(
+    client: &Client,
+    project_id: &str,
+    name: &str,
+    mut input: Value,
+) -> Result<CallToolResult> {
+    input["project_id"] = json!(project_id);
+    raw(client, name, input).await
+}
+
+async fn scoped_call(
+    client: &Client,
+    project_id: &str,
+    name: &str,
+    mut input: Value,
+) -> Result<Value> {
+    input["project_id"] = json!(project_id);
+    call(client, name, input).await
+}
+
 async fn workflow(discover: bool) -> Result<()> {
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("project.sqlite3");
@@ -87,11 +107,13 @@ async fn workflow(discover: bool) -> Result<()> {
     assert_eq!(
         names,
         vec![
+            "create_project",
             "create_source",
             "create_task",
             "get_source",
             "get_task_context",
             "list_decisions",
+            "list_projects",
             "list_sources",
             "list_tasks",
             "record_decision",
@@ -106,7 +128,25 @@ async fn workflow(discover: bool) -> Result<()> {
             "missing output schema: {}",
             tool.name
         );
-        assert!(!serde_json::to_string(&*tool.input_schema)?.contains("project_id"));
+        let required = tool.input_schema.get("required").and_then(Value::as_array);
+        if matches!(tool.name.as_ref(), "create_project" | "list_projects") {
+            assert!(
+                !tool.input_schema["properties"]
+                    .as_object()
+                    .unwrap()
+                    .contains_key("project_id")
+            );
+        } else {
+            assert!(
+                required.unwrap().contains(&json!("project_id")),
+                "missing required scope: {}",
+                tool.name
+            );
+            assert_eq!(
+                tool.input_schema["properties"]["project_id"]["type"],
+                "string"
+            );
+        }
     }
     let update_schema = &tools
         .iter()
@@ -123,12 +163,24 @@ async fn workflow(discover: bool) -> Result<()> {
             .contains("null")
     );
 
+    assert_eq!(
+        call(&client, "list_projects", json!({})).await?["projects"],
+        json!([])
+    );
+    let project = call(
+        &client,
+        "create_project",
+        json!({"name": "Workflow", "description": "A persisted project"}),
+    )
+    .await?;
+    let project_id = project["id"].as_str().unwrap().to_owned();
     let full_content = format!(
         "# Project conventions\n{}\nEND",
         "完整 context\n".repeat(4000)
     );
-    let inline = call(
+    let inline = scoped_call(
         &client,
+        &project_id,
         "create_source",
         json!({
             "name": "Working conventions", "description": "Read for every task",
@@ -136,28 +188,30 @@ async fn workflow(discover: bool) -> Result<()> {
         }),
     )
     .await?;
-    let external = call(&client, "create_source", json!({
+    let external = scoped_call(&client, &project_id, "create_source", json!({
         "name": "Team channel", "description": "Recent project decisions and blockers",
         "locator": "slack://workspace/project-channel",
         "action": {"instruction": "Read project-relevant messages since checkpoint", "trigger": {"kind": "interval", "every_minutes": 1440}}
     })).await?;
     assert_eq!(external["action_due"], true);
 
-    let decision = call(
+    let decision = scoped_call(
         &client,
+        &project_id,
         "record_decision",
         json!({
-            "statement": "One project per SQLite database/server process",
-            "rationale": "Keep the first MVP local and simple"
+            "statement": "Explicit project IDs scope durable records",
+            "rationale": "Share one local database safely"
         }),
     )
     .await?;
     assert!(decision["created_at"].as_str().unwrap().ends_with('Z'));
-    let decisions = call(&client, "list_decisions", json!({})).await?;
+    let decisions = scoped_call(&client, &project_id, "list_decisions", json!({})).await?;
     assert_eq!(decisions["decisions"].as_array().unwrap().len(), 1);
 
-    let verification = call(
+    let verification = scoped_call(
         &client,
+        &project_id,
         "create_task",
         json!({
             "title": "Verify implementation", "problem_or_goal": "Prove the feature works",
@@ -166,8 +220,9 @@ async fn workflow(discover: bool) -> Result<()> {
         }),
     )
     .await?;
-    let task = call(
+    let task = scoped_call(
         &client,
+        &project_id,
         "create_task",
         json!({
             "title": "Implement feature", "problem_or_goal": "Build a working feature",
@@ -177,9 +232,21 @@ async fn workflow(discover: bool) -> Result<()> {
         }),
     )
     .await?;
-    let tasks = call(&client, "list_tasks", json!({"ready_to_start": true})).await?;
+    let tasks = scoped_call(
+        &client,
+        &project_id,
+        "list_tasks",
+        json!({"ready_to_start": true}),
+    )
+    .await?;
     assert_eq!(tasks["tasks"].as_array().unwrap().len(), 2);
-    let context = call(&client, "get_task_context", json!({"task_id": task["id"]})).await?;
+    let context = scoped_call(
+        &client,
+        &project_id,
+        "get_task_context",
+        json!({"task_id": task["id"]}),
+    )
+    .await?;
     assert_eq!(context["current_decisions"][0]["id"], decision["id"]);
     let sources = context["sources"].as_array().unwrap();
     assert_eq!(sources.len(), 2);
@@ -195,58 +262,72 @@ async fn workflow(discover: bool) -> Result<()> {
         json!([verification["id"]])
     );
 
-    let running = call(
+    let running = scoped_call(
         &client,
+        &project_id,
         "update_task",
         json!({
             "task_id": task["id"], "expected_revision": task["revision"], "status": "in_progress"
         }),
     )
     .await?;
-    let rejected = raw(&client, "update_task", json!({
+    let rejected = scoped_raw(&client, &project_id, "update_task", json!({
         "task_id": task["id"], "expected_revision": running["revision"], "status": "done", "result": "Implemented"
     })).await?;
     assert_eq!(rejected.is_error, Some(true));
 
     let observed_at = (Utc::now() - TimeDelta::seconds(1)).to_rfc3339();
-    let observed = call(&client, "record_source_action", json!({
+    let observed = scoped_call(&client, &project_id, "record_source_action", json!({
         "source_id": external["id"], "expected_revision": external["revision"],
         "result": {"outcome": "success", "observed_at": observed_at, "summary": "Team agreed on a local MVP.", "checkpoint": "message-123", "references": ["slack://workspace/project-channel/message-123"]}
     })).await?;
     assert_eq!(observed["action_due"], false);
-    let edited = call(&client, "update_source", json!({
+    let edited = scoped_call(&client, &project_id, "update_source", json!({
         "source_id": external["id"], "expected_revision": observed["revision"], "description": "Project team context"
     })).await?;
     assert_eq!(edited["snapshot"], observed["snapshot"]);
-    let expanded = call(&client, "get_source", json!({"source_id": external["id"]})).await?;
+    let expanded = scoped_call(
+        &client,
+        &project_id,
+        "get_source",
+        json!({"source_id": external["id"]}),
+    )
+    .await?;
     assert_eq!(expanded["revision"], edited["revision"]);
-    let descriptors = call(&client, "list_sources", json!({"task_id": task["id"]})).await?;
+    let descriptors = scoped_call(
+        &client,
+        &project_id,
+        "list_sources",
+        json!({"task_id": task["id"]}),
+    )
+    .await?;
     assert_eq!(descriptors["sources"].as_array().unwrap().len(), 1);
     assert!(descriptors["sources"][0].get("content").is_none());
 
-    let output = call(&client, "create_source", json!({
+    let output = scoped_call(&client, &project_id, "create_source", json!({
         "name": "Verification report", "description": "Result and evidence for implemented feature", "content": "Revision demo-123; command cargo test; all passed."
     })).await?;
-    call(&client, "update_task", json!({
+    scoped_call(&client, &project_id, "update_task", json!({
         "task_id": verification["id"], "expected_revision": verification["revision"], "status": "done",
         "result": "Tested demo-123 with cargo test; all passed (test fixture evidence)", "output_source_ids": [output["id"]]
     })).await?;
-    let completed = call(&client, "update_task", json!({
+    let completed = scoped_call(&client, &project_id, "update_task", json!({
         "task_id": task["id"], "expected_revision": running["revision"], "status": "done",
         "result": "Implemented and verified by the completed verification task", "output_source_ids": [output["id"]]
     })).await?;
     assert_eq!(completed["status"], "done");
-    let conflict = raw(&client, "update_task", json!({
+    let conflict = scoped_raw(&client, &project_id, "update_task", json!({
         "task_id": task["id"], "expected_revision": running["revision"], "progress": "stale write"
     })).await?;
     assert_eq!(conflict.is_error, Some(true));
     client.cancel().await?;
 
-    // A new process sees the same project without any project identifier.
+    // A new process discovers the same durable project ID.
     let restarted = connect(&database, discover).await?;
     assert_workflow_instructions(&restarted)?;
-    let persisted = call(
+    let persisted = scoped_call(
         &restarted,
+        &project_id,
         "get_task_context",
         json!({"task_id": task["id"]}),
     )

@@ -44,7 +44,39 @@ impl DictumServer {
 #[tool_router]
 impl DictumServer {
     #[tool(
-        description = "Create a self-contained execution brief with goal/problem, design, and a nonempty acceptance-criteria list. Optionally link context sources and tasks that must finish before starting or before completing. All links are created atomically. This registers work; it does not launch an agent.",
+        description = "Create a project with a name, description, server-assigned UUIDv7 ID, and UTC creation time. Names need not be unique. Create only when explicitly intended; discovery with no match does not authorize automatic creation. A project is a scope for records, not authorization to execute work or a work claim.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn create_project(
+        &self,
+        Parameters(input): Parameters<CreateProject>,
+    ) -> Result<Json<Project>, String> {
+        self.database(move |store| store.create_project(input))
+            .await
+    }
+
+    #[tool(
+        description = "Discover projects by optional name/description query. Returns IDs, names, descriptions, and creation times. Resolve ambiguity or no match with the human; never implicitly choose or create a project. Once resolved, pass its project_id to list_tasks with ready_to_start=true, then get_task_context for the chosen task. Project selection is scope, not execution authorization or a work claim.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn list_projects(
+        &self,
+        Parameters(input): Parameters<ListProjects>,
+    ) -> Result<Json<ProjectList>, String> {
+        self.database(move |store| {
+            Ok(ProjectList {
+                projects: store.list_projects(input)?,
+            })
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Create a self-contained execution brief with goal/problem, design, and a nonempty acceptance-criteria list. Optionally link context sources and tasks that must finish before starting or before completing. All links are created atomically. This registers work; it does not launch an agent.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -59,7 +91,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Discover compact task briefs by status, readiness, or text query. Results include unmet start and completion dependencies. Ready means todo with all before-start dependencies done; completion gates do not block starting.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Discover compact task briefs by status, readiness, or text query. Results include unmet start and completion dependencies. Ready means todo with all before-start dependencies done; completion gates do not block starting.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_tasks(
@@ -75,19 +107,19 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Load the full task brief, progress, agent-reported result, dependency state, current decisions, and deduplicated context-linked plus always sources. Inline documents are returned in full. External sources include locator, action, snapshot, latest attempt, and due state. Output links are separate. Reading never advances freshness. A fresh summary may still require targeted external reading.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Load the full task brief, progress, agent-reported result, dependency state, current decisions, and deduplicated context-linked plus always sources. Inline documents are returned in full. External sources include locator, action, snapshot, latest attempt, and due state. Output links are separate. Reading never advances freshness. A fresh summary may still require targeted external reading.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn get_task_context(
         &self,
         Parameters(input): Parameters<GetTaskContext>,
     ) -> Result<Json<TaskContext>, String> {
-        self.database(move |store| store.get_task_context(input.task_id))
+        self.database(move |store| store.get_task_context(&input.project_id, input.task_id))
             .await
     }
 
     #[tool(
-        description = "Update a task using expected_revision from its latest read. Omitted fields preserve values; null clears nullable text. Supplied relationship arrays replace that set ([] clears). Entering in_progress checks start gates; done requires satisfied start/completion gates and nonblank result evidence. Evidence is reported by the agent, not verified by this server. Tasks never complete automatically.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Update a task using expected_revision from its latest read. Omitted fields preserve values; null clears nullable text. Supplied relationship arrays replace that set ([] clears). Entering in_progress checks start gates; done requires satisfied start/completion gates and nonblank result evidence. Evidence is reported by the agent, not verified by this server. Tasks never complete automatically.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -102,7 +134,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Register reusable project information with a name, relevance description, and exactly one of full inline Markdown content or external locator. context_policy defaults to when_relevant; always sources appear in every task context. Optional action defines work for an agent and a manual or interval trigger. Registration does not create any external channel or document.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Register reusable project information with a name, relevance description, and exactly one of full inline Markdown content or external locator. context_policy defaults to when_relevant; always sources appear in every task context. Optional action defines work for an agent and a manual or interval trigger. Registration does not create any external channel or document.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -117,7 +149,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Discover compact source descriptors without document bodies. Filter by explicitly linked task, inline/external representation, action_due, or name/description query. Task filtering includes context and output links but not unrelated always sources. Expand relevant sources with get_source. Manual actions are never automatically due.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Discover compact source descriptors without document bodies. Filter by explicitly linked task, inline/external representation, action_due, or name/description query. Task filtering includes context and output links but not unrelated always sources. Expand relevant sources with get_source. Manual actions are never automatically due.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_sources(
@@ -133,19 +165,19 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Read complete inline source content or external locator, configured action, latest successful snapshot, latest attempt, and computed due state. Content is never truncated. A snapshot is a short current understanding, not a transcript. Use the agent's own external tools for further reading. This read does not record action completion.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Read complete inline source content or external locator, configured action, latest successful snapshot, latest attempt, and computed due state. Content is never truncated. A snapshot is a short current understanding, not a transcript. Use the agent's own external tools for further reading. This read does not record action completion.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn get_source(
         &self,
         Parameters(input): Parameters<GetSource>,
     ) -> Result<Json<Source>, String> {
-        self.database(move |store| store.get_source(input.source_id))
+        self.database(move |store| store.get_source(&input.project_id, input.source_id))
             .await
     }
 
     #[tool(
-        description = "Update a source definition with expected_revision. Omitted fields preserve values; null clears content, locator, or action. Exactly one of content/locator must remain; switch them in one call. Changing content, locator, or action invalidates its prior snapshot/attempt. Name, description, and context-policy edits preserve action state.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Update a source definition with expected_revision. Omitted fields preserve values; null clears content, locator, or action. Exactly one of content/locator must remain; switch them in one call. Changing content, locator, or action invalidates its prior snapshot/attempt. Name, description, and context-policy edits preserve action state.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -160,7 +192,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Record an agent's execution of the configured source action using expected_revision. Success replaces the snapshot with observed_at (RFC3339, not future or backwards), short summary (max 1000 characters), checkpoint and references. No_change requires a previous snapshot, advances observation time, and preserves summary/references; omitted checkpoint preserves it, null clears. Failure records an error while retaining the successful snapshot. Targeted task lookups must not count as completing this action. The server does not execute or independently verify it.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Record an agent's execution of the configured source action using expected_revision. Success replaces the snapshot with observed_at (RFC3339, not future or backwards), short summary (max 1000 characters), checkpoint and references. No_change requires a previous snapshot, advances observation time, and preserves summary/references; omitted checkpoint preserves it, null clears. Failure records an error while retaining the successful snapshot. Targeted task lookups must not count as completing this action. The server does not execute or independently verify it.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -176,7 +208,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Record an accepted project-wide decision with its rationale and server-assigned UTC creation time. Optional supersedes_id replaces a currently active decision, preserving history. Each current decision can have only one successor. This is not a proposal or voting workflow.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Record an accepted project-wide decision with its rationale and server-assigned UTC creation time. Optional supersedes_id replaces a currently active decision, preserving history. Each current decision can have only one successor. This is not a proposal or voting workflow.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -192,7 +224,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Read accepted project decisions. By default returns only current decisions; include_superseded also returns retained history with current flags and supersedes links.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Read accepted project decisions. By default returns only current decisions; include_superseded also returns retained history with current flags and supersedes links.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_decisions(

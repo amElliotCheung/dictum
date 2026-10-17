@@ -1,5 +1,13 @@
+CREATE TABLE projects (
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36 AND substr(id, 15, 1) = '7' AND substr(id, 20, 1) IN ('8','9','a','b')),
+    name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+    description TEXT NOT NULL CHECK (length(trim(description)) > 0),
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE tasks (
     id INTEGER PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
     title TEXT NOT NULL CHECK (length(trim(title)) > 0),
     problem_or_goal TEXT NOT NULL CHECK (length(trim(problem_or_goal)) > 0),
     design TEXT NOT NULL CHECK (length(trim(design)) > 0),
@@ -10,11 +18,13 @@ CREATE TABLE tasks (
     result TEXT,
     revision INTEGER NOT NULL CHECK (revision >= 1),
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    UNIQUE (project_id, id)
 );
 
 CREATE TABLE sources (
     id INTEGER PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
     name TEXT NOT NULL CHECK (length(trim(name)) > 0),
     description TEXT NOT NULL CHECK (length(trim(description)) > 0),
     content TEXT,
@@ -26,33 +36,47 @@ CREATE TABLE sources (
     revision INTEGER NOT NULL CHECK (revision >= 1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    UNIQUE (project_id, id),
     CHECK ((content IS NOT NULL) != (locator IS NOT NULL))
 );
 
 CREATE TABLE decisions (
     id INTEGER PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
     statement TEXT NOT NULL CHECK (length(trim(statement)) > 0),
     rationale TEXT NOT NULL CHECK (length(trim(rationale)) > 0),
-    supersedes_id INTEGER UNIQUE REFERENCES decisions(id),
+    supersedes_id INTEGER UNIQUE,
     created_at TEXT NOT NULL,
+    UNIQUE (project_id, id),
+    FOREIGN KEY (project_id, supersedes_id) REFERENCES decisions(project_id, id),
     CHECK (supersedes_id IS NULL OR supersedes_id != id)
 );
 
 CREATE TABLE task_sources (
-    task_id INTEGER NOT NULL REFERENCES tasks(id),
-    source_id INTEGER NOT NULL REFERENCES sources(id),
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    task_id INTEGER NOT NULL,
+    source_id INTEGER NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('context', 'output')),
+    FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id),
+    FOREIGN KEY (project_id, source_id) REFERENCES sources(project_id, id),
     PRIMARY KEY (task_id, source_id, role)
 );
 
 CREATE TABLE task_dependencies (
-    task_id INTEGER NOT NULL REFERENCES tasks(id),
-    depends_on_task_id INTEGER NOT NULL REFERENCES tasks(id),
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    task_id INTEGER NOT NULL,
+    depends_on_task_id INTEGER NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('before_start', 'before_done')),
+    FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id),
+    FOREIGN KEY (project_id, depends_on_task_id) REFERENCES tasks(project_id, id),
     PRIMARY KEY (task_id, depends_on_task_id, kind),
     CHECK (task_id != depends_on_task_id)
 );
 
-CREATE INDEX tasks_status ON tasks(status);
+CREATE INDEX tasks_status ON tasks(project_id, status);
 CREATE INDEX task_sources_source ON task_sources(source_id);
 CREATE INDEX task_dependencies_target ON task_dependencies(depends_on_task_id);
+
+CREATE INDEX sources_project ON sources(project_id);
+CREATE INDEX decisions_project ON decisions(project_id);
+CREATE INDEX projects_name ON projects(name);
