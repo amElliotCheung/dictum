@@ -16,7 +16,11 @@ type Client = RunningService<RoleClient, ClientConfig>;
 
 async fn connect(database: &Path, discover: bool) -> Result<Client> {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_dictum-mcp"));
-    command.env("DICTUM_DATABASE", database);
+    command.env("DICTUM_DATABASE", database).current_dir(
+        database
+            .parent()
+            .context("database needs a project directory")?,
+    );
     let transport = TokioChildProcess::new(command)?;
     if discover {
         Ok(ClientConfig::default()
@@ -30,6 +34,20 @@ async fn connect(database: &Path, discover: bool) -> Result<Client> {
     } else {
         Ok(ClientConfig::default().serve(transport).await?)
     }
+}
+
+fn assert_workflow_instructions(client: &Client) -> Result<()> {
+    let server = client
+        .peer_info()
+        .context("expected server handshake info")?;
+    let instructions = server
+        .instructions
+        .as_deref()
+        .context("expected embedded workflow instructions")?;
+    assert_eq!(instructions, include_str!("../WORKFLOW.md"));
+    assert!(!instructions.trim().is_empty());
+    assert!(instructions.chars().count() <= 2_000);
+    Ok(())
 }
 
 async fn raw(client: &Client, name: &str, input: Value) -> Result<CallToolResult> {
@@ -61,6 +79,7 @@ async fn workflow(discover: bool) -> Result<()> {
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("project.sqlite3");
     let client = connect(&database, discover).await?;
+    assert_workflow_instructions(&client)?;
 
     let tools = client.list_all_tools().await?;
     let mut names: Vec<_> = tools.iter().map(|tool| tool.name.as_ref()).collect();
@@ -225,6 +244,7 @@ async fn workflow(discover: bool) -> Result<()> {
 
     // A new process sees the same project without any project identifier.
     let restarted = connect(&database, discover).await?;
+    assert_workflow_instructions(&restarted)?;
     let persisted = call(
         &restarted,
         "get_task_context",

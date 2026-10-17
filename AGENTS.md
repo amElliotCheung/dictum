@@ -8,6 +8,8 @@ Dictum is a local project-management MCP server for coding agents. Its goal is t
 
 The MVP uses Rust, `rmcp`, stdio, and one SQLite database per project/server process. Multiple local clients must point to the same database to share project state. `DICTUM_DATABASE` selects its path; the default is `.dictum/dictum.sqlite3` relative to the process working directory. Stdout is reserved for MCP; diagnostics go to stderr.
 
+`WORKFLOW.md` is the canonical, compact agent workflow (at most 2,000 characters). It is embedded in the binary and delivered through MCP server instructions, not a separate tool or required skill installation. Put task-authoring and authorization rules first. The human and agent coauthor the actual task content, not a separate approval brief; preserve agreed intent, constraints, required approach, and acceptance criteria. Once authorized, one coordinator can derive inspectable tasks, delegate bounded work, obtain separate reviews, and record evidence. These are agent guidance, not server-enforced approval or orchestration. Clients control instruction inclusion, retention, and subagent inheritance; actual CLI behavior needs separate validation.
+
 The agreed model has five tables: `tasks`, `sources`, `decisions`, `task_sources`, and `task_dependencies`.
 
 - **Tasks:** a title, required Markdown sections for problem/goal and design, acceptance criteria, and optional rejected alternatives. Keep this execution brief separate from status, progress, and the actual result/verification evidence. A fresh agent should be able to work from the brief and linked sources. Statuses are `todo`, `in_progress`, `blocked`, and `done`.
@@ -46,16 +48,17 @@ This index describes files that currently exist. Update it as implementation fil
 | File | Responsibility |
 | --- | --- |
 | `AGENTS.md` | Maintained project overview, MCP contract, and agent navigation index. |
+| `WORKFLOW.md` | Short, host-neutral task-authoring and execution guidance embedded as MCP server instructions. |
 | `Cargo.toml` | Rust package, library/binary targets, dependencies, and development dependencies. |
 | `Cargo.lock` | Locked dependency versions for reproducible builds. |
 | `.gitignore` | Excludes build output and local SQLite data files from version control. |
 | `src/main.rs` | Binary entry point: resolve the database path and launch the MCP stdio process. |
 | `src/lib.rs` | Library module exports. |
 | `src/model.rs` | Typed MCP inputs/results, JSON schemas, and nullable-update semantics. |
-| `src/server.rs` | Eleven MCP tool handlers, descriptions, annotations, and structured results. |
+| `src/server.rs` | Server metadata and embedded workflow instructions; eleven MCP tool handlers, descriptions, annotations, and structured results. |
 | `src/store.rs` | SQLite transactions, validation, revisions, dependency gates, context assembly, and freshness. |
 | `src/schema.sql` | Five-table SQLite schema, constraints, and indexes. |
-| `tests/mcp_stdio.rs` | End-to-end tool discovery, task workflow, and restart tests for both MCP lifecycles. |
+| `tests/mcp_stdio.rs` | End-to-end instruction delivery, tool discovery, task workflow, and restart tests for both MCP lifecycles, launched outside the repository. |
 | `tests/project_workflows.rs` | End-to-end context, dependency, action-state, decision, persistence, and concurrent-client scenarios. |
 | `tests/support/mod.rs` | Test client that launches the real binary and invokes tools over MCP stdio. |
 
