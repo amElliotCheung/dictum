@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A local MCP project workspace for coding agents"
+license = "MIT"
 
 [lib]
 name = "dictum_mcp"

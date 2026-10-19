@@ -287,7 +287,7 @@ function DetailBody({
             onOpenTask={onOpenTask}
           />
           <DependencyGroup
-            title="Before done"
+            title={task.kind === 'recurring' ? 'Before success' : 'Before done'}
             ids={task.completion_task_ids}
             unmet={dependency_state.unmet_completion_task_ids}
             tasks={tasks}
@@ -296,7 +296,7 @@ function DetailBody({
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
           {task.kind === 'recurring'
-            ? 'Recurring tasks never reach done; dependencies are shown for record completeness.'
+            ? 'Recurring tasks never reach done. All dependencies must be done before recording success or no change; failure reports remain allowed.'
             : dependency_state.ready_to_start
               ? 'Ready to start: all before-start gates are done. Completion gates still apply before done.'
               : 'Lifecycle status and dependency readiness are separate. A todo task can still be blocked by an unmet before-start gate.'}

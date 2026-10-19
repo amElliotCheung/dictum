@@ -57,6 +57,8 @@ This index describes files that currently exist. Update it as implementation fil
 | File | Responsibility |
 | --- | --- |
 | `AGENTS.md` | Maintained project overview, MCP contract, and agent navigation index. |
+| `README.md` | Public build/client setup, task-and-source quickstart, dashboard usage and development checks. |
+| `LICENSE` | MIT license terms. |
 | `WORKFLOW.md` | Short, host-neutral task-authoring and execution guidance embedded as MCP server instructions. |
 | `Cargo.toml` | Rust package, library/binary targets, dependencies, and development dependencies. |
 | `Cargo.lock` | Locked dependency versions for reproducible builds. |

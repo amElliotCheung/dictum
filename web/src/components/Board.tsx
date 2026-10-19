@@ -268,7 +268,7 @@ function TaskCard({
               variant="outline"
               className="border-rose-300 bg-rose-50 text-rose-800"
             >
-              Done blocked: {formatIds(dependencies.unmet_completion_task_ids)}
+              {task.kind === 'recurring' ? 'Success blocked' : 'Done blocked'}: {formatIds(dependencies.unmet_completion_task_ids)}
             </Badge>
           ) : null}
           {task.status === 'todo' && dependencies.ready_to_start ? (
