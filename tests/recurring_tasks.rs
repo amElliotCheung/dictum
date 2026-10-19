@@ -190,9 +190,6 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
     assert_eq!(after_first["latest_result"], first);
     assert_eq!(after_first["latest_successful_result"], first);
     assert_eq!(after_first["sources"], initial["sources"]);
-    assert_eq!(after_first["outputs"], json!([]));
-    assert_eq!(after_first["task"]["output_source_ids"], json!([]));
-    assert!(after_first["task"]["result"].is_null());
     assert_eq!(
         call(&client, "get_source", json!({"source_id": output["id"]}))["content"],
         full_content
@@ -238,7 +235,6 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
     assert_eq!(final_context["latest_result"], unchanged);
     assert_eq!(final_context["latest_successful_result"], unchanged);
     assert_eq!(final_context["sources"], initial["sources"]);
-    assert_eq!(final_context["outputs"], json!([]));
     for field in [
         "title",
         "problem_or_goal",
@@ -538,7 +534,6 @@ fn simultaneous_result_writers_have_one_revision_winner_and_no_partial_output_li
     assert_eq!(final_context["task"]["revision"], winner["task_revision"]);
     assert_eq!(final_context["task"]["status"], "active");
     assert_eq!(final_context["latest_result"], winner);
-    assert_eq!(final_context["outputs"], json!([]));
     drop(client);
     let restarted = Project::open(&database).unwrap();
     assert_eq!(
@@ -762,11 +757,15 @@ fn recurring_tasks_cannot_be_dependency_targets_and_success_obeys_all_ordinary_g
         .as_array()
         .unwrap()
         .clone();
-    update(
+    record(
         &client,
         &start_gate,
-        json!({"status": "done", "result": "Start conditions inspected and approved."}),
+        "success",
+        "Start conditions inspected and approved.",
+        &[],
     );
+    let start_gate = context(&client, &start_gate)["task"].clone();
+    update(&client, &start_gate, json!({"status": "done"}));
     for task in &gated {
         let task = context(&client, task)["task"].clone();
         assert_eq!(
@@ -782,11 +781,15 @@ fn recurring_tasks_cannot_be_dependency_targets_and_success_obeys_all_ordinary_g
             );
         }
     }
-    update(
+    record(
         &client,
         &finish_gate,
-        json!({"status": "done", "result": "Final revision tested: checks passed."}),
+        "success",
+        "Final revision tested: checks passed.",
+        &[],
     );
+    let finish_gate = context(&client, &finish_gate)["task"].clone();
+    update(&client, &finish_gate, json!({"status": "done"}));
     for task in &gated {
         let task = context(&client, task)["task"].clone();
         let initial_status = task["status"].clone();
@@ -811,77 +814,48 @@ fn recurring_tasks_cannot_be_dependency_targets_and_success_obeys_all_ordinary_g
 }
 
 #[test]
-fn ordinary_tasks_keep_legacy_results_and_outputs_independent_of_history() {
+fn ordinary_tasks_require_successful_results_before_done_and_preserve_history() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("ordinary.sqlite3");
     let client = Project::open(&database).unwrap();
     let historical_output = source(&client, "Historic report", "Old evidence");
-    let current_output = source(&client, "Current report", "Current evidence");
-    let task = create(&client, "Compatible one-time task", "one_time");
-    let task = update(
-        &client,
-        &task,
-        json!({"status": "in_progress", "result": "Existing mutable result", "output_source_ids": [current_output["id"]]}),
-    );
-    let first = record(
-        &client,
-        &task,
-        "success",
-        "A checkpoint passed; work is still in progress.",
-        &[historical_output["id"].as_i64().unwrap()],
-    );
-    let after = context(&client, &task);
-    assert_eq!(after["task"]["status"], "in_progress");
-    assert_eq!(after["task"]["result"], "Existing mutable result");
-    assert_eq!(
-        after["task"]["output_source_ids"],
-        json!([current_output["id"]])
-    );
-    assert_eq!(
-        ids(&after["outputs"]),
-        vec![current_output["id"].as_i64().unwrap()]
-    );
-    assert_eq!(after["sources"], json!([]));
-    let task = update(
-        &client,
-        &after["task"],
-        json!({"output_source_ids": [], "result": null}),
-    );
-    assert_eq!(
-        history(&client, &task, json!({}))["results"],
-        json!([first])
-    );
-    let task = update(
-        &client,
-        &task,
-        json!({"status": "blocked", "progress": "Waiting for a follow-up"}),
-    );
-    let failure = record(
-        &client,
-        &task,
-        "failure",
-        "The follow-up verification failed.",
-        &[],
-    );
+    let task = create(&client, "Ordinary task", "one_time");
+    let task = update(&client, &task, json!({"status": "in_progress"}));
+    let failure = record(&client, &task, "failure", "The verification failed.", &[]);
     let after_failure = context(&client, &task);
-    assert_eq!(after_failure["task"]["status"], "blocked");
+    assert_eq!(after_failure["task"]["status"], "in_progress");
     assert_eq!(after_failure["latest_result"], failure);
-    assert_eq!(after_failure["latest_successful_result"], first);
-    let done = update(
+    assert!(after_failure["latest_successful_result"].is_null());
+    rejected_update(
+        &client,
+        &database,
+        &after_failure["task"],
+        json!({"status": "done"}),
+    );
+    let success = record(
         &client,
         &after_failure["task"],
-        json!({"status": "done", "result": "Fixed and verified final revision: checks passed.", "output_source_ids": [current_output["id"]]}),
+        "success",
+        "Rechecked after the fix: checks passed.",
+        &[historical_output["id"].as_i64().unwrap()],
     );
+    let after_success = context(&client, &task);
+    assert_eq!(after_success["task"]["status"], "in_progress");
+    assert_eq!(after_success["latest_result"], success);
+    assert_eq!(after_success["latest_successful_result"], success);
+    let done = update(&client, &after_success["task"], json!({"status": "done"}));
     assert_eq!(done["status"], "done");
+    let history_value = history(&client, &done, json!({}));
+    assert_eq!(history_value["results"], json!([success, failure]));
     assert_eq!(
-        history(&client, &done, json!({}))["results"],
-        json!([failure, first])
+        history_value["results"][0]["output_source_ids"],
+        json!([historical_output["id"]])
     );
     drop(client);
     let restarted = Project::open(&database).unwrap();
     assert_eq!(context(&restarted, &done)["task"], done);
     assert_eq!(
-        history(&restarted, &done, json!({}))["results"][1]["output_source_ids"],
+        history(&restarted, &done, json!({}))["results"][0]["output_source_ids"],
         json!([historical_output["id"]])
     );
 }

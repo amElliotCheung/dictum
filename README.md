@@ -87,8 +87,11 @@ tool arguments, not shell commands. Substitute the IDs returned by earlier calls
    to read an individual source.
 
 Task creation records the brief; execution still needs authorization from the
-human. Mutable task and source updates require the latest `expected_revision`.
-See [AGENTS.md](AGENTS.md) for all fifteen tools and their contracts, and
+human. Execution evidence and output Source links are appended with
+`record_task_result`. A one-time task can be marked `done` only after all
+dependency gates are satisfied and at least one successful result exists.
+Mutable task and source updates require the latest `expected_revision`. See
+[AGENTS.md](AGENTS.md) for all fifteen tools and their contracts, and
 [WORKFLOW.md](WORKFLOW.md) for the embedded agent workflow.
 
 ## Open the dashboard
@@ -128,8 +131,8 @@ npm ci
 npm run build
 ```
 
-Existing v2/v3 databases require explicit migration to a new destination; startup
-does not silently upgrade them. Run `dictum-mcp migrate --help` for usage.
+Only the current schema (v5) is supported. Startup rejects older databases
+without modifying them; preserve the file and start a new database.
 
 ## License
 

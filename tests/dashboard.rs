@@ -233,11 +233,20 @@ fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
     let blocked = create_task(&client, &project_a, "Blocked task", "one_time", json!({}));
     update_task(&client, &blocked, json!({"status": "blocked"}));
     let done = create_task(&client, &project_a, "Done task", "one_time", json!({}));
-    update_task(
+    let done_result = call(
         &client,
-        &done,
-        json!({"status": "done", "result": "Verified in the dashboard fixture."}),
+        "record_task_result",
+        json!({
+            "project_id": project_a,
+            "task_id": done["id"],
+            "expected_revision": done["revision"],
+            "outcome": "success",
+            "evidence": "Verified in the dashboard fixture."
+        }),
     );
+    let mut done_with_result = done.clone();
+    done_with_result["revision"] = done_result["task_revision"].clone();
+    update_task(&client, &done_with_result, json!({"status": "done"}));
     let _active = create_task(
         &client,
         &project_a,
@@ -569,14 +578,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
             "context_source_ids": [inline_source["id"]]
         }),
     );
-    let task = update_task(
-        &client,
-        &task,
-        json!({
-            "output_source_ids": [output_source["id"]],
-            "progress": "Prepared for history"
-        }),
-    );
+    let task = update_task(&client, &task, json!({"progress": "Prepared for history"}));
     let mut revision = task["revision"].as_i64().unwrap();
     let mut latest_result_id = 0;
     for index in 0..25 {
@@ -615,10 +617,6 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     let context = dashboard.get(&context_path).json();
     assert_eq!(context["task"]["id"], task["id"]);
     assert_eq!(context["task"]["revision"], revision);
-    assert_eq!(
-        context["task"]["output_source_ids"],
-        json!([output_source["id"]])
-    );
     assert_eq!(context["current_decisions"].as_array().unwrap().len(), 1);
     let embedded = context["sources"]
         .as_array()

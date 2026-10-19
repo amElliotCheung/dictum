@@ -352,41 +352,6 @@ function DetailBody({
         )}
       </Section>
 
-      <Section title="Current outputs">
-        <p className="mb-3 text-xs text-muted-foreground">
-          One-time compatibility descriptors stay separate from append-only
-          execution history.
-        </p>
-        {context.outputs.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No current output sources.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {context.outputs.map((output) => (
-              <ExpandableSource
-                key={output.id}
-                projectId={projectId}
-                sourceId={output.id}
-                label={output.name}
-                description={output.description}
-                representation={output.representation}
-              />
-            ))}
-          </div>
-        )}
-      </Section>
-
-      {task.result ? (
-        <Section title="Legacy reported result">
-          <p className="mb-2 text-xs text-muted-foreground">
-            One-time compatibility field. It does not replace append-only
-            execution history.
-          </p>
-          <Markdown text={task.result} />
-        </Section>
-      ) : null}
-
       <Section
         title="Execution history"
         aside={

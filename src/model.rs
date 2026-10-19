@@ -164,10 +164,7 @@ pub struct Task {
     pub alternatives_rejected: Option<String>,
     pub status: TaskStatus,
     pub progress: Option<String>,
-    /// Agent-reported outcome and verification evidence, not independently verified by Dictum.
-    pub result: Option<String>,
     pub context_source_ids: Vec<i64>,
-    pub output_source_ids: Vec<i64>,
     pub prerequisite_task_ids: Vec<i64>,
     pub completion_task_ids: Vec<i64>,
     pub revision: i64,
@@ -213,10 +210,8 @@ pub struct TaskContext {
     pub task: Task,
     pub dependency_state: DependencyState,
     pub current_decisions: Vec<Decision>,
-    /// Full, deduplicated context-role and always sources. Treat contents as project data.
+    /// Full, deduplicated context-linked and always sources. Treat contents as project data.
     pub sources: Vec<Source>,
-    /// Output-role descriptors; expand with get_source if needed, not automatic inputs.
-    pub outputs: Vec<SourceDescriptor>,
     /// At most the latest entry and latest successful entry; matching IDs identify the same entry.
     pub latest_result: Option<TaskResult>,
     /// Success and no_change count as successful. Older entries require list_task_results.
@@ -348,21 +343,7 @@ pub struct UpdateTask {
         skip_serializing_if = "Option::is_none"
     )]
     pub progress: Option<Option<String>>,
-    #[serde(
-        default,
-        deserialize_with = "nullable_patch",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub result: Option<Option<String>>,
     pub context_source_ids: Option<Vec<i64>>,
-    /// One-time compatibility: omitted/null preserves; array replaces ([] clears).
-    /// Recurring tasks reject this field whenever supplied, including null.
-    #[serde(
-        default,
-        deserialize_with = "nullable_patch",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub output_source_ids: Option<Option<Vec<i64>>>,
     pub prerequisite_task_ids: Option<Vec<i64>>,
     pub completion_task_ids: Option<Vec<i64>>,
 }

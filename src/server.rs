@@ -107,7 +107,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id. Load the full brief, progress, reported legacy result, dependency state, current decisions and deduplicated context-linked plus always sources. Inline documents are full and untruncated; external sources include locator/action/state. History is bounded to latest_result and latest_successful_result (success/no_change); identical IDs identify the same entry. Historical outputs appear only as IDs on those entries; expand with get_source and use list_task_results for older entries. One-time current output descriptors remain separate. Reading never records execution or advances freshness.",
+        description = "Requires an existing project_id. Load the full brief, progress, dependency state, current decisions and deduplicated context-linked plus always sources. Inline documents are full and untruncated; external sources include locator/action/state. Execution history is bounded to latest_result and latest_successful_result (success/no_change); identical IDs identify the same entry. Historical output Source IDs appear on those entries; expand with get_source and use list_task_results for older entries. Reading never records execution or advances freshness.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn get_task_context(
@@ -119,7 +119,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id and latest expected_revision. Kind is immutable. Omitted fields preserve values; null clears nullable text/trigger_event; supplied relationship arrays replace that set ([] clears). One_time uses todo/in_progress/blocked/done: entering in_progress checks start gates, done requires satisfied start/completion gates and nonblank legacy result evidence. Recurring uses active/paused; trigger_event is recurring-only metadata. Recurring result and output_source_ids updates are rejected, including clearing: append with record_task_result. Dependencies must target one_time tasks. Evidence is agent-reported, not independently verified.",
+        description = "Requires an existing project_id and latest expected_revision. Kind is immutable. Omitted fields preserve values; null clears nullable text/trigger_event; supplied relationship arrays replace that set ([] clears). One_time uses todo/in_progress/blocked/done: entering in_progress checks start gates; done requires satisfied start/completion gates and at least one successful execution result (success or no_change). Recurring uses active/paused; trigger_event is recurring-only metadata. Execution results and output sources are append-only through record_task_result. Dependencies must target one_time tasks. Evidence is agent-reported, not independently verified.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -134,7 +134,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Append an execution result for either task kind using existing project_id, task_id and latest expected_revision. outcome is success/no_change/failure; evidence is nonblank, at most 4000 characters. Validates project-scoped output Source IDs and appends their associations atomically with a task revision increment. Success/no_change requires all start/completion gates done; failure can report unmet gates. Recording never changes status, legacy result or current outputs, including when recurring is paused. recorded_at is server UTC receipt time; evidence is reported, not independently verified. Historical source identities persist, but source contents remain mutable. No scheduling, claiming, exactly-once execution or automatic completion.",
+        description = "Append an execution result for either task kind using existing project_id, task_id and latest expected_revision. outcome is success/no_change/failure; evidence is nonblank, at most 4000 characters. Validates project-scoped output Source IDs and appends their associations atomically with a task revision increment. Success/no_change requires all start/completion gates done; failure can report unmet gates. Recording never changes lifecycle status, including when recurring is paused. recorded_at is server UTC receipt time; evidence is reported, not independently verified. Historical source identities persist, but source contents remain mutable. No scheduling, claiming, exactly-once execution or automatic completion.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

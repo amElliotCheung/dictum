@@ -225,19 +225,16 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
     }
     for field in [
         "context_source_ids",
-        "output_source_ids",
         "prerequisite_task_ids",
         "completion_task_ids",
     ] {
         let mut patch = json!({"project_id": scope, "task_id": task["id"], "expected_revision": task["revision"], "title": "Unknown link must roll back"});
         patch[field] = json!([999_999]);
         rejected_without_mutation(&client, &database, "update_task", patch);
-        if field != "output_source_ids" {
-            let mut input = brief();
-            input["project_id"] = json!(scope);
-            input[field] = json!([999_999]);
-            rejected_without_mutation(&client, &database, "create_task", input);
-        }
+        let mut input = brief();
+        input["project_id"] = json!(scope);
+        input[field] = json!([999_999]);
+        rejected_without_mutation(&client, &database, "create_task", input);
     }
 }
 
@@ -263,12 +260,6 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
             "create_source",
             json!({"name": "Action", "description": "Own action state", "locator": format!("https://example.test/{scope}"), "action": {"instruction": "Read", "trigger": {"kind": "interval", "every_minutes": 60}}}),
         );
-        let output = scoped(
-            client,
-            scope,
-            "create_source",
-            json!({"name": "Report", "description": "Own output", "content": format!("Report for {scope}")}),
-        );
         let decision = scoped(
             client,
             scope,
@@ -280,16 +271,10 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
         input["context_source_ids"] = json!([external["id"]]);
         input["completion_task_ids"] = json!([prerequisite["id"]]);
         let task = scoped(client, scope, "create_task", input);
-        let task = scoped(
-            client,
-            scope,
-            "update_task",
-            json!({"task_id": task["id"], "expected_revision": task["revision"], "output_source_ids": [output["id"]]}),
-        );
-        records.push((always, external, output, decision, prerequisite, task));
+        records.push((always, external, decision, prerequisite, task));
     }
-    let (a_always, a_external, _, a_decision, a_dependency, a_task) = &records[0];
-    let (_, b_external, _, b_decision, b_dependency, b_task) = &records[1];
+    let (a_always, a_external, a_decision, a_dependency, a_task) = &records[0];
+    let (_, b_external, b_decision, b_dependency, b_task) = &records[1];
     for (scope, foreign_task, foreign_source, foreign_decision) in [
         (&a, b_task, b_external, b_decision),
         (&b, a_task, a_external, a_decision),
@@ -326,7 +311,6 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
     }
     for field in [
         "context_source_ids",
-        "output_source_ids",
         "prerequisite_task_ids",
         "completion_task_ids",
     ] {
@@ -338,15 +322,12 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
         let mut patch = json!({"project_id": a, "task_id": a_task["id"], "expected_revision": a_task["revision"], "title": "Partial write must roll back"});
         patch[field] = json!([foreign_id]);
         rejected_without_mutation(&first, &database, "update_task", patch);
-        if field != "output_source_ids" {
-            let mut input = brief();
-            input["project_id"] = json!(a);
-            input[field] = json!([foreign_id]);
-            rejected_without_mutation(&first, &database, "create_task", input);
-        }
+        let mut input = brief();
+        input["project_id"] = json!(a);
+        input[field] = json!([foreign_id]);
+        rejected_without_mutation(&first, &database, "create_task", input);
     }
-    for (scope, (_, external, output, decision, dependency, task)) in
-        [(&a, &records[0]), (&b, &records[1])]
+    for (scope, (_, external, decision, dependency, task)) in [(&a, &records[0]), (&b, &records[1])]
     {
         let context = scoped(
             &second,
@@ -363,8 +344,6 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
                 .iter()
                 .all(|source| source["project_id"] == *scope)
         );
-        assert_eq!(context["outputs"][0]["id"], output["id"]);
-        assert_eq!(context["outputs"][0]["project_id"], *scope);
         assert_eq!(context["current_decisions"][0]["id"], decision["id"]);
         assert_eq!(context["current_decisions"][0]["project_id"], *scope);
         assert_eq!(
@@ -384,7 +363,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
             "list_sources",
             json!({"task_id": task["id"]}),
         );
-        assert_eq!(sources["sources"].as_array().unwrap().len(), 2);
+        assert_eq!(sources["sources"].as_array().unwrap().len(), 1);
         assert!(
             sources["sources"]
                 .as_array()
@@ -494,11 +473,22 @@ fn ready_filter_is_project_scoped_and_only_reports_startable_todo_tasks() {
         let prerequisite = scoped(&client, scope, "create_task", brief());
         for status in ["in_progress", "blocked", "done"] {
             let task = scoped(&client, scope, "create_task", brief());
+            let revision = if status == "done" {
+                let result = scoped(
+                    &client,
+                    scope,
+                    "record_task_result",
+                    json!({"task_id": task["id"], "expected_revision": task["revision"], "outcome": "success", "evidence": "Fixture verification result"}),
+                );
+                result["task_revision"].clone()
+            } else {
+                task["revision"].clone()
+            };
             scoped(
                 &client,
                 scope,
                 "update_task",
-                json!({"task_id": task["id"], "expected_revision": task["revision"], "status": status, "result": "Fixture verification result"}),
+                json!({"task_id": task["id"], "expected_revision": revision, "status": status}),
             );
         }
         let mut start_blocked = brief();
@@ -560,9 +550,7 @@ fn database_foreign_keys_also_prevent_cross_project_relationships() {
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .unwrap();
-    for role in ["context", "output"] {
-        assert!(connection.execute("INSERT INTO task_sources (project_id, task_id, source_id, role) VALUES (?1, ?2, ?3, ?4)", rusqlite::params![a, a_task["id"].as_i64().unwrap(), b_source["id"].as_i64().unwrap(), role]).is_err());
-    }
+    assert!(connection.execute("INSERT INTO task_context_sources (project_id, task_id, source_id) VALUES (?1, ?2, ?3)", rusqlite::params![a, a_task["id"].as_i64().unwrap(), b_source["id"].as_i64().unwrap()]).is_err());
     for kind in ["before_start", "before_done"] {
         assert!(connection.execute("INSERT INTO task_dependencies (project_id, task_id, depends_on_task_id, kind) VALUES (?1, ?2, ?3, ?4)", rusqlite::params![a, a_task["id"].as_i64().unwrap(), b_task["id"].as_i64().unwrap(), kind]).is_err());
     }

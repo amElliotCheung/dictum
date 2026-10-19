@@ -349,9 +349,15 @@ async fn workflow(discover: bool) -> Result<()> {
         }),
     )
     .await?;
-    let rejected = scoped_raw(&client, &project_id, "update_task", json!({
-        "task_id": task["id"], "expected_revision": running["revision"], "status": "done", "result": "Implemented"
-    })).await?;
+    let rejected = scoped_raw(
+        &client,
+        &project_id,
+        "update_task",
+        json!({
+            "task_id": task["id"], "expected_revision": running["revision"], "status": "done"
+        }),
+    )
+    .await?;
     assert_eq!(rejected.is_error, Some(true));
 
     let observed_at = (Utc::now() - TimeDelta::seconds(1)).to_rfc3339();
@@ -385,13 +391,27 @@ async fn workflow(discover: bool) -> Result<()> {
     let output = scoped_call(&client, &project_id, "create_source", json!({
         "name": "Verification report", "description": "Result and evidence for implemented feature", "content": "Revision demo-123; command cargo test; all passed."
     })).await?;
-    scoped_call(&client, &project_id, "update_task", json!({
-        "task_id": verification["id"], "expected_revision": verification["revision"], "status": "done",
-        "result": "Tested demo-123 with cargo test; all passed (test fixture evidence)", "output_source_ids": [output["id"]]
+    let verification_result = scoped_call(&client, &project_id, "record_task_result", json!({
+        "task_id": verification["id"], "expected_revision": verification["revision"], "outcome": "success",
+        "evidence": "Tested demo-123 with cargo test; all passed (test fixture evidence)",
+        "output_source_ids": [output["id"]]
     })).await?;
+    scoped_call(&client, &project_id, "update_task", json!({
+        "task_id": verification["id"], "expected_revision": verification_result["task_revision"], "status": "done"
+    })).await?;
+    let feature_result = scoped_call(
+        &client,
+        &project_id,
+        "record_task_result",
+        json!({
+            "task_id": task["id"], "expected_revision": running["revision"], "outcome": "success",
+            "evidence": "Implemented and verified by the completed verification task",
+            "output_source_ids": [output["id"]]
+        }),
+    )
+    .await?;
     let completed = scoped_call(&client, &project_id, "update_task", json!({
-        "task_id": task["id"], "expected_revision": running["revision"], "status": "done",
-        "result": "Implemented and verified by the completed verification task", "output_source_ids": [output["id"]]
+        "task_id": task["id"], "expected_revision": feature_result["task_revision"], "status": "done"
     })).await?;
     assert_eq!(completed["status"], "done");
     let conflict = scoped_raw(&client, &project_id, "update_task", json!({
@@ -412,7 +432,10 @@ async fn workflow(discover: bool) -> Result<()> {
     .await?;
     assert_eq!(persisted["task"]["status"], "done");
     assert_eq!(persisted["task"]["revision"], completed["revision"]);
-    assert_eq!(persisted["outputs"][0]["id"], output["id"]);
+    assert_eq!(
+        persisted["latest_result"]["output_source_ids"],
+        json!([output["id"]])
+    );
     assert_eq!(persisted["sources"].as_array().unwrap().len(), 2);
     restarted.cancel().await?;
     Ok(())

@@ -40,11 +40,21 @@ fn task_patch(task: &Task, mut patch: Value) -> UpdateTask {
 }
 
 fn complete(store: &Project, task: &Task) -> Task {
+    let result: dictum_mcp::model::TaskResult = store
+        .call(
+            "record_task_result",
+            json!({
+                "task_id": task.id,
+                "expected_revision": task.revision,
+                "outcome": "success",
+                "evidence": "Verified revision abc123: cargo test passed."
+            }),
+        )
+        .unwrap();
+    let mut done_task = task.clone();
+    done_task.revision = result.task_revision;
     store
-        .update_task(task_patch(
-            task,
-            json!({"status": "done", "result": "Verified revision abc123: cargo test passed."}),
-        ))
+        .update_task(task_patch(&done_task, json!({"status": "done"})))
         .unwrap()
 }
 
@@ -131,11 +141,17 @@ fn full_inline_context_is_deduplicated_and_outputs_are_not_automatic_inputs() {
     let mut brief = task_input("Implement the specification");
     brief["context_source_ids"] = json!([shared.id, context.id]);
     let task = store.create_task(input(brief)).unwrap();
-    let task = store
-        .update_task(task_patch(
-            &task,
-            json!({"output_source_ids": [context.id, output.id]}),
-        ))
+    store
+        .call::<dictum_mcp::model::TaskResult>(
+            "record_task_result",
+            json!({
+                "task_id": task.id,
+                "expected_revision": task.revision,
+                "outcome": "success",
+                "evidence": "Outputs are linked per execution result.",
+                "output_source_ids": [context.id, output.id]
+            }),
+        )
         .unwrap();
 
     let expanded = store.get_task_context(task.id).unwrap();
@@ -160,20 +176,16 @@ fn full_inline_context_is_deduplicated_and_outputs_are_not_automatic_inputs() {
         store.get_source(shared.id).unwrap().content.as_deref(),
         Some(full_content.as_str())
     );
-    assert_eq!(expanded.outputs.len(), 2);
-    assert!(
-        expanded
-            .outputs
-            .iter()
-            .any(|source| source.id == context.id)
+    assert_eq!(
+        expanded.latest_result.as_ref().unwrap().output_source_ids,
+        vec![context.id, output.id]
     );
-    assert!(expanded.outputs.iter().any(|source| source.id == output.id));
 
-    // Discovery is compact and task filtering uses explicit links, not implicit always context.
+    // Discovery is compact and task filtering uses explicit context links, not implicit always context.
     let descriptors = store
         .list_sources(input(json!({"task_id": task.id})))
         .unwrap();
-    assert_eq!(descriptors.len(), 3);
+    assert_eq!(descriptors.len(), 2);
     assert!(!descriptors.iter().any(|source| source.id == implicit.id));
     for descriptor in descriptors {
         assert!(
@@ -245,10 +257,7 @@ fn dependency_kinds_gate_start_and_completion_independently() {
         .unwrap();
     assert!(
         store
-            .update_task(task_patch(
-                &implementation,
-                json!({"status": "done", "result": "Implementation is complete."})
-            ))
+            .update_task(task_patch(&implementation, json!({"status": "done"})))
             .is_err()
     );
     complete(&store, &verification);

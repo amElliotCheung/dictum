@@ -50,9 +50,7 @@ export interface Task {
   alternatives_rejected: string | null;
   status: TaskStatus;
   progress: string | null;
-  result: string | null;
   context_source_ids: number[];
-  output_source_ids: number[];
   prerequisite_task_ids: number[];
   completion_task_ids: number[];
   revision: number;
@@ -106,19 +104,6 @@ export interface Source {
   updated_at: string;
 }
 
-export interface SourceDescriptor {
-  id: number;
-  project_id: string;
-  name: string;
-  description: string;
-  representation: 'inline' | 'external';
-  context_policy: ContextPolicy;
-  has_action: boolean;
-  action_due: boolean;
-  next_action_at: string | null;
-  revision: number;
-}
-
 export interface Decision {
   id: number;
   project_id: string;
@@ -152,7 +137,6 @@ export interface TaskContext {
   dependency_state: DependencyState;
   current_decisions: Decision[];
   sources: Source[];
-  outputs: SourceDescriptor[];
   latest_result: TaskResult | null;
   latest_successful_result: TaskResult | null;
 }

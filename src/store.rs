@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 const APPLICATION_ID: i64 = 0x4449_4354; // DICT
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -38,7 +38,7 @@ pub enum StoreError {
         actual: i64,
     },
     #[error(
-        "unsupported database schema (version {version}, application ID {application_id}); versions 2 and 3 require the explicit migrate command into a new database path; preserve the existing file"
+        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 5 only; preserve the existing file"
     )]
     UnsupportedSchema { version: i64, application_id: i64 },
 }
@@ -177,11 +177,10 @@ impl Store {
             params![input.title, input.problem_or_goal, input.design, encode(&input.acceptance_criteria)?, input.alternatives_rejected, now, input.project_id, status_name(status), kind_name(input.kind), input.trigger_event],
         )?;
         let id = transaction.last_insert_rowid();
-        replace_source_links(
+        replace_context_sources(
             &transaction,
             &input.project_id,
             id,
-            "context",
             &input.context_source_ids,
         )?;
         replace_dependencies(
@@ -279,7 +278,7 @@ impl Store {
         let dependency_state = dependency_state(&transaction, &task)?;
         let now = Utc::now();
         let source_ids = {
-            let mut statement = transaction.prepare("SELECT id FROM sources WHERE project_id=?2 AND (context_policy = 'always' OR id IN (SELECT source_id FROM task_sources WHERE task_id = ?1 AND role = 'context' AND project_id=?2)) ORDER BY id")?;
+            let mut statement = transaction.prepare("SELECT id FROM sources WHERE project_id=?2 AND (context_policy = 'always' OR id IN (SELECT source_id FROM task_context_sources WHERE task_id = ?1 AND project_id=?2)) ORDER BY id")?;
             statement
                 .query_map(params![task_id, project_id], |row| row.get::<_, i64>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?
@@ -287,13 +286,6 @@ impl Store {
         let sources = source_ids
             .into_iter()
             .map(|id| source_by_id(&transaction, project_id, id, now))
-            .collect::<StoreResult<Vec<_>>>()?;
-        let outputs = task
-            .output_source_ids
-            .iter()
-            .map(|&id| {
-                source_by_id(&transaction, project_id, id, now).map(|source| descriptor(&source))
-            })
             .collect::<StoreResult<Vec<_>>>()?;
         let current_decisions = decisions(&transaction, project_id, false)?;
         let latest_result = latest_task_result(&transaction, project_id, task_id, false)?;
@@ -303,7 +295,6 @@ impl Store {
             dependency_state,
             current_decisions,
             sources,
-            outputs,
             latest_result,
             latest_successful_result,
         };
@@ -317,13 +308,6 @@ impl Store {
         ensure_project(&transaction, &input.project_id)?;
         let mut task = task_by_id(&transaction, &input.project_id, input.task_id)?;
         check_revision("task", task.id, input.expected_revision, task.revision)?;
-        if task.kind == TaskKind::Recurring
-            && (input.result.is_some() || input.output_source_ids.is_some())
-        {
-            return invalid(
-                "recurring results and outputs must be appended with record_task_result",
-            );
-        }
         if let Some(value) = input.trigger_event {
             if task.kind != TaskKind::Recurring {
                 return invalid("trigger_event is only supported for recurring tasks");
@@ -352,9 +336,6 @@ impl Store {
         if let Some(value) = input.progress {
             task.progress = value;
         }
-        if let Some(value) = input.result {
-            task.result = value;
-        }
         validate_brief(
             &task.title,
             &task.problem_or_goal,
@@ -363,10 +344,7 @@ impl Store {
         )?;
         validate_task_lifecycle(task.kind, task.status, task.trigger_event.as_deref())?;
         if let Some(ids) = input.context_source_ids {
-            replace_source_links(&transaction, &input.project_id, task.id, "context", &ids)?;
-        }
-        if let Some(Some(ids)) = input.output_source_ids {
-            replace_source_links(&transaction, &input.project_id, task.id, "output", &ids)?;
+            replace_context_sources(&transaction, &input.project_id, task.id, &ids)?;
         }
         if let Some(ids) = input.prerequisite_task_ids {
             replace_dependencies(
@@ -398,10 +376,16 @@ impl Store {
             ));
         }
         if task.status == TaskStatus::Done {
-            required(
-                task.result.as_deref().unwrap_or_default(),
-                "done task result/verification evidence",
+            let has_success: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM task_results WHERE project_id=?1 AND task_id=?2 AND outcome IN ('success', 'no_change'))",
+                params![input.project_id, task.id],
+                |row| row.get(0),
             )?;
+            if !has_success {
+                return invalid(
+                    "cannot finish task without a successful execution result; append success or no_change with record_task_result",
+                );
+            }
             if !state.unmet_prerequisite_task_ids.is_empty()
                 || !state.unmet_completion_task_ids.is_empty()
             {
@@ -412,8 +396,8 @@ impl Store {
             }
         }
         transaction.execute(
-            "UPDATE tasks SET title=?1, problem_or_goal=?2, design=?3, acceptance_criteria=?4, alternatives_rejected=?5, status=?6, progress=?7, result=?8, revision=revision+1, updated_at=?9, trigger_event=?12 WHERE id=?10 AND project_id=?11",
-            params![task.title, task.problem_or_goal, task.design, encode(&task.acceptance_criteria)?, task.alternatives_rejected, status_name(task.status), task.progress, task.result, timestamp(Utc::now()), task.id, input.project_id, task.trigger_event],
+            "UPDATE tasks SET title=?1, problem_or_goal=?2, design=?3, acceptance_criteria=?4, alternatives_rejected=?5, status=?6, progress=?7, revision=revision+1, updated_at=?8, trigger_event=?11 WHERE id=?9 AND project_id=?10",
+            params![task.title, task.problem_or_goal, task.design, encode(&task.acceptance_criteria)?, task.alternatives_rejected, status_name(task.status), task.progress, timestamp(Utc::now()), task.id, input.project_id, task.trigger_event],
         )?;
         let result = task_by_id(&transaction, &input.project_id, task.id)?;
         transaction.commit()?;
@@ -545,7 +529,7 @@ impl Store {
         let linked = if let Some(task_id) = input.task_id {
             ensure_exists(&transaction, &input.project_id, "task", task_id)?;
             let mut statement = transaction.prepare(
-                "SELECT DISTINCT source_id FROM task_sources WHERE task_id=?1 AND project_id=?2",
+                "SELECT DISTINCT source_id FROM task_context_sources WHERE task_id=?1 AND project_id=?2",
             )?;
             Some(
                 statement
@@ -899,24 +883,23 @@ fn ensure_exists(
     }
 }
 
-fn replace_source_links(
+fn replace_context_sources(
     connection: &Connection,
     project_id: &str,
     task_id: i64,
-    role: &str,
     ids: &[i64],
 ) -> StoreResult<()> {
     for &id in ids {
         ensure_exists(connection, project_id, "source", id)?;
     }
     connection.execute(
-        "DELETE FROM task_sources WHERE task_id=?1 AND role=?2 AND project_id=?3",
-        params![task_id, role, project_id],
+        "DELETE FROM task_context_sources WHERE task_id=?1 AND project_id=?2",
+        params![task_id, project_id],
     )?;
     for &id in ids.iter().collect::<BTreeSet<_>>() {
         connection.execute(
-            "INSERT INTO task_sources (task_id, source_id, role, project_id) VALUES (?1, ?2, ?3, ?4)",
-            params![task_id, id, role, project_id],
+            "INSERT INTO task_context_sources (task_id, source_id, project_id) VALUES (?1, ?2, ?3)",
+            params![task_id, id, project_id],
         )?;
     }
     Ok(())
@@ -1008,9 +991,7 @@ fn task_by_id(connection: &Connection, project_id: &str, id: i64) -> StoreResult
                     alternatives_rejected: row.get("alternatives_rejected")?,
                     status: enum_column(row, "status")?,
                     progress: row.get("progress")?,
-                    result: row.get("result")?,
                     context_source_ids: vec![],
-                    output_source_ids: vec![],
                     prerequisite_task_ids: vec![],
                     completion_task_ids: vec![],
                     revision: row.get("revision")?,
@@ -1021,9 +1002,12 @@ fn task_by_id(connection: &Connection, project_id: &str, id: i64) -> StoreResult
         )
         .optional()?
         .ok_or(StoreError::NotFound { entity: "task", id })?;
-    let source_sql = "SELECT source_id FROM task_sources WHERE task_id=?1 AND role=?2 AND project_id=?3 ORDER BY source_id";
-    task.context_source_ids = linked_ids(connection, project_id, source_sql, id, "context")?;
-    task.output_source_ids = linked_ids(connection, project_id, source_sql, id, "output")?;
+    let mut statement = connection.prepare(
+        "SELECT source_id FROM task_context_sources WHERE task_id=?1 AND project_id=?2 ORDER BY source_id",
+    )?;
+    task.context_source_ids = statement
+        .query_map(params![id, project_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let dependency_sql = "SELECT depends_on_task_id FROM task_dependencies WHERE task_id=?1 AND kind=?2 AND project_id=?3 ORDER BY depends_on_task_id";
     task.prerequisite_task_ids =
         linked_ids(connection, project_id, dependency_sql, id, "before_start")?;

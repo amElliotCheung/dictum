@@ -17,7 +17,6 @@ CREATE TABLE tasks (
     alternatives_rejected TEXT,
     status TEXT NOT NULL CHECK ((kind = 'one_time' AND status IN ('todo', 'in_progress', 'blocked', 'done')) OR (kind = 'recurring' AND status IN ('active', 'paused'))),
     progress TEXT,
-    result TEXT CHECK (kind = 'one_time' OR result IS NULL),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -54,14 +53,13 @@ CREATE TABLE decisions (
     CHECK (supersedes_id IS NULL OR supersedes_id != id)
 );
 
-CREATE TABLE task_sources (
+CREATE TABLE task_context_sources (
     project_id TEXT NOT NULL REFERENCES projects(id),
     task_id INTEGER NOT NULL,
     source_id INTEGER NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('context', 'output')),
     FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id),
     FOREIGN KEY (project_id, source_id) REFERENCES sources(project_id, id),
-    PRIMARY KEY (task_id, source_id, role)
+    PRIMARY KEY (task_id, source_id)
 );
 
 CREATE TABLE task_dependencies (
@@ -102,7 +100,7 @@ CREATE INDEX tasks_kind ON tasks(project_id, kind);
 CREATE INDEX task_results_task ON task_results(project_id, task_id, id);
 CREATE INDEX task_results_success ON task_results(project_id, task_id, id) WHERE outcome IN ('success', 'no_change');
 CREATE INDEX task_result_sources_source ON task_result_sources(source_id);
-CREATE INDEX task_sources_source ON task_sources(source_id);
+CREATE INDEX task_context_sources_source ON task_context_sources(source_id);
 CREATE INDEX task_dependencies_target ON task_dependencies(depends_on_task_id);
 
 CREATE INDEX sources_project ON sources(project_id);
