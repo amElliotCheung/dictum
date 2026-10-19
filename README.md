@@ -103,10 +103,13 @@ DICTUM_DATABASE=/absolute/path/to/shared/dictum.sqlite3 \
   target/release/dictum-mcp dashboard --port 3000
 ```
 
-Open <http://127.0.0.1:3000>, select a project, and choose a task to see its brief,
-sources, dependencies, and execution history. The dashboard polls for updates.
-It only reads records; create and update them through MCP. The listener binds to
-`127.0.0.1`; `--port 0` selects a free port and prints the URL to stderr.
+Open <http://127.0.0.1:3000>, select a project, and switch between the One-time
+and Recurring task tabs. Choose a task to see its brief, dependencies, and
+execution history. Project decisions and all project sources appear below the
+task board; expand a source to read inline Markdown or external metadata.
+The dashboard polls for updates. It only reads records; create and update them
+through MCP. The listener binds to `127.0.0.1`; `--port 0` selects a free port
+and prints the URL to stderr.
 
 The committed frontend bundle is embedded in the binary. Normal builds and use
 need no Node.js, frontend server, external fonts, or remote services.

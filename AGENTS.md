@@ -8,7 +8,7 @@ Dictum is a local project-management MCP server for coding agents. Its goal is t
 
 The MVP uses Rust, `rmcp`, stdio, and one SQLite database containing multiple projects per server process. Multiple local clients must point to the same database to share project state. `DICTUM_DATABASE` selects its path; the default is `.dictum/dictum.sqlite3` relative to the process working directory. Stdout is reserved for MCP; diagnostics go to stderr.
 
-The binary also serves a read-only localhost dashboard, `dictum-mcp dashboard --port 3000`, as a sibling transport over the same Store and database. The React 19 + TanStack Query UI uses shadcn/ui-style components and Tailwind CSS v4. Its production assets are embedded in the binary; normal use needs no frontend dev server, CDN, external fonts, or remote services. The dashboard binds only `127.0.0.1`, exposes GET-only JSON reads, never mutates records or executes source actions, rejects foreign Host and Origin values, and serves a restrictive content policy. MCP and dashboard processes can run concurrently and restart independently.
+The binary also serves a read-only localhost dashboard, `dictum-mcp dashboard --port 3000`, as a sibling transport over the same Store and database. The React 19 + TanStack Query UI uses shadcn/ui-style components and Tailwind CSS v4. Accessible One-time and Recurring tabs keep tasks primary, and project Decisions and Sources follow the task board without requiring a task selection. Its production assets are embedded in the binary; normal use needs no frontend dev server, CDN, external fonts, or remote services. The dashboard binds only `127.0.0.1`, exposes GET-only JSON reads (projects, tasks, context, result pages, decisions, sources), never mutates records or executes source actions, rejects foreign Host and Origin values, and serves a restrictive content policy. MCP and dashboard processes can run concurrently and restart independently.
 
 `WORKFLOW.md` is the canonical, compact agent workflow (at most 2,000 characters). It is embedded in the binary and delivered through MCP server instructions, not a separate tool or required skill installation. Put task-authoring and authorization rules first. The human and agent coauthor the actual task content, not a separate approval brief; preserve agreed intent, constraints, required approach, and acceptance criteria. Once authorized, one coordinator can derive inspectable tasks, delegate bounded work, obtain separate reviews, and record evidence. These are agent guidance, not server-enforced approval or orchestration. Clients control instruction inclusion, retention, and subagent inheritance; actual CLI behavior needs separate validation.
 
@@ -65,7 +65,7 @@ This index describes files that currently exist. Update it as implementation fil
 | `.gitignore` | Excludes build output and local SQLite data files from version control. |
 | `src/main.rs` | Binary entry point: resolve the database path, launch the MCP stdio process, or serve the read-only localhost dashboard. |
 | `src/lib.rs` | Library module exports. |
-| `src/dashboard.rs` | Read-only HTTP adapter: loopback listener, Host/Origin checks, GET routes over Store reads, structured errors, security headers, and embedded frontend assets. |
+| `src/dashboard.rs` | Read-only HTTP adapter: loopback listener, Host/Origin checks, GET routes over Store reads (projects, tasks, context, results, decisions, sources), structured errors, security headers, and embedded frontend assets. |
 | `src/model.rs` | Typed MCP inputs/results, JSON schemas, and nullable-update semantics. |
 | `src/server.rs` | Server metadata and embedded workflow instructions; fifteen MCP tool handlers, descriptions, annotations, and structured results. |
 | `src/store.rs` | SQLite transactions, project isolation, validation, revisions, dependency gates, context assembly, freshness, and UUIDv7 generation. |
@@ -84,8 +84,11 @@ This index describes files that currently exist. Update it as implementation fil
 | `web/favicon.svg` | Embedded dashboard favicon. |
 | `web/src/main.tsx` | React entry point with `QueryClientProvider`. |
 | `web/src/App.tsx` | URL selection, project header, board queries, polling and detail-panel orchestration. |
-| `web/src/components/Board.tsx` | Lifecycle groups, status columns, counts, search state and accessible task cards. |
+| `web/src/components/Board.tsx` | One-time/Recurring tabs, selected-kind lifecycle groups, status columns, counts, search state and accessible task cards. |
 | `web/src/components/TaskDetail.tsx` | Full brief, dependencies, decisions, sources, outputs, bounded/live history and explicit source expansion; expanded outputs poll and retain cached documents with a retry notice on refresh failure. |
+| `web/src/components/ProjectSections.tsx` | Project-level Decisions and Sources sections below the task board: current decisions, all source descriptors including unlinked sources, explicit expansion, polling and stale/error states. |
+| `web/src/components/DecisionCard.tsx` | Shared decision statement, rationale, ID and creation time card. |
+| `web/src/components/SourceCard.tsx` | Shared expandable source card plus full inline/locator and action/snapshot rendering. |
 | `web/src/components/ProjectChooser.tsx` | Explicit project chooser that distinguishes duplicate names by full ID. |
 | `web/src/components/ui/button.tsx`, `card.tsx`, `badge.tsx`, `input.tsx` | shadcn/ui-style primitives used by the dashboard. |
 | `web/src/lib/api.ts`, `types.ts`, `format.ts`, `utils.ts` | Typed read API, TanStack Query keys, formatting helpers and class merging. |

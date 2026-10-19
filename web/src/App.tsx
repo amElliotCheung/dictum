@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, Search } from 'lucide-react';
 import { api, ApiError, queryKeys } from './lib/api';
 import { formatTime } from './lib/format';
+import type { TaskKind } from './lib/types';
 import { cn } from './lib/utils';
 import { Board } from './components/Board';
 import { ProjectChooser } from './components/ProjectChooser';
+import { ProjectSections } from './components/ProjectSections';
 import { TaskDetail } from './components/TaskDetail';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
@@ -76,6 +78,8 @@ export default function App() {
   const { projectId, taskId } = selection;
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
+  const [activeKind, setActiveKind] = useState<TaskKind>('one_time');
+  const syncedTaskId = useRef<number | null>(null);
 
   const projectsQuery = useQuery({
     queryKey: queryKeys.projects,
@@ -97,23 +101,28 @@ export default function App() {
 
   useEffect(() => {
     setSearch('');
+    setActiveKind('one_time');
+    syncedTaskId.current = null;
   }, [projectId]);
 
   const projects = projectsQuery.data?.projects ?? [];
   const project = projects.find((candidate) => candidate.id === projectId) ?? null;
   const tasks = tasksQuery.data?.tasks ?? [];
 
-  const filteredTasks = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) {
-      return tasks;
+  useEffect(() => {
+    if (taskId === null) {
+      syncedTaskId.current = null;
+      return;
     }
-    return tasks.filter(
-      (task) =>
-        String(task.id).includes(query) ||
-        task.title.toLowerCase().includes(query),
-    );
-  }, [tasks, search]);
+    if (syncedTaskId.current === taskId) {
+      return;
+    }
+    const selected = tasks.find((task) => task.id === taskId);
+    if (selected) {
+      setActiveKind(selected.kind);
+      syncedTaskId.current = taskId;
+    }
+  }, [taskId, tasks]);
 
   const refresh = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
@@ -303,15 +312,19 @@ export default function App() {
             />
           )
         ) : (
-          <Board
-            project={project}
-            tasks={filteredTasks}
-            totalTasks={tasks.length}
-            search={search}
-            selectedTaskId={taskId}
-            onSelectTask={openTask}
-            onClearSearch={() => setSearch('')}
-          />
+          <div className="space-y-10">
+            <Board
+              project={project}
+              tasks={tasks}
+              search={search}
+              activeKind={activeKind}
+              onKindChange={setActiveKind}
+              selectedTaskId={taskId}
+              onSelectTask={openTask}
+              onClearSearch={() => setSearch('')}
+            />
+            <ProjectSections projectId={projectId} />
+          </div>
         )}
       </main>
 

@@ -1,8 +1,14 @@
+import { useRef, type KeyboardEvent } from 'react';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { cn } from '../lib/utils';
 import { formatIds, statusLabels } from '../lib/format';
-import type { Project, TaskStatus, TaskSummary } from '../lib/types';
+import type {
+  Project,
+  TaskKind,
+  TaskStatus,
+  TaskSummary,
+} from '../lib/types';
 
 interface ColumnDefinition {
   status: TaskStatus;
@@ -48,29 +54,79 @@ const recurringColumns: ColumnDefinition[] = [
   },
 ];
 
+const tabs: { kind: TaskKind; label: string }[] = [
+  { kind: 'one_time', label: 'One-time' },
+  { kind: 'recurring', label: 'Recurring' },
+];
+
 export function Board({
   project,
   tasks,
-  totalTasks,
   search,
+  activeKind,
+  onKindChange,
   selectedTaskId,
   onSelectTask,
   onClearSearch,
 }: {
   project: Project | null;
   tasks: TaskSummary[];
-  totalTasks: number;
   search: string;
+  activeKind: TaskKind;
+  onKindChange: (kind: TaskKind) => void;
   selectedTaskId: number | null;
   onSelectTask: (taskId: number) => void;
   onClearSearch: () => void;
 }) {
+  const tabRefs = useRef<Record<TaskKind, HTMLButtonElement | null>>({
+    one_time: null,
+    recurring: null,
+  });
   const oneTime = tasks.filter((task) => task.kind === 'one_time');
   const recurring = tasks.filter((task) => task.kind === 'recurring');
+  const counts: Record<TaskKind, number> = {
+    one_time: oneTime.length,
+    recurring: recurring.length,
+  };
+  const kindTasks = activeKind === 'one_time' ? oneTime : recurring;
+  const columns = activeKind === 'one_time' ? oneTimeColumns : recurringColumns;
+  const kindLabel = activeKind === 'one_time' ? 'one-time' : 'recurring';
   const filtering = search.trim().length > 0;
+  const query = search.trim().toLowerCase();
+  const visible = query
+    ? kindTasks.filter(
+        (task) =>
+          String(task.id).includes(query) ||
+          task.title.toLowerCase().includes(query),
+      )
+    : kindTasks;
+
+  const onTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    kind: TaskKind,
+  ) => {
+    let next: TaskKind | null = null;
+    switch (event.key) {
+      case 'ArrowRight':
+      case 'ArrowLeft':
+        next = kind === 'one_time' ? 'recurring' : 'one_time';
+        break;
+      case 'Home':
+        next = 'one_time';
+        break;
+      case 'End':
+        next = 'recurring';
+        break;
+    }
+    if (next !== null) {
+      event.preventDefault();
+      onKindChange(next);
+      requestAnimationFrame(() => tabRefs.current[next]?.focus());
+    }
+  };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {project ? (
         <div>
           <h1 className="text-xl font-semibold tracking-tight">{project.name}</h1>
@@ -83,45 +139,94 @@ export function Board({
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm text-muted-foreground" aria-live="polite">
-          Showing <strong className="text-foreground">{tasks.length}</strong> of{' '}
-          <strong className="text-foreground">{totalTasks}</strong>{' '}
-          {totalTasks === 1 ? 'task' : 'tasks'}
-          {filtering ? ` matching “${search.trim()}”` : ''}.
-        </p>
-        {filtering ? (
-          <Button variant="outline" size="sm" onClick={onClearSearch}>
-            Clear search
-          </Button>
-        ) : null}
+      <div>
+        <div
+          role="tablist"
+          aria-label="Task kind"
+          className="inline-flex items-center gap-1 rounded-lg border bg-muted/50 p-1"
+        >
+          {tabs.map(({ kind, label }) => {
+            const selected = activeKind === kind;
+            return (
+              <button
+                key={kind}
+                ref={(element) => {
+                  tabRefs.current[kind] = element;
+                }}
+                type="button"
+                role="tab"
+                id={`${kind}-tab`}
+                aria-selected={selected}
+                aria-controls="task-panel"
+                tabIndex={selected ? 0 : -1}
+                onClick={() => onKindChange(kind)}
+                onKeyDown={(event) => onTabKeyDown(event, kind)}
+                className={cn(
+                  'inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  selected
+                    ? 'bg-card text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {label}
+                <span
+                  className={cn(
+                    'rounded-full px-1.5 py-0.5 text-[11px] tabular-nums',
+                    selected
+                      ? 'bg-muted text-foreground'
+                      : 'bg-card/70 text-muted-foreground',
+                  )}
+                >
+                  {counts[kind]}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div
+          className="space-y-3"
+          role="tabpanel"
+          id="task-panel"
+          aria-labelledby={`${activeKind}-tab`}
+        >
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-muted-foreground" aria-live="polite">
+              Showing{' '}
+              <strong className="text-foreground">{visible.length}</strong> of{' '}
+              <strong className="text-foreground">{kindTasks.length}</strong>{' '}
+              {kindLabel} {kindTasks.length === 1 ? 'task' : 'tasks'}
+              {filtering ? ` matching “${search.trim()}”` : ''}.
+            </p>
+            {filtering ? (
+              <Button variant="outline" size="sm" onClick={onClearSearch}>
+                Clear search
+              </Button>
+            ) : null}
+          </div>
+
+          {filtering && visible.length === 0 && kindTasks.length > 0 ? (
+            <p className="rounded-lg border border-dashed bg-card p-6 text-center text-sm text-muted-foreground">
+              No {kindLabel} tasks match “{search.trim()}”. Clear the search to
+              see all {kindTasks.length} {kindLabel} tasks.
+            </p>
+          ) : null}
+
+          <Lifecycle
+            id={activeKind}
+            title={activeKind === 'one_time' ? 'One-time tasks' : 'Recurring tasks'}
+            hint={
+              activeKind === 'one_time'
+                ? 'Todo, in progress, blocked and done are lifecycle states. Dependency readiness is shown separately on each card.'
+                : 'Active means eligible for externally authorized work. It is not a running agent or an installed schedule; recurring tasks never reach done.'
+            }
+            columns={columns}
+            tasks={visible}
+            selectedTaskId={selectedTaskId}
+            onSelectTask={onSelectTask}
+          />
+        </div>
       </div>
-
-      {filtering && tasks.length === 0 && totalTasks > 0 ? (
-        <p className="rounded-lg border border-dashed bg-card p-6 text-center text-sm text-muted-foreground">
-          No tasks match “{search.trim()}”. Clear the search to see all{' '}
-          {totalTasks} tasks.
-        </p>
-      ) : null}
-
-      <Lifecycle
-        id="one-time"
-        title="One-time tasks"
-        hint="Todo, in progress, blocked and done are lifecycle states. Dependency readiness is shown separately on each card."
-        columns={oneTimeColumns}
-        tasks={oneTime}
-        selectedTaskId={selectedTaskId}
-        onSelectTask={onSelectTask}
-      />
-      <Lifecycle
-        id="recurring"
-        title="Recurring tasks"
-        hint="Active means eligible for externally authorized work. It is not a running agent or an installed schedule; recurring tasks never reach done."
-        columns={recurringColumns}
-        tasks={recurring}
-        selectedTaskId={selectedTaskId}
-        onSelectTask={onSelectTask}
-      />
     </div>
   );
 }

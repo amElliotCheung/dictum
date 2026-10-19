@@ -1,6 +1,8 @@
 import type {
+  DecisionList,
   ProjectList,
   Source,
+  SourceList,
   TaskContext,
   TaskList,
   TaskResultList,
@@ -51,6 +53,12 @@ export const api = {
   tasks(projectId: string): Promise<TaskList> {
     return getJson<TaskList>(`${projectPath(projectId)}/tasks`);
   },
+  decisions(projectId: string): Promise<DecisionList> {
+    return getJson<DecisionList>(`${projectPath(projectId)}/decisions`);
+  },
+  sources(projectId: string): Promise<SourceList> {
+    return getJson<SourceList>(`${projectPath(projectId)}/sources`);
+  },
   context(projectId: string, taskId: number): Promise<TaskContext> {
     return getJson<TaskContext>(
       `${projectPath(projectId)}/tasks/${taskId}`,
@@ -82,6 +90,10 @@ export const queryKeys = {
     ['projects', projectId, 'tasks', taskId, 'context'] as const,
   results: (projectId: string, taskId: number) =>
     ['projects', projectId, 'tasks', taskId, 'results'] as const,
+  decisions: (projectId: string) =>
+    ['projects', projectId, 'decisions'] as const,
+  projectSources: (projectId: string) =>
+    ['projects', projectId, 'project-sources'] as const,
   source: (projectId: string, sourceId: number) =>
     ['projects', projectId, 'sources', sourceId] as const,
 };

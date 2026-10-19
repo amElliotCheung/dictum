@@ -149,6 +149,30 @@ async fn dispatch(store: &Store, request: &Request, port: u16) -> Response {
             })
             .await
         }
+        ["api", "projects", project_id, "decisions"] => {
+            let project_id = (*project_id).to_string();
+            api_response(store, move |store| {
+                Ok(DecisionList {
+                    decisions: store.list_decisions(ListDecisions {
+                        project_id,
+                        include_superseded: false,
+                    })?,
+                })
+            })
+            .await
+        }
+        ["api", "projects", project_id, "sources"] => {
+            let project_id = (*project_id).to_string();
+            api_response(store, move |store| {
+                Ok(SourceList {
+                    sources: store.list_sources(ListSources {
+                        project_id,
+                        ..ListSources::default()
+                    })?,
+                })
+            })
+            .await
+        }
         ["api", "projects", project_id, "tasks", task_id] => {
             let project_id = (*project_id).to_string();
             let task_id = match parse_id("task id", task_id) {

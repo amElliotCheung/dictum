@@ -104,6 +104,23 @@ export interface Source {
   updated_at: string;
 }
 
+export interface SourceDescriptor {
+  id: number;
+  project_id: string;
+  name: string;
+  description: string;
+  representation: 'inline' | 'external';
+  context_policy: ContextPolicy;
+  has_action: boolean;
+  action_due: boolean;
+  next_action_at: string | null;
+  revision: number;
+}
+
+export interface SourceList {
+  sources: SourceDescriptor[];
+}
+
 export interface Decision {
   id: number;
   project_id: string;
@@ -112,6 +129,10 @@ export interface Decision {
   supersedes_id: number | null;
   created_at: string;
   is_current: boolean;
+}
+
+export interface DecisionList {
+  decisions: Decision[];
 }
 
 export type Outcome = 'success' | 'no_change' | 'failure';

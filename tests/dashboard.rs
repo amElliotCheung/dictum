@@ -807,6 +807,216 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
 }
 
 #[test]
+fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = dashboard_database(&directory);
+    let client = Project::open(&database).unwrap();
+    let project_a = client.project_id.clone();
+
+    let inline = call(
+        &client,
+        "create_source",
+        json!({
+            "name": "Linked design note",
+            "description": "A context source attached to a task",
+            "content": "# Design\n\nKeep decisions and sources below the task board.",
+            "context_policy": "always"
+        }),
+    );
+    let external = call(
+        &client,
+        "create_source",
+        json!({
+            "name": "External specification",
+            "description": "An unlinked locator with a manual action",
+            "locator": "https://example.com/specification",
+            "action": {
+                "instruction": "Review the external specification.",
+                "trigger": {"kind": "manual"}
+            }
+        }),
+    );
+    create_task(
+        &client,
+        &project_a,
+        "Linked task",
+        "one_time",
+        json!({"context_source_ids": [inline["id"]]}),
+    );
+    let first_decision = call(
+        &client,
+        "record_decision",
+        json!({
+            "statement": "Keep tasks above project reference sections.",
+            "rationale": "Tasks are the dashboard's primary content."
+        }),
+    );
+    let current_decision = call(
+        &client,
+        "record_decision",
+        json!({
+            "statement": "Show decisions and sources below the task board.",
+            "rationale": "They remain available without opening a task.",
+            "supersedes_id": first_decision["id"]
+        }),
+    );
+
+    let other_project: Value = client
+        .raw_call(
+            "create_project",
+            json!({
+                "name": "Isolation project",
+                "description": "Records must not leak across project scopes"
+            }),
+        )
+        .unwrap();
+    let other_project = other_project["id"].as_str().unwrap().to_string();
+    let other_source: Value = client
+        .raw_call(
+            "create_source",
+            json!({
+                "project_id": other_project,
+                "name": "Other project source",
+                "description": "Belongs only to the isolation project",
+                "content": "Other project content"
+            }),
+        )
+        .unwrap();
+    let other_decision: Value = client
+        .raw_call(
+            "record_decision",
+            json!({
+                "project_id": other_project,
+                "statement": "Other project decision",
+                "rationale": "Belongs only to the isolation project"
+            }),
+        )
+        .unwrap();
+
+    let dashboard = Dashboard::start(&database, 0);
+    let decisions_path = format!("/api/projects/{project_a}/decisions");
+    let sources_path = format!("/api/projects/{project_a}/sources");
+
+    let decisions = dashboard.get(&decisions_path).json();
+    let decisions = decisions["decisions"].as_array().unwrap();
+    assert_eq!(decisions.len(), 1, "only current decisions are returned");
+    assert_eq!(decisions[0]["id"], current_decision["id"]);
+    assert_eq!(decisions[0]["supersedes_id"], first_decision["id"]);
+    assert_eq!(decisions[0]["is_current"], true);
+
+    let sources = dashboard.get(&sources_path).json();
+    let sources = sources["sources"].as_array().unwrap();
+    assert_eq!(
+        sources.len(),
+        2,
+        "linked and unlinked project sources are listed"
+    );
+    for source in sources {
+        assert!(
+            source.get("content").is_none() && source.get("locator").is_none(),
+            "descriptors stay compact"
+        );
+    }
+    let inline_descriptor = sources
+        .iter()
+        .find(|source| source["id"] == inline["id"])
+        .unwrap();
+    assert_eq!(inline_descriptor["representation"], "inline");
+    assert_eq!(inline_descriptor["context_policy"], "always");
+    assert_eq!(inline_descriptor["has_action"], false);
+    let external_descriptor = sources
+        .iter()
+        .find(|source| source["id"] == external["id"])
+        .unwrap();
+    assert_eq!(external_descriptor["representation"], "external");
+    assert_eq!(external_descriptor["context_policy"], "when_relevant");
+    assert_eq!(external_descriptor["has_action"], true);
+    assert_eq!(external_descriptor["action_due"], false);
+    assert!(external_descriptor["next_action_at"].is_null());
+
+    let other_decisions = dashboard
+        .get(&format!("/api/projects/{other_project}/decisions"))
+        .json();
+    let other_decisions = other_decisions["decisions"].as_array().unwrap();
+    assert_eq!(other_decisions.len(), 1);
+    assert_eq!(other_decisions[0]["id"], other_decision["id"]);
+    let other_sources = dashboard
+        .get(&format!("/api/projects/{other_project}/sources"))
+        .json();
+    let other_sources = other_sources["sources"].as_array().unwrap();
+    assert_eq!(other_sources.len(), 1);
+    assert_eq!(other_sources[0]["id"], other_source["id"]);
+    assert_eq!(
+        dashboard
+            .get("/api/projects/00000000-0000-7000-8000-000000000000/decisions")
+            .status,
+        404
+    );
+    assert_eq!(
+        dashboard
+            .get("/api/projects/00000000-0000-7000-8000-000000000000/sources")
+            .status,
+        404
+    );
+    assert_eq!(
+        dashboard.request("POST", &decisions_path, None, &[]).status,
+        405
+    );
+    assert_eq!(
+        dashboard.request("POST", &sources_path, None, &[]).status,
+        405
+    );
+
+    // Repeated reads do not advance decisions or source action state.
+    let decisions_before = call(
+        &client,
+        "list_decisions",
+        json!({"include_superseded": true}),
+    );
+    let sources_before = call(&client, "list_sources", json!({}));
+    for _ in 0..3 {
+        assert_eq!(dashboard.get(&decisions_path).status, 200);
+        assert_eq!(dashboard.get(&sources_path).status, 200);
+        assert_eq!(
+            dashboard
+                .get(&format!(
+                    "/api/projects/{project_a}/sources/{}",
+                    external["id"]
+                ))
+                .status,
+            200
+        );
+    }
+    let decisions_after = call(
+        &client,
+        "list_decisions",
+        json!({"include_superseded": true}),
+    );
+    let sources_after = call(&client, "list_sources", json!({}));
+    assert_eq!(decisions_before, decisions_after);
+    assert_eq!(sources_before, sources_after);
+
+    let port = dashboard.port;
+    drop(dashboard);
+    wait_for_port_free(port);
+    let restarted = Dashboard::start(&database, port);
+    assert_eq!(
+        restarted.get(&decisions_path).json()["decisions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        restarted.get(&sources_path).json()["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn dashboard_rejects_invalid_cli_ports_and_reports_usage() {
     let directory = tempfile::tempdir().unwrap();
     let database = dashboard_database(&directory);
