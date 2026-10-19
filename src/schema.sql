@@ -83,6 +83,7 @@ CREATE TABLE task_results (
     task_revision INTEGER NOT NULL CHECK (task_revision > 1),
     UNIQUE (project_id, id),
     UNIQUE (task_id, task_revision),
+    UNIQUE (project_id, task_id, id),
     FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id)
 );
 
@@ -95,11 +96,36 @@ CREATE TABLE task_result_sources (
     PRIMARY KEY (result_id, source_id)
 );
 
+CREATE TABLE task_feedback (
+    id INTEGER PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    task_id INTEGER NOT NULL,
+    result_id INTEGER NOT NULL,
+    disposition TEXT NOT NULL CHECK (disposition IN ('comment', 'changes_requested')),
+    body TEXT NOT NULL CHECK (length(trim(body)) > 0 AND length(body) <= 4000),
+    recorded_at TEXT NOT NULL,
+    task_revision INTEGER NOT NULL CHECK (task_revision > 1),
+    UNIQUE (project_id, task_id, id),
+    UNIQUE (task_id, task_revision),
+    FOREIGN KEY (project_id, task_id, result_id) REFERENCES task_results(project_id, task_id, id)
+);
+
+CREATE TABLE task_feedback_addresses (
+    project_id TEXT NOT NULL,
+    task_id INTEGER NOT NULL,
+    feedback_id INTEGER PRIMARY KEY,
+    result_id INTEGER NOT NULL,
+    FOREIGN KEY (project_id, task_id, feedback_id) REFERENCES task_feedback(project_id, task_id, id),
+    FOREIGN KEY (project_id, task_id, result_id) REFERENCES task_results(project_id, task_id, id)
+);
+
 CREATE INDEX tasks_status ON tasks(project_id, status);
 CREATE INDEX tasks_kind ON tasks(project_id, kind);
 CREATE INDEX task_results_task ON task_results(project_id, task_id, id);
 CREATE INDEX task_results_success ON task_results(project_id, task_id, id) WHERE outcome IN ('success', 'no_change');
 CREATE INDEX task_result_sources_source ON task_result_sources(source_id);
+CREATE INDEX task_feedback_result ON task_feedback(project_id, task_id, result_id, id);
+CREATE INDEX task_feedback_addresses_result ON task_feedback_addresses(project_id, task_id, result_id);
 CREATE INDEX task_context_sources_source ON task_context_sources(source_id);
 CREATE INDEX task_dependencies_target ON task_dependencies(depends_on_task_id);
 

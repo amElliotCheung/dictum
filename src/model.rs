@@ -216,6 +216,50 @@ pub struct TaskContext {
     pub latest_result: Option<TaskResult>,
     /// Success and no_change count as successful. Older entries require list_task_results.
     pub latest_successful_result: Option<TaskResult>,
+    /// Unaddressed feedback and its original result, including results outside bounded history.
+    pub outstanding_feedback: Vec<TaskFeedbackContext>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackDisposition {
+    #[default]
+    Comment,
+    ChangesRequested,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TaskFeedback {
+    pub id: i64,
+    pub project_id: String,
+    pub task_id: i64,
+    pub result_id: i64,
+    pub disposition: FeedbackDisposition,
+    /// Review explanation in Markdown, not another execution report.
+    pub body: String,
+    pub recorded_at: String,
+    pub task_revision: i64,
+    /// A later successful execution reports addressing this feedback; not human acceptance.
+    pub addressed_by_result_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TaskFeedbackContext {
+    pub feedback: TaskFeedback,
+    pub result: TaskResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordTaskFeedback {
+    pub project_id: String,
+    pub task_id: i64,
+    pub result_id: i64,
+    pub expected_revision: i64,
+    #[serde(default)]
+    pub disposition: FeedbackDisposition,
+    /// Nonblank explanation, at most 4,000 characters.
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -228,6 +272,10 @@ pub struct TaskResult {
     pub evidence: String,
     /// Source identities retained for this entry; mutable source contents are not snapshots.
     pub output_source_ids: Vec<i64>,
+    /// Append-only reviews of this result, with derived addressing links.
+    pub feedback: Vec<TaskFeedback>,
+    /// Feedback this execution explicitly reports addressing.
+    pub addressed_feedback_ids: Vec<i64>,
     /// Server-assigned UTC recording time, not an independently observed execution time.
     pub recorded_at: String,
     /// Task revision produced atomically by appending this entry.
@@ -245,6 +293,9 @@ pub struct RecordTaskResult {
     pub evidence: String,
     #[serde(default)]
     pub output_source_ids: Vec<i64>,
+    /// Outstanding feedback on this task addressed by this success/no_change execution.
+    #[serde(default)]
+    pub addressed_feedback_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -807,6 +807,251 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
 }
 
 #[test]
+fn dashboard_result_feedback_survives_history_changes_and_explicit_resolution() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = dashboard_database(&directory);
+    let client = Project::open(&database).unwrap();
+    let project_id = client.project_id.clone();
+    let foreign_project = call(
+        &client,
+        "create_project",
+        json!({"name": "Other project", "description": "Feedback must stay project scoped."}),
+    );
+    let output = call(
+        &client,
+        "create_source",
+        json!({
+            "name": "Original implementation",
+            "description": "The output rejected by its reviewer.",
+            "content": "# Original output\n\nThe implementation omits restart persistence."
+        }),
+    );
+    let task = create_task(
+        &client,
+        &project_id,
+        "Review and revise implementation",
+        "one_time",
+        json!({}),
+    );
+    let original = call(
+        &client,
+        "record_task_result",
+        json!({
+            "task_id": task["id"],
+            "expected_revision": task["revision"],
+            "outcome": "success",
+            "evidence": "The original implementation passed its initial checks.",
+            "output_source_ids": [output["id"]]
+        }),
+    );
+    let subsequent = call(
+        &client,
+        "record_task_result",
+        json!({
+            "task_id": task["id"],
+            "expected_revision": original["task_revision"],
+            "outcome": "success",
+            "evidence": "A later run also reported success before human review."
+        }),
+    );
+    let mut done = task.clone();
+    done["revision"] = subsequent["task_revision"].clone();
+    let done = update_task(&client, &done, json!({"status": "done"}));
+
+    let dashboard = Dashboard::start(&database, 0);
+    let context_path = format!("/api/projects/{project_id}/tasks/{}", task["id"]);
+    let results_path = format!("{context_path}/results");
+    let before_review = dashboard.get(&context_path).json();
+    assert_eq!(before_review["task"]["status"], "done");
+    assert_eq!(before_review["outstanding_feedback"], json!([]));
+
+    // The existing dashboard process sees feedback written by a concurrent MCP client.
+    let feedback = call(
+        &client,
+        "record_task_feedback",
+        json!({
+            "task_id": task["id"],
+            "result_id": original["id"],
+            "expected_revision": done["revision"],
+            "disposition": "changes_requested",
+            "body": "## Changes required\n\nThe output loses state after restart. Persist the result and verify a fresh process can read it."
+        }),
+    );
+    let reviewed = dashboard.get(&context_path).json();
+    assert_eq!(reviewed["task"]["status"], "todo");
+    assert_eq!(reviewed["task"]["revision"], feedback["task_revision"]);
+    assert_eq!(reviewed["outstanding_feedback"][0]["feedback"], feedback);
+    assert_eq!(
+        reviewed["outstanding_feedback"][0]["result"]["id"],
+        original["id"]
+    );
+    assert_eq!(
+        reviewed["outstanding_feedback"][0]["result"]["output_source_ids"],
+        json!([output["id"]])
+    );
+    assert_eq!(feedback["project_id"], project_id);
+    assert_eq!(feedback["task_id"], task["id"]);
+    assert!(
+        feedback["recorded_at"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(feedback["addressed_by_result_id"].is_null());
+
+    let revised = update_task(
+        &client,
+        &reviewed["task"],
+        json!({"design": "Persist outputs and verify them after restarting the process."}),
+    );
+    let mut revision = revised["revision"].clone();
+    let mut newest_failure_id = Value::Null;
+    for index in 0..21 {
+        let failure = call(
+            &client,
+            "record_task_result",
+            json!({
+                "task_id": task["id"],
+                "expected_revision": revision,
+                "outcome": "failure",
+                "evidence": format!("Revision attempt {index}: restart persistence still fails.")
+            }),
+        );
+        revision = failure["task_revision"].clone();
+        newest_failure_id = failure["id"].clone();
+    }
+    let outstanding = dashboard.get(&context_path).json();
+    assert_eq!(outstanding["task"]["design"], revised["design"]);
+    assert_eq!(outstanding["latest_result"]["id"], newest_failure_id);
+    assert_eq!(
+        outstanding["latest_successful_result"]["id"],
+        subsequent["id"]
+    );
+    assert_eq!(
+        outstanding["outstanding_feedback"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(outstanding["outstanding_feedback"][0]["feedback"], feedback);
+    assert_eq!(
+        outstanding["outstanding_feedback"][0]["result"]["evidence"],
+        original["evidence"]
+    );
+    let first_page = dashboard.get(&results_path).json();
+    assert_eq!(first_page["results"].as_array().unwrap().len(), 20);
+    assert!(
+        first_page["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|result| result["id"] != original["id"])
+    );
+    let older_path = format!(
+        "{results_path}?before_id={}",
+        first_page["next_before_id"].as_i64().unwrap()
+    );
+    let older = dashboard.get(&older_path).json();
+    let original_with_feedback = older["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|result| result["id"] == original["id"])
+        .unwrap();
+    assert_eq!(original_with_feedback["feedback"], json!([feedback]));
+
+    let foreign_context = format!(
+        "/api/projects/{}/tasks/{}",
+        foreign_project["id"].as_str().unwrap(),
+        task["id"]
+    );
+    assert_eq!(dashboard.get(&foreign_context).status, 404);
+    assert_eq!(
+        dashboard.get(&format!("{foreign_context}/results")).status,
+        404
+    );
+    let state_before_reads = call(&client, "get_task_context", json!({"task_id": task["id"]}));
+    let history_before_reads = call(
+        &client,
+        "list_task_results",
+        json!({"task_id": task["id"], "page_size": 100}),
+    );
+    for _ in 0..3 {
+        assert_eq!(dashboard.get(&context_path).json(), outstanding);
+        assert_eq!(dashboard.get(&older_path).json(), older);
+        assert_eq!(
+            dashboard.request("POST", &context_path, None, &[]).status,
+            405
+        );
+        assert_eq!(
+            dashboard.request("POST", &results_path, None, &[]).status,
+            405
+        );
+    }
+    assert_eq!(
+        call(&client, "get_task_context", json!({"task_id": task["id"]})),
+        state_before_reads
+    );
+    assert_eq!(
+        call(
+            &client,
+            "list_task_results",
+            json!({"task_id": task["id"], "page_size": 100})
+        ),
+        history_before_reads
+    );
+
+    // Only the explicitly identified successful follow-up resolves the request.
+    let addressed = call(
+        &client,
+        "record_task_result",
+        json!({
+            "task_id": task["id"],
+            "expected_revision": revision,
+            "outcome": "success",
+            "evidence": "Restarted both processes and verified the stored output persists.",
+            "addressed_feedback_ids": [feedback["id"]]
+        }),
+    );
+    let resolved = dashboard.get(&context_path).json();
+    assert_eq!(resolved["outstanding_feedback"], json!([]));
+    assert_eq!(resolved["latest_result"]["id"], addressed["id"]);
+    assert_eq!(
+        resolved["latest_result"]["addressed_feedback_ids"],
+        json!([feedback["id"]])
+    );
+    assert_eq!(resolved["task"]["status"], "todo");
+    let resolved_history = dashboard.get(&older_path).json();
+    let resolved_original = resolved_history["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|result| result["id"] == original["id"])
+        .unwrap();
+    assert_eq!(
+        resolved_original["feedback"][0]["addressed_by_result_id"],
+        addressed["id"]
+    );
+
+    drop(client);
+    let port = dashboard.port;
+    drop(dashboard);
+    wait_for_port_free(port);
+    let restarted_client = Project::open(&database).unwrap();
+    let restarted = Dashboard::start(&database, port);
+    assert_eq!(restarted.get(&context_path).json(), resolved);
+    assert_eq!(restarted.get(&older_path).json(), resolved_history);
+    assert_eq!(
+        call(
+            &restarted_client,
+            "get_task_context",
+            json!({"project_id": project_id, "task_id": task["id"]})
+        ),
+        resolved
+    );
+}
+
+#[test]
 fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() {
     let directory = tempfile::tempdir().unwrap();
     let database = dashboard_database(&directory);

@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 const APPLICATION_ID: i64 = 0x4449_4354; // DICT
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -38,7 +38,7 @@ pub enum StoreError {
         actual: i64,
     },
     #[error(
-        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 5 only; preserve the existing file"
+        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 6 only; preserve the existing file"
     )]
     UnsupportedSchema { version: i64, application_id: i64 },
 }
@@ -290,6 +290,15 @@ impl Store {
         let current_decisions = decisions(&transaction, project_id, false)?;
         let latest_result = latest_task_result(&transaction, project_id, task_id, false)?;
         let latest_successful_result = latest_task_result(&transaction, project_id, task_id, true)?;
+        let outstanding_feedback = task_feedback(&transaction, project_id, task_id, None)?
+            .into_iter()
+            .filter(|feedback| feedback.addressed_by_result_id.is_none())
+            .map(|feedback| {
+                let result =
+                    task_result_by_id(&transaction, project_id, task_id, feedback.result_id)?;
+                Ok(TaskFeedbackContext { feedback, result })
+            })
+            .collect::<StoreResult<Vec<_>>>()?;
         let result = TaskContext {
             task,
             dependency_state,
@@ -297,6 +306,7 @@ impl Store {
             sources,
             latest_result,
             latest_successful_result,
+            outstanding_feedback,
         };
         transaction.commit()?;
         Ok(result)
@@ -376,6 +386,18 @@ impl Store {
             ));
         }
         if task.status == TaskStatus::Done {
+            let outstanding_changes =
+                task_feedback(&transaction, &input.project_id, task.id, None)?
+                    .into_iter()
+                    .any(|feedback| {
+                        feedback.disposition == FeedbackDisposition::ChangesRequested
+                            && feedback.addressed_by_result_id.is_none()
+                    });
+            if outstanding_changes {
+                return invalid(
+                    "cannot finish task with outstanding changes_requested feedback; record a successful execution explicitly addressing it",
+                );
+            }
             let has_success: bool = transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM task_results WHERE project_id=?1 AND task_id=?2 AND outcome IN ('success', 'no_change'))",
                 params![input.project_id, task.id],
@@ -416,6 +438,19 @@ impl Store {
         ensure_project(&transaction, &input.project_id)?;
         let task = task_by_id(&transaction, &input.project_id, input.task_id)?;
         check_revision("task", task.id, input.expected_revision, task.revision)?;
+        let addressed_ids: BTreeSet<_> = input.addressed_feedback_ids.into_iter().collect();
+        if input.outcome == ActionOutcome::Failure && !addressed_ids.is_empty() {
+            return invalid(
+                "failure results cannot address feedback; report a success or no_change execution",
+            );
+        }
+        for &feedback_id in &addressed_ids {
+            let feedback =
+                task_feedback_by_id(&transaction, &input.project_id, task.id, feedback_id)?;
+            if feedback.addressed_by_result_id.is_some() {
+                return invalid(format!("feedback {feedback_id} has already been addressed"));
+            }
+        }
         for &id in &input.output_source_ids {
             ensure_exists(&transaction, &input.project_id, "source", id)?;
         }
@@ -436,6 +471,12 @@ impl Store {
             params![input.project_id, task.id, outcome_name(input.outcome), input.evidence, now, task.revision + 1],
         )?;
         let id = transaction.last_insert_rowid();
+        for feedback_id in addressed_ids {
+            transaction.execute(
+                "INSERT INTO task_feedback_addresses (project_id, task_id, feedback_id, result_id) VALUES (?1, ?2, ?3, ?4)",
+                params![input.project_id, task.id, feedback_id, id],
+            )?;
+        }
         for source_id in input.output_source_ids.into_iter().collect::<BTreeSet<_>>() {
             transaction.execute(
                 "INSERT INTO task_result_sources (project_id, result_id, source_id) VALUES (?1, ?2, ?3)",
@@ -449,6 +490,43 @@ impl Store {
         let result = task_result_by_id(&transaction, &input.project_id, task.id, id)?;
         transaction.commit()?;
         Ok(result)
+    }
+
+    pub fn record_task_feedback(&self, input: RecordTaskFeedback) -> StoreResult<TaskFeedback> {
+        required(&input.body, "body")?;
+        if input.body.chars().count() > 4_000 {
+            return invalid("feedback body must not exceed 4,000 characters");
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_project(&transaction, &input.project_id)?;
+        let task = task_by_id(&transaction, &input.project_id, input.task_id)?;
+        check_revision("task", task.id, input.expected_revision, task.revision)?;
+        task_result_by_id(&transaction, &input.project_id, task.id, input.result_id)?;
+        let now = timestamp(Utc::now());
+        transaction.execute(
+            "INSERT INTO task_feedback (project_id, task_id, result_id, disposition, body, recorded_at, task_revision) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![input.project_id, task.id, input.result_id,
+                match input.disposition {
+                    FeedbackDisposition::Comment => "comment",
+                    FeedbackDisposition::ChangesRequested => "changes_requested",
+                }, input.body, now, task.revision + 1],
+        )?;
+        let id = transaction.last_insert_rowid();
+        let status = if input.disposition == FeedbackDisposition::ChangesRequested
+            && task.status == TaskStatus::Done
+        {
+            TaskStatus::Todo
+        } else {
+            task.status
+        };
+        transaction.execute(
+            "UPDATE tasks SET status=?1, revision=revision+1, updated_at=?2 WHERE id=?3 AND project_id=?4",
+            params![status_name(status), now, task.id, input.project_id],
+        )?;
+        let feedback = task_feedback_by_id(&transaction, &input.project_id, task.id, id)?;
+        transaction.commit()?;
+        Ok(feedback)
     }
 
     pub fn list_task_results(&self, input: ListTaskResults) -> StoreResult<TaskResultList> {
@@ -1049,6 +1127,8 @@ fn task_result_by_id(
                     outcome: enum_column(row, "outcome")?,
                     evidence: row.get("evidence")?,
                     output_source_ids: vec![],
+                    feedback: vec![],
+                    addressed_feedback_ids: vec![],
                     recorded_at: row.get("recorded_at")?,
                     task_revision: row.get("task_revision")?,
                 })
@@ -1063,7 +1143,56 @@ fn task_result_by_id(
     result.output_source_ids = statement
         .query_map(params![id, project_id], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    result.feedback = task_feedback(connection, project_id, task_id, Some(id))?;
+    let mut statement = connection.prepare("SELECT feedback_id FROM task_feedback_addresses WHERE project_id=?1 AND task_id=?2 AND result_id=?3 ORDER BY feedback_id")?;
+    result.addressed_feedback_ids = statement
+        .query_map(params![project_id, task_id, id], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(result)
+}
+
+fn task_feedback(
+    connection: &Connection,
+    project_id: &str,
+    task_id: i64,
+    result_id: Option<i64>,
+) -> StoreResult<Vec<TaskFeedback>> {
+    let mut statement = connection.prepare(
+        "SELECT f.*, a.result_id AS addressed_by_result_id FROM task_feedback f
+         LEFT JOIN task_feedback_addresses a ON a.feedback_id=f.id AND a.project_id=f.project_id AND a.task_id=f.task_id
+         WHERE f.project_id=?1 AND f.task_id=?2 AND (?3 IS NULL OR f.result_id=?3) ORDER BY f.id",
+    )?;
+    Ok(statement
+        .query_map(params![project_id, task_id, result_id], map_task_feedback)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn task_feedback_by_id(
+    connection: &Connection,
+    project_id: &str,
+    task_id: i64,
+    id: i64,
+) -> StoreResult<TaskFeedback> {
+    connection.query_row(
+        "SELECT f.*, a.result_id AS addressed_by_result_id FROM task_feedback f
+         LEFT JOIN task_feedback_addresses a ON a.feedback_id=f.id AND a.project_id=f.project_id AND a.task_id=f.task_id
+         WHERE f.project_id=?1 AND f.task_id=?2 AND f.id=?3",
+        params![project_id, task_id, id], map_task_feedback,
+    ).optional()?.ok_or(StoreError::NotFound { entity: "task feedback", id })
+}
+
+fn map_task_feedback(row: &Row<'_>) -> rusqlite::Result<TaskFeedback> {
+    Ok(TaskFeedback {
+        id: row.get("id")?,
+        project_id: row.get("project_id")?,
+        task_id: row.get("task_id")?,
+        result_id: row.get("result_id")?,
+        disposition: enum_column(row, "disposition")?,
+        body: row.get("body")?,
+        recorded_at: row.get("recorded_at")?,
+        task_revision: row.get("task_revision")?,
+        addressed_by_result_id: row.get("addressed_by_result_id")?,
+    })
 }
 
 fn latest_task_result(

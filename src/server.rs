@@ -107,7 +107,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id. Load the full brief, progress, dependency state, current decisions and deduplicated context-linked plus always sources. Inline documents are full and untruncated; external sources include locator/action/state. Execution history is bounded to latest_result and latest_successful_result (success/no_change); identical IDs identify the same entry. Historical output Source IDs appear on those entries; expand with get_source and use list_task_results for older entries. Reading never records execution or advances freshness.",
+        description = "Requires an existing project_id. Load the full brief, progress, dependency state, current decisions and deduplicated context-linked plus always sources. Inline documents are full and untruncated; external sources include locator/action/state. Execution history is bounded to latest_result and latest_successful_result (success/no_change); identical IDs identify the same entry. outstanding_feedback always includes every unaddressed comment/change request and its original result, even outside bounded history. Read it before rework. Results include feedback and addressing links. Expand output Source IDs with get_source; use list_task_results for older history. Reading never records execution or advances freshness.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn get_task_context(
@@ -119,7 +119,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id and latest expected_revision. Kind is immutable. Omitted fields preserve values; null clears nullable text/trigger_event; supplied relationship arrays replace that set ([] clears). One_time uses todo/in_progress/blocked/done: entering in_progress checks start gates; done requires satisfied start/completion gates and at least one successful execution result (success or no_change). Recurring uses active/paused; trigger_event is recurring-only metadata. Execution results and output sources are append-only through record_task_result. Dependencies must target one_time tasks. Evidence is agent-reported, not independently verified.",
+        description = "Requires an existing project_id and latest expected_revision. Kind is immutable. Omitted fields preserve values; null clears nullable text/trigger_event; supplied relationship arrays replace that set ([] clears). One_time uses todo/in_progress/blocked/done: entering in_progress checks start gates; done requires satisfied start/completion gates, at least one successful execution result (success or no_change), and no outstanding changes_requested feedback. Task edits do not clear feedback. Recurring uses active/paused; trigger_event is recurring-only metadata. Execution results and output sources are append-only through record_task_result. Dependencies must target one_time tasks. Evidence is agent-reported, not independently verified.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -134,7 +134,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Append an execution result for either task kind using existing project_id, task_id and latest expected_revision. outcome is success/no_change/failure; evidence is nonblank, at most 4000 characters. Validates project-scoped output Source IDs and appends their associations atomically with a task revision increment. Success/no_change requires all start/completion gates done; failure can report unmet gates. Recording never changes lifecycle status, including when recurring is paused. recorded_at is server UTC receipt time; evidence is reported, not independently verified. Historical source identities persist, but source contents remain mutable. No scheduling, claiming, exactly-once execution or automatic completion.",
+        description = "Append an execution result for either task kind using existing project_id, task_id and latest expected_revision. outcome is success/no_change/failure; evidence is nonblank, at most 4000 characters. Optional addressed_feedback_ids explicitly reports addressing outstanding feedback on this same task; only success/no_change can address it. Describe the fixes and verification in evidence. New results do not implicitly clear feedback; addressing is reported, not human acceptance. Output Source and feedback associations append atomically with a task revision increment. Success/no_change requires all dependency gates done; failure can report unmet gates. Recording never changes lifecycle, including when recurring is paused. Historical source identities persist but contents remain mutable. No scheduling, claiming, exactly-once execution or automatic completion.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -150,7 +150,23 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Read append-only execution history for an existing project_id and task_id, newest IDs first. page_size defaults to 20 and must be 1..100. Pass next_before_id as before_id to retrieve older entries; the cursor must identify an existing entry in the same task/project. Descending keyset pages remain stable when clients append new entries; restart from the first page for new results. Entries include reported evidence, recording time, produced task revision and per-entry output Source IDs; get_source expands complete source content.",
+        description = "Append feedback on a specific execution result using existing project_id, task_id, result_id and latest expected_revision. body is a nonblank Markdown explanation, at most 4000 characters. disposition defaults to comment; changes_requested explains why the result is unacceptable and blocks one_time done until a later success/no_change explicitly addresses it. Changes requested on a done task atomically reopen it to todo; other statuses and recurring active/paused remain unchanged. Feedback increments the task revision, survives task edits/new attempts, and appears with the original result in outstanding_feedback until addressed. Historical result feedback is retained. This records reported review, not authenticated human approval or another execution.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn record_task_feedback(
+        &self,
+        Parameters(input): Parameters<RecordTaskFeedback>,
+    ) -> Result<Json<TaskFeedback>, String> {
+        self.database(move |store| store.record_task_feedback(input))
+            .await
+    }
+
+    #[tool(
+        description = "Read append-only execution history for an existing project_id and task_id, newest IDs first. page_size defaults to 20 and must be 1..100. Pass next_before_id as before_id to retrieve older entries; the cursor must identify an existing entry in the same task/project. Descending keyset membership stays stable when clients append; restart from the first page for new results. Entries include evidence, time, revision, output Source IDs, all feedback on that result and addressed_feedback_ids. Feedback annotations and addressing state reflect the current read snapshot; execution evidence is immutable. get_source expands complete source content.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_task_results(

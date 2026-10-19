@@ -119,6 +119,7 @@ async fn workflow(discover: bool) -> Result<()> {
             "list_tasks",
             "record_decision",
             "record_source_action",
+            "record_task_feedback",
             "record_task_result",
             "update_source",
             "update_task",

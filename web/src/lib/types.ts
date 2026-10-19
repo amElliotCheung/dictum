@@ -137,6 +137,18 @@ export interface DecisionList {
 
 export type Outcome = 'success' | 'no_change' | 'failure';
 
+export interface TaskFeedback {
+  id: number;
+  project_id: string;
+  task_id: number;
+  result_id: number;
+  disposition: 'comment' | 'changes_requested';
+  body: string;
+  recorded_at: string;
+  task_revision: number;
+  addressed_by_result_id: number | null;
+}
+
 export interface TaskResult {
   id: number;
   project_id: string;
@@ -146,6 +158,8 @@ export interface TaskResult {
   output_source_ids: number[];
   recorded_at: string;
   task_revision: number;
+  feedback: TaskFeedback[];
+  addressed_feedback_ids: number[];
 }
 
 export interface TaskResultList {
@@ -160,4 +174,5 @@ export interface TaskContext {
   sources: Source[];
   latest_result: TaskResult | null;
   latest_successful_result: TaskResult | null;
+  outstanding_feedback: { feedback: TaskFeedback; result: TaskResult }[];
 }

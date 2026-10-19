@@ -14,6 +14,7 @@ import {
 } from '../lib/format';
 import type {
   TaskContext,
+  TaskFeedback,
   TaskResult,
   TaskResultList,
   TaskStatus,
@@ -94,11 +95,21 @@ export function TaskDetail({
   const notFound =
     contextError instanceof ApiError && contextError.status === 404;
   const boundedResults: TaskResult[] = context
-    ? [context.latest_result, context.latest_successful_result].filter(
+    ? [
+        ...context.outstanding_feedback.map(({ result }) => result),
+        context.latest_result,
+        context.latest_successful_result,
+      ].filter(
         (result): result is TaskResult => result !== null,
       )
     : [];
   const history = mergeResults(boundedResults, resultsQuery.data?.pages);
+
+  useEffect(() => {
+    if (historyRequested && context?.task.revision !== undefined) {
+      void resultsQuery.refetch();
+    }
+  }, [context?.task.revision, historyRequested, resultsQuery.refetch]);
 
   const historyState: HistoryState = {
     requested: historyRequested,
@@ -221,6 +232,15 @@ function DetailBody({
   onOpenTask: (taskId: number) => void;
 }) {
   const { task, dependency_state } = context;
+  const outstandingIds = new Set(
+    context.outstanding_feedback.map(({ feedback }) => feedback.id),
+  );
+  const addressedByResult = new Map<number, number>();
+  for (const result of history) {
+    for (const feedbackId of result.addressed_feedback_ids) {
+      addressedByResult.set(feedbackId, result.id);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -234,6 +254,13 @@ function DetailBody({
         <Meta label="Created">{formatDate(task.created_at)}</Meta>
         <Meta label="Updated">{formatDate(task.updated_at)}</Meta>
       </dl>
+
+      {context.outstanding_feedback.length > 0 ? (
+        <OutstandingFeedback
+          projectId={projectId}
+          entries={context.outstanding_feedback}
+        />
+      ) : null}
 
       {task.kind === 'recurring' ? (
         <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-900">
@@ -362,7 +389,8 @@ function DetailBody({
       >
         <p className="mb-3 text-xs text-muted-foreground">
           Starts with the bounded latest and latest-successful entries. Older
-          pages use the same keyset pagination as MCP. Evidence is
+          results with outstanding feedback remain included. Older pages use
+          the same keyset pagination as MCP. Evidence is
           agent-reported; recorded_at is server receipt time. Recording a result
           never changes lifecycle.
         </p>
@@ -377,6 +405,9 @@ function DetailBody({
                 key={result.id}
                 result={result}
                 projectId={projectId}
+                outstandingIds={outstandingIds}
+                contextRevision={task.revision}
+                addressedByResult={addressedByResult}
               />
             ))}
           </div>
@@ -532,9 +563,17 @@ function DependencyGroup({
 function ResultCard({
   result,
   projectId,
+  showFeedback = true,
+  outstandingIds,
+  contextRevision,
+  addressedByResult,
 }: {
   result: TaskResult;
   projectId: string;
+  showFeedback?: boolean;
+  outstandingIds?: ReadonlySet<number>;
+  contextRevision?: number;
+  addressedByResult?: ReadonlyMap<number, number>;
 }) {
   const outcomeClass =
     result.outcome === 'success'
@@ -558,6 +597,12 @@ function ResultCard({
       <div className="mt-2">
         <Markdown text={result.evidence} />
       </div>
+      {result.addressed_feedback_ids.length > 0 ? (
+        <p className="mt-2 text-xs text-emerald-800">
+          Addresses feedback{' '}
+          {result.addressed_feedback_ids.map((id) => `#${id}`).join(', ')}.
+        </p>
+      ) : null}
       {result.output_source_ids.length > 0 ? (
         <div className="mt-3 space-y-2">
           {result.output_source_ids.map((sourceId) => (
@@ -570,11 +615,159 @@ function ResultCard({
           ))}
         </div>
       ) : null}
+      {showFeedback && result.feedback.length > 0 ? (
+        <div className="mt-4 space-y-2 border-t pt-3">
+          <h4 className="text-xs font-semibold">Feedback on this result</h4>
+          {result.feedback
+            .filter((feedback) => !outstandingIds?.has(feedback.id))
+            .map((feedback) => {
+              const resolutionId =
+                feedback.addressed_by_result_id ??
+                addressedByResult?.get(feedback.id) ??
+                null;
+              const outstanding =
+                resolutionId === null &&
+                (outstandingIds === undefined ||
+                  feedback.task_revision > (contextRevision ?? 0) ||
+                  outstandingIds.has(feedback.id));
+              return (
+                <FeedbackCard
+                  key={feedback.id}
+                  feedback={feedback}
+                  outstanding={outstanding}
+                  resolutionId={resolutionId}
+                />
+              );
+            })}
+          {result.feedback.some((feedback) =>
+            outstandingIds?.has(feedback.id),
+          ) ? (
+            <p className="text-xs text-muted-foreground">
+              Outstanding feedback on this result is shown above.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <p className="mt-2 text-[11px] text-muted-foreground">
         Agent-reported evidence; recorded_at is the server receipt time, not
         independently observed execution time.
       </p>
     </Card>
+  );
+}
+
+function OutstandingFeedback({
+  projectId,
+  entries,
+}: {
+  projectId: string;
+  entries: TaskContext['outstanding_feedback'];
+}) {
+  const byResult = new Map<
+    number,
+    { result: TaskResult; feedback: TaskFeedback[] }
+  >();
+  for (const entry of entries) {
+    const group = byResult.get(entry.result.id);
+    if (group) {
+      group.feedback.push(entry.feedback);
+    } else {
+      byResult.set(entry.result.id, {
+        result: entry.result,
+        feedback: [entry.feedback],
+      });
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-amber-300 bg-amber-50/50 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-amber-950">
+          Outstanding feedback
+        </h3>
+        <Badge variant="outline" className="border-amber-300 text-amber-900">
+          {entries.length} unaddressed
+        </Badge>
+      </div>
+      <p className="mb-3 mt-1 text-xs text-amber-950">
+        These comments remain in task context until a later result explicitly
+        addresses them. Execution success does not mean the result was accepted.
+      </p>
+      <div className="space-y-4">
+        {[...byResult.values()].map(({ result, feedback }) => (
+          <div key={result.id} className="space-y-2">
+            <h4 className="text-xs font-semibold">On result #{result.id}</h4>
+            {feedback.map((entry) => (
+              <FeedbackCard
+                key={entry.id}
+                feedback={entry}
+                outstanding
+                resolutionId={null}
+              />
+            ))}
+            <details className="rounded-lg border bg-card">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
+                Original result #{result.id}: evidence and outputs
+              </summary>
+              <div className="border-t p-2">
+                <ResultCard
+                  result={result}
+                  projectId={projectId}
+                  showFeedback={false}
+                />
+              </div>
+            </details>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function FeedbackCard({
+  feedback,
+  outstanding,
+  resolutionId,
+}: {
+  feedback: TaskFeedback;
+  outstanding: boolean;
+  resolutionId: number | null;
+}) {
+  const changesRequested = feedback.disposition === 'changes_requested';
+  return (
+    <div className="rounded-lg border bg-card p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge
+          variant="outline"
+          className={
+            changesRequested
+              ? 'border-rose-300 bg-rose-50 text-rose-800'
+              : 'border-sky-300 bg-sky-50 text-sky-800'
+          }
+        >
+          {changesRequested ? 'Changes requested' : 'Comment'}
+        </Badge>
+        <Badge
+          variant="outline"
+          className={
+            outstanding
+              ? 'border-amber-300 bg-amber-50 text-amber-900'
+              : 'border-emerald-300 bg-emerald-50 text-emerald-800'
+          }
+        >
+          {outstanding
+            ? 'Unaddressed'
+            : resolutionId !== null
+              ? `Addressed by result #${resolutionId}`
+              : 'Addressed · refreshing history'}
+        </Badge>
+      </div>
+      <p className="mb-2 mt-2 text-[11px] text-muted-foreground">
+        Feedback #{feedback.id} · recorded {formatDate(feedback.recorded_at)} ·
+        task revision {feedback.task_revision}
+      </p>
+      <Markdown text={feedback.body} />
+    </div>
   );
 }
 

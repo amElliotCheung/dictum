@@ -89,10 +89,41 @@ tool arguments, not shell commands. Substitute the IDs returned by earlier calls
 Task creation records the brief; execution still needs authorization from the
 human. Execution evidence and output Source links are appended with
 `record_task_result`. A one-time task can be marked `done` only after all
-dependency gates are satisfied and at least one successful result exists.
+dependency gates are satisfied, at least one successful result exists, and no
+outstanding change requests remain.
 Mutable task and source updates require the latest `expected_revision`. See
-[AGENTS.md](AGENTS.md) for all fifteen tools and their contracts, and
+[AGENTS.md](AGENTS.md) for all sixteen tools and their contracts, and
 [WORKFLOW.md](WORKFLOW.md) for the embedded agent workflow.
+
+## Review a result and request rework
+
+Call `record_task_feedback` with the current task revision and the specific result
+being reviewed:
+
+```json
+{
+  "project_id": "PROJECT_ID",
+  "task_id": 1,
+  "result_id": 2,
+  "expected_revision": 4,
+  "disposition": "changes_requested",
+  "body": "The greeting disappears on mobile. Keep it visible at 320px and verify that layout."
+}
+```
+
+Omit `disposition` for a nonblocking `comment`. Feedback is append-only and stays
+attached to its original result. A change request reopens a completed one-time
+task to `todo`; recurring tasks retain their active/paused status. Edit the brief
+separately with `update_task` if the agreed requirements change.
+
+The next agent receives every outstanding feedback entry and its original result
+in `get_task_context.outstanding_feedback`, even after task edits or newer attempts.
+After performing the rework, append a `success` or `no_change` execution with
+`addressed_feedback_ids: [FEEDBACK_ID]` and evidence describing the fix and checks.
+This records reported remediation, not human acceptance. New attempts never
+implicitly clear feedback; failures cannot address it. Result history retains the
+review and the addressing result ID. The dashboard displays this same feedback
+and history; writes remain MCP-only.
 
 ## Open the dashboard
 
@@ -105,8 +136,8 @@ DICTUM_DATABASE=/absolute/path/to/shared/dictum.sqlite3 \
 
 Open <http://127.0.0.1:3000>, select a project, and switch between the One-time
 and Recurring task tabs. Choose a task to see its brief, dependencies, and
-execution history. Project decisions and all project sources appear below the
-task board; expand a source to read inline Markdown or external metadata.
+execution history, including outstanding feedback and reported fixes. Project
+decisions and all project sources appear below the task board; expand a source to read inline Markdown or external metadata.
 The dashboard polls for updates. It only reads records; create and update them
 through MCP. The listener binds to `127.0.0.1`; `--port 0` selects a free port
 and prints the URL to stderr.
@@ -134,7 +165,7 @@ npm ci
 npm run build
 ```
 
-Only the current schema (v5) is supported. Startup rejects older databases
+Only the current schema (v6) is supported. Startup rejects older databases
 without modifying them; preserve the file and start a new database.
 
 ## License
