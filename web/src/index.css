@@ -1,0 +1,129 @@
+@import "tailwindcss" source(none);
+
+/* Deterministic content sources: never scan the generated bundle. */
+@source "../index.html";
+@source "./**/*.{ts,tsx}";
+
+@theme {
+  --color-background: #f6f7fb;
+  --color-foreground: #202534;
+  --color-card: #ffffff;
+  --color-card-foreground: #202534;
+  --color-muted: #f0f2f7;
+  --color-muted-foreground: #6b7280;
+  --color-border: #e2e6ef;
+  --color-input: #d5dbe8;
+  --color-primary: #4f46e5;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #eef2ff;
+  --color-secondary-foreground: #3730a3;
+  --color-accent: #f2f4f9;
+  --color-accent-foreground: #1f2937;
+  --color-destructive: #dc2626;
+  --color-destructive-foreground: #ffffff;
+  --color-ring: #6366f1;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: #c7d2fe;
+  }
+}
+
+@layer components {
+  .markdown {
+    @apply text-sm leading-6 text-foreground;
+  }
+
+  .markdown > * + * {
+    @apply mt-3;
+  }
+
+  .markdown h1 {
+    @apply text-xl font-semibold tracking-tight;
+  }
+
+  .markdown h2 {
+    @apply text-lg font-semibold tracking-tight;
+  }
+
+  .markdown h3 {
+    @apply text-base font-semibold;
+  }
+
+  .markdown h4,
+  .markdown h5,
+  .markdown h6 {
+    @apply text-sm font-semibold;
+  }
+
+  .markdown p {
+    @apply text-sm leading-6;
+  }
+
+  .markdown ul {
+    @apply list-disc space-y-1 pl-5;
+  }
+
+  .markdown ol {
+    @apply list-decimal space-y-1 pl-5;
+  }
+
+  .markdown li > p {
+    @apply my-0;
+  }
+
+  .markdown blockquote {
+    @apply border-l-2 border-border pl-3 text-muted-foreground;
+  }
+
+  .markdown code {
+    @apply rounded bg-muted px-1 py-0.5 font-mono text-[0.85em];
+  }
+
+  .markdown pre {
+    @apply overflow-x-auto rounded-lg bg-slate-950 p-3 text-xs leading-5 text-slate-100;
+  }
+
+  .markdown pre code {
+    @apply bg-transparent p-0 text-inherit;
+  }
+
+  .markdown a {
+    @apply font-medium text-primary underline underline-offset-2 hover:text-primary/80;
+  }
+
+  .markdown hr {
+    @apply border-border;
+  }
+}

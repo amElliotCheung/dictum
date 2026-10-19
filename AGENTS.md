@@ -8,6 +8,8 @@ Dictum is a local project-management MCP server for coding agents. Its goal is t
 
 The MVP uses Rust, `rmcp`, stdio, and one SQLite database containing multiple projects per server process. Multiple local clients must point to the same database to share project state. `DICTUM_DATABASE` selects its path; the default is `.dictum/dictum.sqlite3` relative to the process working directory. Stdout is reserved for MCP; diagnostics go to stderr.
 
+The binary also serves a read-only localhost dashboard, `dictum-mcp dashboard --port 3000`, as a sibling transport over the same Store and database. The React 19 + TanStack Query UI uses shadcn/ui-style components and Tailwind CSS v4. Its production assets are embedded in the binary; normal use needs no frontend dev server, CDN, external fonts, or remote services. The dashboard binds only `127.0.0.1`, exposes GET-only JSON reads, never mutates records or executes source actions, rejects foreign Host and Origin values, and serves a restrictive content policy. MCP and dashboard processes can run concurrently and restart independently.
+
 `WORKFLOW.md` is the canonical, compact agent workflow (at most 2,000 characters). It is embedded in the binary and delivered through MCP server instructions, not a separate tool or required skill installation. Put task-authoring and authorization rules first. The human and agent coauthor the actual task content, not a separate approval brief; preserve agreed intent, constraints, required approach, and acceptance criteria. Once authorized, one coordinator can derive inspectable tasks, delegate bounded work, obtain separate reviews, and record evidence. These are agent guidance, not server-enforced approval or orchestration. Clients control instruction inclusion, retention, and subagent inheritance; actual CLI behavior needs separate validation.
 
 The model has eight tables: `projects`, `tasks`, `sources`, `decisions`, `task_sources`, `task_dependencies`, `task_results`, and `task_result_sources`.
@@ -59,8 +61,9 @@ This index describes files that currently exist. Update it as implementation fil
 | `Cargo.toml` | Rust package, library/binary targets, dependencies, and development dependencies. |
 | `Cargo.lock` | Locked dependency versions for reproducible builds. |
 | `.gitignore` | Excludes build output and local SQLite data files from version control. |
-| `src/main.rs` | Binary entry point: resolve the database path, run explicit migration CLI commands, or launch the MCP stdio process. |
+| `src/main.rs` | Binary entry point: resolve the database path, run explicit migration CLI commands, launch the MCP stdio process, or serve the read-only localhost dashboard. |
 | `src/lib.rs` | Library module exports. |
+| `src/dashboard.rs` | Read-only HTTP adapter: loopback listener, Host/Origin checks, GET routes over Store reads, structured errors, security headers, and embedded frontend assets. |
 | `src/migration.rs` | Explicit read-only v2/v3 import into a checked, new v4 database without replacing either file. |
 | `src/model.rs` | Typed MCP inputs/results, JSON schemas, and nullable-update semantics. |
 | `src/server.rs` | Server metadata and embedded workflow instructions; fifteen MCP tool handlers, descriptions, annotations, and structured results. |
@@ -71,12 +74,29 @@ This index describes files that currently exist. Update it as implementation fil
 | `tests/multi_project.rs` | Real-process discovery, UUIDv7 persistence, mandatory project scopes, isolation, interleaved clients, and database constraint checks. |
 | `tests/migration.rs` | Real CLI migration, full legacy value preservation, restart, unsupported-input protection, and recoverable failure tests. |
 | `tests/recurring_tasks.rs` | Real MCP recurring lifecycle, append-only history, bounded context, pagination, revision, scope and dependency scenarios. |
+| `tests/dashboard.rs` | Real-process dashboard scenarios: statuses, project isolation, URL/API semantics, pagination, read-without-mutation, concurrent MCP writes, Host/Origin policy, listener lifecycle and restart persistence. |
 | `tests/fixtures/schema_v2.sql` | Frozen supported single-project schema for legacy migration fixtures. |
 | `tests/fixtures/schema_v3.sql` | Frozen supported multi-project schema for explicit v3 upgrade fixtures. |
 | `tests/support/mod.rs` | Test client that launches the real binary and invokes tools over MCP stdio. |
+| `web/package.json` | React 19, TanStack Query, shadcn/ui-style component dependencies, and Vite build scripts. |
+| `web/package-lock.json` | Locked frontend dependency graph for reproducible builds. |
+| `web/vite.config.ts` | Production build that emits one embedded `app.js` and `app.css` bundle. |
+| `web/tsconfig.json` | Strict TypeScript configuration for the frontend and Vite build. |
+| `web/index.html` | Dashboard HTML shell with same-origin asset references and an inline-script-free policy surface. |
+| `web/favicon.svg` | Embedded dashboard favicon. |
+| `web/src/main.tsx` | React entry point with `QueryClientProvider`. |
+| `web/src/App.tsx` | URL selection, project header, board queries, polling and detail-panel orchestration. |
+| `web/src/components/Board.tsx` | Lifecycle groups, status columns, counts, search state and accessible task cards. |
+| `web/src/components/TaskDetail.tsx` | Full brief, dependencies, decisions, sources, outputs, bounded/live history and explicit source expansion; expanded outputs poll and retain cached documents with a retry notice on refresh failure. |
+| `web/src/components/ProjectChooser.tsx` | Explicit project chooser that distinguishes duplicate names by full ID. |
+| `web/src/components/ui/button.tsx`, `card.tsx`, `badge.tsx`, `input.tsx` | shadcn/ui-style primitives used by the dashboard. |
+| `web/src/lib/api.ts`, `types.ts`, `format.ts`, `utils.ts` | Typed read API, TanStack Query keys, formatting helpers and class merging. |
+| `web/src/lib/markdown.tsx` | Safe Markdown-to-React renderer: escaped text, http(s)-only links, no raw HTML or image fetching. |
+| `web/src/index.css` | Tailwind CSS v4 theme, base styles and Markdown presentation. |
+| `web/dist/app.js`, `web/dist/app.css` | Committed production bundle embedded into the Rust binary at compile time. |
 
-Build with `cargo build --locked`; launch `target/debug/dictum-mcp` through an MCP client with `DICTUM_DATABASE` set to an absolute shared path. Verify with `cargo fmt --check`, `cargo test --locked`, and `cargo clippy --locked --all-targets -- -D warnings`. Startup rejects older schemas without modifying them. Explicit v3 upgrade: `dictum-mcp migrate --source OLD --destination NEW` (no naming flags). Direct v2 import: add `--name NAME --description DESC` to create one UUIDv7 project. Both require a new destination, preserve all old IDs, values, revisions, timestamps, source state and relationships, and leave the source unchanged. V3 preserves project UUIDs/metadata. Existing tasks become one_time; legacy result text is retained without fabricated history. Unsupported prototypes remain rejected; preserve them and choose a new path.
+Build with `cargo build --locked`; launch `target/debug/dictum-mcp` through an MCP client with `DICTUM_DATABASE` set to an absolute shared path. Launch the dashboard with `DICTUM_DATABASE=/abs/path target/debug/dictum-mcp dashboard --port 3000` (port `0` selects a free port); it reports the actual URL and database path on stderr. The committed `web/dist` bundle lets `cargo build --locked` work without Node; after changing frontend sources, run `(cd web && npm ci && npm run build)` and commit the refreshed bundle. Verify with `cargo fmt --check`, `cargo test --locked`, and `cargo clippy --locked --all-targets -- -D warnings`. Startup rejects older schemas without modifying them. Explicit v3 upgrade: `dictum-mcp migrate --source OLD --destination NEW` (no naming flags). Direct v2 import: add `--name NAME --description DESC` to create one UUIDv7 project. Both require a new destination, preserve all old IDs, values, revisions, timestamps, source state and relationships, and leave the source unchanged. V3 preserves project UUIDs/metadata. Existing tasks become one_time; legacy result text is retained without fabricated history. Unsupported prototypes remain rejected; preserve them and choose a new path.
 
 ## 4. Rules
 
-- End-to-end tests only. No unit tests. Exercise the real server process through MCP stdio, including its SQLite persistence; do not test internal functions or the store API directly. Database setup/inspection is allowed for test fixtures and persistence assertions.
+- End-to-end tests only. No unit tests. Exercise the real processes through MCP stdio and, for dashboard changes, the real HTTP listener against the same SQLite database, including persistence; do not test internal functions or the store API directly. Database setup/inspection is allowed for test fixtures and persistence assertions. UI behavior needs a real browser check in addition to HTTP assertions.
