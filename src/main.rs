@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
 }
 
 fn run_command(arguments: Vec<OsString>) -> Result<()> {
-    const USAGE: &str = "Usage: dictum-mcp\n       dictum-mcp migrate --source OLD --destination NEW --name NAME --description DESCRIPTION\n\nWith no arguments, serve MCP over stdio using DICTUM_DATABASE.\nMigration copies a supported single-project database into a new shared database; it never replaces either file.";
+    const USAGE: &str = "Usage: dictum-mcp\n       dictum-mcp migrate --source OLD --destination NEW [--name NAME --description DESCRIPTION]\n\nWith no arguments, serve MCP over stdio using DICTUM_DATABASE.\nMigration copies a supported v2 or v3 database into a new v4 database; it never replaces either file.\nVersion 2 requires --name and --description for its new project. Version 3 preserves every project and rejects those options.";
     if arguments.len() == 1 && matches!(arguments[0].to_str(), Some("--help" | "-h")) {
         println!("{USAGE}");
         return Ok(());
@@ -94,8 +94,8 @@ fn run_command(arguments: Vec<OsString>) -> Result<()> {
     let report = migrate(MigrationOptions {
         source: source.context("migration requires --source")?,
         destination: destination.context("migration requires --destination")?,
-        name: name.context("migration requires --name")?,
-        description: description.context("migration requires --description")?,
+        name,
+        description,
     })?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())

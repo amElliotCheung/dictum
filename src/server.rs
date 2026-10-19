@@ -76,7 +76,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Create a self-contained execution brief with goal/problem, design, and a nonempty acceptance-criteria list. Optionally link context sources and tasks that must finish before starting or before completing. All links are created atomically. This registers work; it does not launch an agent.",
+        description = "Requires an existing project_id; links stay within the project. Create a self-contained brief and context links atomically. Immutable kind defaults to one_time with status todo; recurring uses the same brief and task ID across executions and defaults to active. Optional nonblank trigger_event is recurring-only external-event metadata, not a schedule, subscription or authorization. Dependencies must target one_time tasks. This registers work; it does not launch an agent.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -91,7 +91,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Discover compact task briefs by status, readiness, or text query. Results include unmet start and completion dependencies. Ready means todo with all before-start dependencies done; completion gates do not block starting.",
+        description = "Requires an existing project_id. Discover compact task briefs by kind, status, readiness, exact trigger_event label, or text query. Results include unmet dependencies. ready_to_start means one_time todo with all before-start dependencies done; completion gates do not block starting. Recurring tasks are never ready_to_start: discover explicitly with kind=recurring and status=active. Active is eligibility metadata, not a run in progress, installed schedule or authorization.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_tasks(
@@ -107,7 +107,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Load the full task brief, progress, agent-reported result, dependency state, current decisions, and deduplicated context-linked plus always sources. Inline documents are returned in full. External sources include locator, action, snapshot, latest attempt, and due state. Output links are separate. Reading never advances freshness. A fresh summary may still require targeted external reading.",
+        description = "Requires an existing project_id. Load the full brief, progress, reported legacy result, dependency state, current decisions and deduplicated context-linked plus always sources. Inline documents are full and untruncated; external sources include locator/action/state. History is bounded to latest_result and latest_successful_result (success/no_change); identical IDs identify the same entry. Historical outputs appear only as IDs on those entries; expand with get_source and use list_task_results for older entries. One-time current output descriptors remain separate. Reading never records execution or advances freshness.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn get_task_context(
@@ -119,7 +119,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Update a task using expected_revision from its latest read. Omitted fields preserve values; null clears nullable text. Supplied relationship arrays replace that set ([] clears). Entering in_progress checks start gates; done requires satisfied start/completion gates and nonblank result evidence. Evidence is reported by the agent, not verified by this server. Tasks never complete automatically.",
+        description = "Requires an existing project_id and latest expected_revision. Kind is immutable. Omitted fields preserve values; null clears nullable text/trigger_event; supplied relationship arrays replace that set ([] clears). One_time uses todo/in_progress/blocked/done: entering in_progress checks start gates, done requires satisfied start/completion gates and nonblank legacy result evidence. Recurring uses active/paused; trigger_event is recurring-only metadata. Recurring result and output_source_ids updates are rejected, including clearing: append with record_task_result. Dependencies must target one_time tasks. Evidence is agent-reported, not independently verified.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -131,6 +131,34 @@ impl DictumServer {
         Parameters(input): Parameters<UpdateTask>,
     ) -> Result<Json<Task>, String> {
         self.database(move |store| store.update_task(input)).await
+    }
+
+    #[tool(
+        description = "Append an execution result for either task kind using existing project_id, task_id and latest expected_revision. outcome is success/no_change/failure; evidence is nonblank, at most 4000 characters. Validates project-scoped output Source IDs and appends their associations atomically with a task revision increment. Success/no_change requires all start/completion gates done; failure can report unmet gates. Recording never changes status, legacy result or current outputs, including when recurring is paused. recorded_at is server UTC receipt time; evidence is reported, not independently verified. Historical source identities persist, but source contents remain mutable. No scheduling, claiming, exactly-once execution or automatic completion.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn record_task_result(
+        &self,
+        Parameters(input): Parameters<RecordTaskResult>,
+    ) -> Result<Json<TaskResult>, String> {
+        self.database(move |store| store.record_task_result(input))
+            .await
+    }
+
+    #[tool(
+        description = "Read append-only execution history for an existing project_id and task_id, newest IDs first. page_size defaults to 20 and must be 1..100. Pass next_before_id as before_id to retrieve older entries; the cursor must identify an existing entry in the same task/project. Descending keyset pages remain stable when clients append new entries; restart from the first page for new results. Entries include reported evidence, recording time, produced task revision and per-entry output Source IDs; get_source expands complete source content.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn list_task_results(
+        &self,
+        Parameters(input): Parameters<ListTaskResults>,
+    ) -> Result<Json<TaskResultList>, String> {
+        self.database(move |store| store.list_task_results(input))
+            .await
     }
 
     #[tool(

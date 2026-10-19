@@ -115,9 +115,11 @@ async fn workflow(discover: bool) -> Result<()> {
             "list_decisions",
             "list_projects",
             "list_sources",
+            "list_task_results",
             "list_tasks",
             "record_decision",
             "record_source_action",
+            "record_task_result",
             "update_source",
             "update_task",
         ]
@@ -162,6 +164,82 @@ async fn workflow(discover: bool) -> Result<()> {
             .to_string()
             .contains("null")
     );
+    let create_task_schema = &tools
+        .iter()
+        .find(|tool| tool.name == "create_task")
+        .unwrap()
+        .input_schema;
+    assert!(
+        !create_task_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("kind"))
+    );
+    assert!(create_task_schema["properties"].get("kind").is_some());
+    assert!(
+        create_task_schema["properties"]
+            .get("trigger_event")
+            .is_some()
+    );
+    let task_update_schema = &tools
+        .iter()
+        .find(|tool| tool.name == "update_task")
+        .unwrap()
+        .input_schema;
+    assert!(task_update_schema["properties"].get("kind").is_none());
+    assert!(
+        task_update_schema["properties"]["trigger_event"]
+            .to_string()
+            .contains("null")
+    );
+    let result_schema = &tools
+        .iter()
+        .find(|tool| tool.name == "record_task_result")
+        .unwrap()
+        .input_schema;
+    for field in [
+        "project_id",
+        "task_id",
+        "expected_revision",
+        "outcome",
+        "evidence",
+    ] {
+        assert!(
+            result_schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(field))
+        );
+    }
+    assert!(
+        !result_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("output_source_ids"))
+    );
+    for field in ["id", "recorded_at", "task_revision"] {
+        assert!(result_schema["properties"].get(field).is_none());
+    }
+    let history_schema = &tools
+        .iter()
+        .find(|tool| tool.name == "list_task_results")
+        .unwrap()
+        .input_schema;
+    assert!(
+        history_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("task_id"))
+    );
+    for field in ["page_size", "before_id"] {
+        assert!(history_schema["properties"].get(field).is_some());
+        assert!(
+            !history_schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(field))
+        );
+    }
 
     assert_eq!(
         call(&client, "list_projects", json!({})).await?["projects"],

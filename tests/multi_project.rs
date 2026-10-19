@@ -32,29 +32,29 @@ fn project(client: &Project, name: &str, description: &str) -> String {
 
 fn snapshot(database: &std::path::Path) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
     let connection = rusqlite::Connection::open(database).unwrap();
-    [
-        "projects",
-        "tasks",
-        "sources",
-        "decisions",
-        "task_sources",
-        "task_dependencies",
-    ]
-    .iter()
-    .map(|table| {
-        let mut statement = connection
-            .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
-            .unwrap();
-        let columns = statement.column_count();
-        statement
-            .query_map([], |row| {
-                (0..columns).map(|column| row.get(column)).collect()
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap()
-    })
-    .collect()
+    let tables = connection
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    tables
+        .iter()
+        .map(|table| {
+            let mut statement = connection
+                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                .unwrap();
+            let columns = statement.column_count();
+            statement
+                .query_map([], |row| {
+                    (0..columns).map(|column| row.get(column)).collect()
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        })
+        .collect()
 }
 
 fn rejected_without_mutation(
@@ -150,6 +150,11 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
         ("create_task", brief()),
         ("list_tasks", json!({})),
         ("get_task_context", json!({"task_id": task["id"]})),
+        ("list_task_results", json!({"task_id": task["id"]})),
+        (
+            "record_task_result",
+            json!({"task_id": task["id"], "expected_revision": task["revision"], "outcome": "success", "evidence": "Should never be saved"}),
+        ),
         (
             "update_task",
             json!({"task_id": task["id"], "expected_revision": task["revision"], "title": "Should never be saved"}),
@@ -191,6 +196,11 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
     }
     for (name, mut input) in [
         ("get_task_context", json!({"task_id": 999_999})),
+        ("list_task_results", json!({"task_id": 999_999})),
+        (
+            "record_task_result",
+            json!({"task_id": 999_999, "expected_revision": 1, "outcome": "success", "evidence": "Unknown task"}),
+        ),
         (
             "update_task",
             json!({"task_id": 999_999, "expected_revision": 1, "title": "Unknown task"}),
@@ -286,6 +296,11 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
     ] {
         for (name, mut input) in [
             ("get_task_context", json!({"task_id": foreign_task["id"]})),
+            ("list_task_results", json!({"task_id": foreign_task["id"]})),
+            (
+                "record_task_result",
+                json!({"task_id": foreign_task["id"], "expected_revision": foreign_task["revision"], "outcome": "failure", "evidence": "Foreign report"}),
+            ),
             (
                 "update_task",
                 json!({"task_id": foreign_task["id"], "expected_revision": foreign_task["revision"], "title": "Foreign edit"}),

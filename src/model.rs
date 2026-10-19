@@ -1,5 +1,5 @@
 //! Public MCP inputs and results. Timestamps are RFC 3339 UTC. Project IDs are UUIDv7;
-//! task, source, and decision IDs are local to a database and require an explicit project scope.
+//! task, execution-result, source, and decision IDs are local to a database and require an explicit project scope.
 
 use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -48,6 +48,16 @@ pub enum TaskStatus {
     InProgress,
     Blocked,
     Done,
+    Active,
+    Paused,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    #[default]
+    OneTime,
+    Recurring,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -144,6 +154,9 @@ pub struct SourceDescriptor {
 pub struct Task {
     pub id: i64,
     pub project_id: String,
+    pub kind: TaskKind,
+    /// External event label only; not a subscription, schedule, wakeup or authorization.
+    pub trigger_event: Option<String>,
     pub title: String,
     pub problem_or_goal: String,
     pub design: String,
@@ -174,6 +187,8 @@ pub struct DependencyState {
 pub struct TaskSummary {
     pub id: i64,
     pub project_id: String,
+    pub kind: TaskKind,
+    pub trigger_event: Option<String>,
     pub title: String,
     pub status: TaskStatus,
     pub progress: Option<String>,
@@ -202,6 +217,58 @@ pub struct TaskContext {
     pub sources: Vec<Source>,
     /// Output-role descriptors; expand with get_source if needed, not automatic inputs.
     pub outputs: Vec<SourceDescriptor>,
+    /// At most the latest entry and latest successful entry; matching IDs identify the same entry.
+    pub latest_result: Option<TaskResult>,
+    /// Success and no_change count as successful. Older entries require list_task_results.
+    pub latest_successful_result: Option<TaskResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TaskResult {
+    pub id: i64,
+    pub project_id: String,
+    pub task_id: i64,
+    pub outcome: ActionOutcome,
+    /// Agent-reported result, error and verification evidence; not independently verified.
+    pub evidence: String,
+    /// Source identities retained for this entry; mutable source contents are not snapshots.
+    pub output_source_ids: Vec<i64>,
+    /// Server-assigned UTC recording time, not an independently observed execution time.
+    pub recorded_at: String,
+    /// Task revision produced atomically by appending this entry.
+    pub task_revision: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordTaskResult {
+    pub project_id: String,
+    pub task_id: i64,
+    pub expected_revision: i64,
+    pub outcome: ActionOutcome,
+    /// Nonblank concise evidence, at most 4,000 characters; use output Sources for long documents.
+    pub evidence: String,
+    #[serde(default)]
+    pub output_source_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListTaskResults {
+    pub project_id: String,
+    pub task_id: i64,
+    /// Default 20; must be between 1 and 100.
+    pub page_size: Option<i64>,
+    /// Return entries older than this entry ID, which must belong to this task/project.
+    pub before_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TaskResultList {
+    /// Newest IDs first. Later appends do not change subsequent pages.
+    pub results: Vec<TaskResult>,
+    /// Pass as before_id for the next page; absent when no older entries remain.
+    pub next_before_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -209,6 +276,11 @@ pub struct TaskContext {
 pub struct CreateTask {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: String,
+    /// Immutable after creation. Defaults to one_time (todo); recurring defaults to active.
+    #[serde(default)]
+    pub kind: TaskKind,
+    /// Optional nonblank external event label, only for recurring tasks.
+    pub trigger_event: Option<String>,
     pub title: String,
     pub problem_or_goal: String,
     pub design: String,
@@ -228,6 +300,9 @@ pub struct CreateTask {
 pub struct ListTasks {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: String,
+    pub kind: Option<TaskKind>,
+    /// Exact external event label match.
+    pub trigger_event: Option<String>,
     pub status: Option<TaskStatus>,
     pub ready_to_start: Option<bool>,
     pub query: Option<String>,
@@ -248,6 +323,13 @@ pub struct UpdateTask {
     pub project_id: String,
     pub task_id: i64,
     pub expected_revision: i64,
+    /// Recurring only. Omitted: preserve. Null: clear. Nonblank string: replace.
+    #[serde(
+        default,
+        deserialize_with = "nullable_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub trigger_event: Option<Option<String>>,
     pub title: Option<String>,
     pub problem_or_goal: Option<String>,
     pub design: Option<String>,
@@ -273,7 +355,14 @@ pub struct UpdateTask {
     )]
     pub result: Option<Option<String>>,
     pub context_source_ids: Option<Vec<i64>>,
-    pub output_source_ids: Option<Vec<i64>>,
+    /// One-time compatibility: omitted/null preserves; array replaces ([] clears).
+    /// Recurring tasks reject this field whenever supplied, including null.
+    #[serde(
+        default,
+        deserialize_with = "nullable_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub output_source_ids: Option<Option<Vec<i64>>>,
     pub prerequisite_task_ids: Option<Vec<i64>>,
     pub completion_task_ids: Option<Vec<i64>>,
 }

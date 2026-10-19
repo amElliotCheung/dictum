@@ -8,14 +8,16 @@ CREATE TABLE projects (
 CREATE TABLE tasks (
     id INTEGER PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
+    kind TEXT NOT NULL DEFAULT 'one_time' CHECK (kind IN ('one_time', 'recurring')),
+    trigger_event TEXT CHECK (trigger_event IS NULL OR (kind = 'recurring' AND length(trim(trigger_event)) > 0)),
     title TEXT NOT NULL CHECK (length(trim(title)) > 0),
     problem_or_goal TEXT NOT NULL CHECK (length(trim(problem_or_goal)) > 0),
     design TEXT NOT NULL CHECK (length(trim(design)) > 0),
     acceptance_criteria TEXT NOT NULL CHECK (json_valid(acceptance_criteria)),
     alternatives_rejected TEXT,
-    status TEXT NOT NULL CHECK (status IN ('todo', 'in_progress', 'blocked', 'done')),
+    status TEXT NOT NULL CHECK ((kind = 'one_time' AND status IN ('todo', 'in_progress', 'blocked', 'done')) OR (kind = 'recurring' AND status IN ('active', 'paused'))),
     progress TEXT,
-    result TEXT,
+    result TEXT CHECK (kind = 'one_time' OR result IS NULL),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -73,7 +75,33 @@ CREATE TABLE task_dependencies (
     CHECK (task_id != depends_on_task_id)
 );
 
+CREATE TABLE task_results (
+    id INTEGER PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    task_id INTEGER NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'no_change', 'failure')),
+    evidence TEXT NOT NULL CHECK (length(trim(evidence)) > 0 AND length(evidence) <= 4000),
+    recorded_at TEXT NOT NULL,
+    task_revision INTEGER NOT NULL CHECK (task_revision > 1),
+    UNIQUE (project_id, id),
+    UNIQUE (task_id, task_revision),
+    FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id)
+);
+
+CREATE TABLE task_result_sources (
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    result_id INTEGER NOT NULL,
+    source_id INTEGER NOT NULL,
+    FOREIGN KEY (project_id, result_id) REFERENCES task_results(project_id, id),
+    FOREIGN KEY (project_id, source_id) REFERENCES sources(project_id, id),
+    PRIMARY KEY (result_id, source_id)
+);
+
 CREATE INDEX tasks_status ON tasks(project_id, status);
+CREATE INDEX tasks_kind ON tasks(project_id, kind);
+CREATE INDEX task_results_task ON task_results(project_id, task_id, id);
+CREATE INDEX task_results_success ON task_results(project_id, task_id, id) WHERE outcome IN ('success', 'no_change');
+CREATE INDEX task_result_sources_source ON task_result_sources(source_id);
 CREATE INDEX task_sources_source ON task_sources(source_id);
 CREATE INDEX task_dependencies_target ON task_dependencies(depends_on_task_id);
 

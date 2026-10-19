@@ -1,18 +1,19 @@
-//! Explicit, non-destructive import of the supported single-project database.
+//! Explicit, non-destructive imports of supported v2 and v3 databases.
 
 use std::{fs, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, bail, ensure};
+use chrono::{SecondsFormat, Utc};
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
 use crate::{
-    model::{CreateProject, Project},
-    store::Store,
+    model::Project,
+    store::{Store, new_project_id},
 };
 
-const LEGACY_VERSION: i64 = 2;
 const APPLICATION_ID: i64 = 0x4449_4354;
+const PROJECT_COLUMNS: &[&str] = &["id", "name", "description", "created_at"];
 const LEGACY_COLUMNS: &[(&str, &[&str])] = &[
     (
         "tasks",
@@ -68,28 +69,23 @@ const LEGACY_COLUMNS: &[(&str, &[&str])] = &[
 pub struct MigrationOptions {
     pub source: PathBuf,
     pub destination: PathBuf,
-    pub name: String,
-    pub description: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct MigrationReport {
     pub source: PathBuf,
     pub destination: PathBuf,
-    pub project: Project,
+    /// Retained for callers of the v2 single-project migration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<Project>,
+    pub projects: Vec<Project>,
 }
 
-/// Copy every supported legacy value and relationship into one explicitly named project.
+/// Copy every supported value and relationship, preserving all existing projects.
 /// Only a completely imported, checked, closed database is published at the destination.
 pub fn migrate(options: MigrationOptions) -> Result<MigrationReport> {
-    ensure!(
-        !options.name.trim().is_empty(),
-        "project name must not be blank"
-    );
-    ensure!(
-        !options.description.trim().is_empty(),
-        "project description must not be blank"
-    );
     let source = fs::canonicalize(&options.source)
         .with_context(|| format!("cannot read migration source {}", options.source.display()))?;
     ensure!(source.is_file(), "migration source must be a database file");
@@ -115,11 +111,7 @@ pub fn migrate(options: MigrationOptions) -> Result<MigrationReport> {
         .prefix(".dictum-migration-")
         .tempfile_in(parent)
         .context("cannot create temporary migration database")?;
-    let store = Store::open(temporary.path()).context("cannot initialize migration database")?;
-    let project = store.create_project(CreateProject {
-        name: options.name,
-        description: options.description,
-    })?;
+    Store::open(temporary.path()).context("cannot initialize migration database")?;
     let mut connection = Connection::open(temporary.path())?;
     connection.busy_timeout(Duration::from_secs(5))?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -130,20 +122,59 @@ pub fn migrate(options: MigrationOptions) -> Result<MigrationReport> {
         connection.is_readonly("legacy")?,
         "migration source was not opened read-only"
     );
-    {
+    let (project, projects) = {
         let transaction = connection.transaction()?;
-        validate_legacy(&transaction)?;
+        let version = validate_source(&transaction)?;
         // Retain all IDs, including a decision whose predecessor was inserted later.
         transaction.pragma_update(None, "defer_foreign_keys", "ON")?;
-        for (table, columns) in LEGACY_COLUMNS {
-            let columns = columns.join(", ");
-            let sql = format!(
-                "INSERT INTO main.{table} (project_id, {columns}) SELECT ?1, {columns} FROM legacy.{table}"
+        let project = if version == 2 {
+            let name = options
+                .name
+                .context("version 2 migration requires --name")?;
+            let description = options
+                .description
+                .context("version 2 migration requires --description")?;
+            ensure!(!name.trim().is_empty(), "project name must not be blank");
+            ensure!(
+                !description.trim().is_empty(),
+                "project description must not be blank"
             );
-            transaction
-                .execute(&sql, params![project.id])
-                .with_context(|| format!("cannot preserve legacy {table}"))?;
-        }
+            let project = Project {
+                id: new_project_id(&transaction)?,
+                name,
+                description,
+                created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            };
+            transaction.execute(
+                "INSERT INTO main.projects (id, name, description, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![project.id, project.name, project.description, project.created_at],
+            )?;
+            for (table, columns) in LEGACY_COLUMNS {
+                let columns = columns.join(", ");
+                let sql = format!(
+                    "INSERT INTO main.{table} (project_id, {columns}) SELECT ?1, {columns} FROM legacy.{table}"
+                );
+                transaction
+                    .execute(&sql, params![project.id])
+                    .with_context(|| format!("cannot preserve legacy {table}"))?;
+            }
+            Some(project)
+        } else {
+            ensure!(
+                options.name.is_none() && options.description.is_none(),
+                "version 3 migration preserves existing projects; omit --name and --description"
+            );
+            for (table, columns) in source_columns(version) {
+                let columns = columns.join(", ");
+                let sql = format!(
+                    "INSERT INTO main.{table} ({columns}) SELECT {columns} FROM legacy.{table}"
+                );
+                transaction
+                    .execute(&sql, [])
+                    .with_context(|| format!("cannot preserve legacy {table}"))?;
+            }
+            None
+        };
         let violations = transaction
             .prepare("PRAGMA main.foreign_key_check")?
             .exists([])?;
@@ -151,10 +182,22 @@ pub fn migrate(options: MigrationOptions) -> Result<MigrationReport> {
             !violations,
             "legacy relationships violate the shared database constraints"
         );
+        let projects = transaction
+            .prepare("SELECT id, name, description, created_at FROM main.projects ORDER BY created_at, id")?
+            .query_map([], |row| {
+                Ok(Project {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         transaction
             .commit()
             .context("cannot commit migrated records")?;
-    }
+        (project, projects)
+    };
     connection.execute_batch("DETACH DATABASE legacy")?;
     // Store initialization uses WAL. Fold every page into the final standalone file.
     let mode: String =
@@ -173,35 +216,53 @@ pub fn migrate(options: MigrationOptions) -> Result<MigrationReport> {
         source,
         destination,
         project,
+        projects,
     })
 }
 
-fn validate_legacy(connection: &Connection) -> Result<()> {
+fn source_columns(version: i64) -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut columns = Vec::new();
+    if version == 3 {
+        columns.push(("projects", PROJECT_COLUMNS.to_vec()));
+    }
+    for (table, legacy) in LEGACY_COLUMNS {
+        let mut fields = legacy.to_vec();
+        if version == 3 {
+            let position = usize::from(fields[0] == "id");
+            fields.insert(position, "project_id");
+        }
+        columns.push((*table, fields));
+    }
+    columns
+}
+
+fn validate_source(connection: &Connection) -> Result<i64> {
     let version: i64 =
         connection.pragma_query_value(Some("legacy"), "user_version", |row| row.get(0))?;
     let application_id: i64 =
         connection.pragma_query_value(Some("legacy"), "application_id", |row| row.get(0))?;
     ensure!(
-        version == LEGACY_VERSION && application_id == APPLICATION_ID,
-        "unsupported migration source schema (version {version}, application ID {application_id}); preserve the source and use a supported version 2 database"
+        matches!(version, 2 | 3) && application_id == APPLICATION_ID,
+        "unsupported migration source schema (version {version}, application ID {application_id}); preserve the source and use a supported version 2 or 3 database"
     );
     let mut tables = connection.prepare("SELECT name FROM legacy.sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
     let actual = tables
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut expected: Vec<_> = LEGACY_COLUMNS.iter().map(|(table, _)| *table).collect();
+    let columns = source_columns(version);
+    let mut expected: Vec<_> = columns.iter().map(|(table, _)| *table).collect();
     expected.sort_unstable();
     ensure!(
         actual == expected,
         "unsupported migration source tables; preserve the source"
     );
-    for (table, expected) in LEGACY_COLUMNS {
+    for (table, expected) in columns {
         let mut columns = connection.prepare(&format!("PRAGMA legacy.table_info({table})"))?;
         let actual = columns
             .query_map([], |row| row.get::<_, String>(1))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         ensure!(
-            actual == *expected,
+            actual == expected,
             "unsupported migration source columns in {table}; preserve the source"
         );
     }
@@ -213,7 +274,13 @@ fn validate_legacy(connection: &Connection) -> Result<()> {
         results == ["ok"],
         "migration source failed integrity checks; preserve the source"
     );
-    Ok(())
+    ensure!(
+        !connection
+            .prepare("PRAGMA legacy.foreign_key_check")?
+            .exists([])?,
+        "migration source has invalid relationships; preserve the source"
+    );
+    Ok(version)
 }
 
 fn readonly_uri(path: &std::path::Path) -> String {
