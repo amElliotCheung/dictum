@@ -806,7 +806,7 @@ fn schema_v5_is_rejected_without_changing_its_data_schema_or_file() {
     let error = String::from_utf8(output.stderr).unwrap();
     assert!(error.contains("version 5"), "unexpected error: {error}");
     assert!(
-        error.contains("schema version 6"),
+        error.contains("schema version 7"),
         "unexpected error: {error}"
     );
     assert_eq!(std::fs::read(&database).unwrap(), before);

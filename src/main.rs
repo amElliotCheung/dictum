@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail};
 use dictum_mcp::{dashboard, server::DictumServer, store::Store};
 use rmcp::{ServiceExt, transport::stdio};
 
-const USAGE: &str = "Usage: dictum-mcp\n       dictum-mcp dashboard [--port PORT]\n\nWith no arguments, serve MCP over stdio using DICTUM_DATABASE.\nDashboard serves the read-only localhost UI on 127.0.0.1 (default port 3000; 0 selects a free port) using the same database.\nOnly the current schema is supported; older databases are rejected without modification.";
+const USAGE: &str = "Usage: dictum-mcp\n       dictum-mcp dashboard [--port PORT]\n\nWith no arguments, serve MCP over stdio using DICTUM_DATABASE.\nDashboard serves the localhost UI and owns one-shot agent runs on 127.0.0.1 (default port 3000; 0 selects a free port) using the same database.\nOnly the current schema is supported; older databases are rejected without modification.";
 
 fn database_path() -> PathBuf {
     env::var_os("DICTUM_DATABASE")
@@ -35,7 +35,10 @@ async fn run_mcp() -> Result<()> {
 
     eprintln!("dictum-mcp: using {}", database_path.display());
 
-    let service = DictumServer::new(store)
+    let run_id = env::var("DICTUM_RUN_ID")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok());
+    let service = DictumServer::with_run_id(store, run_id)
         .serve(stdio())
         .await
         .context("failed to start MCP stdio service")?;

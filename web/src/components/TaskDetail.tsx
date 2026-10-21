@@ -25,6 +25,7 @@ import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
 import { DecisionCard } from './DecisionCard';
+import { RunPanel } from './RunPanel';
 import { SourceBody, SourceCard } from './SourceCard';
 
 interface HistoryState {
@@ -268,6 +269,12 @@ function DetailBody({
           an agent is running or that a schedule is installed.
         </p>
       ) : null}
+
+      <RunPanel
+        projectId={projectId}
+        task={task}
+        dependencyState={dependency_state}
+      />
 
       {task.progress ? (
         <Section title="Progress">

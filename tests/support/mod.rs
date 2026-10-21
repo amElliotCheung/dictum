@@ -24,6 +24,10 @@ pub struct Project {
 
 impl Project {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_env(path, &[])
+    }
+
+    pub fn open_with_env(path: impl AsRef<Path>, environment: &[(&str, &str)]) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -31,6 +35,9 @@ impl Project {
         command
             .env("DICTUM_DATABASE", path.as_ref())
             .env("TOKIO_WORKER_THREADS", "2");
+        for (name, value) in environment {
+            command.env(name, value);
+        }
         let client = runtime.block_on(async {
             let transport = TokioChildProcess::new(command)?;
             Ok::<_, anyhow::Error>(

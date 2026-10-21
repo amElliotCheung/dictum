@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 const APPLICATION_ID: i64 = 0x4449_4354; // DICT
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -37,12 +37,30 @@ pub enum StoreError {
         expected: i64,
         actual: i64,
     },
+    #[error("{0}")]
+    Conflict(String),
     #[error(
-        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 6 only; preserve the existing file"
+        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 7 only; preserve the existing file"
     )]
     UnsupportedSchema { version: i64, application_id: i64 },
 }
 pub type StoreResult<T> = Result<T, StoreError>;
+
+#[derive(Debug, Clone)]
+pub struct CreateRun {
+    pub project_id: String,
+    pub task_id: i64,
+    pub agent: RunAgent,
+    pub agent_version: String,
+    pub agent_executable: String,
+    pub working_directory: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RunningRun {
+    pub id: i64,
+    pub pid: i64,
+}
 
 /// Connections are short lived; clones share the same on-disk database, not a connection.
 #[derive(Debug, Clone)]
@@ -427,6 +445,16 @@ impl Store {
     }
 
     pub fn record_task_result(&self, input: RecordTaskResult) -> StoreResult<TaskResult> {
+        self.record_task_result_for_run(input, None)
+    }
+
+    /// Link a result to the dashboard run that spawned this MCP process, when the
+    /// ambient run identity still belongs to the same project and task.
+    pub fn record_task_result_for_run(
+        &self,
+        input: RecordTaskResult,
+        ambient_run_id: Option<i64>,
+    ) -> StoreResult<TaskResult> {
         required(&input.evidence, "evidence")?;
         if input.evidence.chars().count() > 4_000 {
             return invalid(
@@ -465,10 +493,27 @@ impl Store {
                 ));
             }
         }
+        let run_id = match ambient_run_id {
+            Some(id) => {
+                let belongs: bool = transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM task_runs WHERE id=?1 AND project_id=?2 AND task_id=?3)",
+                    params![id, input.project_id, task.id],
+                    |row| row.get(0),
+                )?;
+                if !belongs {
+                    return invalid(format!(
+                        "run {id} does not belong to task #{} in this project; a run-scoped process may only record its own task result",
+                        task.id
+                    ));
+                }
+                Some(id)
+            }
+            None => None,
+        };
         let now = timestamp(Utc::now());
         transaction.execute(
-            "INSERT INTO task_results (project_id, task_id, outcome, evidence, recorded_at, task_revision) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![input.project_id, task.id, outcome_name(input.outcome), input.evidence, now, task.revision + 1],
+            "INSERT INTO task_results (project_id, task_id, run_id, outcome, evidence, recorded_at, task_revision) VALUES (?1, ?2, ?7, ?3, ?4, ?5, ?6)",
+            params![input.project_id, task.id, outcome_name(input.outcome), input.evidence, now, task.revision + 1, run_id],
         )?;
         let id = transaction.last_insert_rowid();
         for feedback_id in addressed_ids {
@@ -572,6 +617,280 @@ impl Store {
             results,
             next_before_id,
         })
+    }
+
+    pub fn create_run(&self, input: CreateRun) -> StoreResult<RunSummary> {
+        required(&input.agent_version, "agent_version")?;
+        required(&input.agent_executable, "agent_executable")?;
+        required(&input.working_directory, "working_directory")?;
+        if !Path::new(&input.working_directory).is_absolute() {
+            return invalid("working_directory must be an absolute path");
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_project(&transaction, &input.project_id)?;
+        let task = task_by_id(&transaction, &input.project_id, input.task_id)?;
+        let state = dependency_state(&transaction, &task)?;
+        if !state.unmet_prerequisite_task_ids.is_empty() {
+            return invalid(format!(
+                "cannot run task while before-start dependencies are unfinished: {:?}",
+                state.unmet_prerequisite_task_ids
+            ));
+        }
+        match (task.kind, task.status) {
+            (TaskKind::OneTime, TaskStatus::Done) => {
+                return invalid(
+                    "cannot run a done one-time task; reopen it before another attempt",
+                );
+            }
+            (TaskKind::OneTime, _) => {}
+            (TaskKind::Recurring, TaskStatus::Active) => {}
+            (TaskKind::Recurring, _) => {
+                return invalid(
+                    "only active recurring tasks can be run; paused tasks are not eligible",
+                );
+            }
+        }
+        let active_task: Option<i64> = transaction
+            .query_row(
+                "SELECT id FROM task_runs WHERE project_id=?1 AND task_id=?2 AND status='running'",
+                params![input.project_id, task.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(id) = active_task {
+            return Err(StoreError::Conflict(format!(
+                "task #{} already has active run #{id}",
+                task.id
+            )));
+        }
+        let active_directory: Option<i64> = transaction
+            .query_row(
+                "SELECT id FROM task_runs WHERE working_directory=?1 AND status='running'",
+                params![input.working_directory],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(id) = active_directory {
+            return Err(StoreError::Conflict(format!(
+                "working directory {} is already used by active run #{id}",
+                input.working_directory
+            )));
+        }
+        let now = timestamp(Utc::now());
+        transaction.execute(
+            "INSERT INTO task_runs (project_id, task_id, agent, agent_version, agent_executable, working_directory, input_task_revision, status, started_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'running', ?8)",
+            params![
+                input.project_id,
+                task.id,
+                run_agent_name(input.agent),
+                input.agent_version,
+                input.agent_executable,
+                input.working_directory,
+                task.revision,
+                now
+            ],
+        )?;
+        let id = transaction.last_insert_rowid();
+        let run = run_summary_by_id(&transaction, &input.project_id, task.id, id)?;
+        transaction.commit()?;
+        Ok(run)
+    }
+
+    pub fn list_runs(
+        &self,
+        project_id: &str,
+        task_id: i64,
+        limit: Option<i64>,
+    ) -> StoreResult<RunList> {
+        let limit = limit.unwrap_or(50);
+        if !(1..=100).contains(&limit) {
+            return invalid("run limit must be between 1 and 100");
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        ensure_project(&transaction, project_id)?;
+        ensure_exists(&transaction, project_id, "task", task_id)?;
+        let runs = {
+            let mut statement = transaction.prepare(
+                "SELECT * FROM task_runs WHERE project_id=?1 AND task_id=?2 ORDER BY id DESC LIMIT ?3",
+            )?;
+            statement
+                .query_map(params![project_id, task_id, limit], map_run_summary)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        transaction.commit()?;
+        Ok(RunList { runs })
+    }
+
+    pub fn get_run(&self, project_id: &str, task_id: i64, run_id: i64) -> StoreResult<RunDetail> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        ensure_project(&transaction, project_id)?;
+        ensure_exists(&transaction, project_id, "task", task_id)?;
+        let run = run_summary_by_id(&transaction, project_id, task_id, run_id)?;
+        let (log, log_truncated, progress) = transaction.query_row(
+            "SELECT log, log_truncated, progress FROM task_runs WHERE id=?1 AND project_id=?2 AND task_id=?3",
+            params![run_id, project_id, task_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let result_ids = {
+            let mut statement = transaction.prepare(
+                "SELECT id FROM task_results WHERE project_id=?1 AND task_id=?2 AND run_id=?3 ORDER BY id",
+            )?;
+            statement
+                .query_map(params![project_id, task_id, run_id], |row| {
+                    row.get::<_, i64>(0)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let results = result_ids
+            .into_iter()
+            .map(|id| task_result_by_id(&transaction, project_id, task_id, id))
+            .collect::<StoreResult<Vec<_>>>()?;
+        transaction.commit()?;
+        Ok(RunDetail {
+            run,
+            log,
+            log_truncated,
+            progress,
+            results,
+        })
+    }
+
+    pub fn request_run_cancel(
+        &self,
+        project_id: &str,
+        task_id: i64,
+        run_id: i64,
+    ) -> StoreResult<RunSummary> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_project(&transaction, project_id)?;
+        ensure_exists(&transaction, project_id, "task", task_id)?;
+        run_summary_by_id(&transaction, project_id, task_id, run_id)?;
+        transaction.execute(
+            "UPDATE task_runs SET cancel_requested_at=COALESCE(cancel_requested_at, ?1) WHERE id=?2 AND project_id=?3 AND task_id=?4 AND status='running'",
+            params![timestamp(Utc::now()), run_id, project_id, task_id],
+        )?;
+        let run = run_summary_by_id(&transaction, project_id, task_id, run_id)?;
+        transaction.commit()?;
+        Ok(run)
+    }
+
+    pub fn set_run_pid(&self, run_id: i64, pid: u32) -> StoreResult<()> {
+        let connection = self.connect()?;
+        connection.execute(
+            "UPDATE task_runs SET pid=?1 WHERE id=?2 AND status='running'",
+            params![i64::from(pid), run_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_run_output(
+        &self,
+        run_id: i64,
+        log: &str,
+        log_truncated: bool,
+        progress: &str,
+    ) -> StoreResult<()> {
+        let connection = self.connect()?;
+        connection.execute(
+            "UPDATE task_runs SET log=?1, log_truncated=?2, progress=?3 WHERE id=?4 AND status='running'",
+            params![log, log_truncated, progress, run_id],
+        )?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn finish_run(
+        &self,
+        run_id: i64,
+        status: RunStatus,
+        exit_code: Option<i32>,
+        stop_reason: Option<&str>,
+        log: &str,
+        log_truncated: bool,
+        progress: &str,
+    ) -> StoreResult<bool> {
+        if status == RunStatus::Running {
+            return invalid("finish_run requires a terminal run status");
+        }
+        let connection = self.connect()?;
+        let changed = connection.execute(
+            "UPDATE task_runs SET status=?1, ended_at=?2, exit_code=?3, stop_reason=?4, log=?5, log_truncated=?6, progress=?7 WHERE id=?8 AND status='running'",
+            params![
+                run_status_name(status),
+                timestamp(Utc::now()),
+                exit_code,
+                stop_reason,
+                log,
+                log_truncated,
+                progress,
+                run_id
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    pub fn running_runs(&self) -> StoreResult<Vec<RunningRun>> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT id, pid FROM task_runs WHERE status='running' AND pid IS NOT NULL ORDER BY id",
+        )?;
+        Ok(statement
+            .query_map([], |row| {
+                Ok(RunningRun {
+                    id: row.get(0)?,
+                    pid: row.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn interrupt_running_runs(&self, reason: &str) -> StoreResult<usize> {
+        let connection = self.connect()?;
+        let now = timestamp(Utc::now());
+        Ok(connection.execute(
+            "UPDATE task_runs SET status='interrupted', ended_at=?1, stop_reason=?2 WHERE status='running'",
+            params![now, reason],
+        )?)
+    }
+
+    pub fn claim_service(&self, instance_id: &str, pid: u32) -> StoreResult<()> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<(String, i64)> = transaction
+            .query_row(
+                "SELECT instance_id, pid FROM service_lock WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((owner, owner_pid)) = existing
+            && owner != instance_id
+            && process_alive(owner_pid)
+        {
+            return Err(StoreError::Conflict(format!(
+                "another dashboard service (pid {owner_pid}) owns runs for this database"
+            )));
+        }
+        transaction.execute(
+            "INSERT INTO service_lock (id, instance_id, pid, started_at) VALUES (1, ?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET instance_id=excluded.instance_id, pid=excluded.pid, started_at=excluded.started_at",
+            params![instance_id, i64::from(pid), timestamp(Utc::now())],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn release_service(&self, instance_id: &str) -> StoreResult<()> {
+        let connection = self.connect()?;
+        connection.execute(
+            "DELETE FROM service_lock WHERE id=1 AND instance_id=?1",
+            params![instance_id],
+        )?;
+        Ok(())
     }
 
     pub fn create_source(&self, input: CreateSource) -> StoreResult<Source> {
@@ -1215,6 +1534,58 @@ fn latest_task_result(
         .transpose()
 }
 
+fn run_summary_by_id(
+    connection: &Connection,
+    project_id: &str,
+    task_id: i64,
+    id: i64,
+) -> StoreResult<RunSummary> {
+    connection
+        .query_row(
+            "SELECT * FROM task_runs WHERE id=?1 AND project_id=?2 AND task_id=?3",
+            params![id, project_id, task_id],
+            map_run_summary,
+        )
+        .optional()?
+        .ok_or(StoreError::NotFound { entity: "run", id })
+}
+
+fn map_run_summary(row: &Row<'_>) -> rusqlite::Result<RunSummary> {
+    Ok(RunSummary {
+        id: row.get("id")?,
+        project_id: row.get("project_id")?,
+        task_id: row.get("task_id")?,
+        agent: enum_column(row, "agent")?,
+        agent_version: row.get("agent_version")?,
+        agent_executable: row.get("agent_executable")?,
+        working_directory: row.get("working_directory")?,
+        input_task_revision: row.get("input_task_revision")?,
+        status: enum_column(row, "status")?,
+        started_at: row.get("started_at")?,
+        ended_at: row.get("ended_at")?,
+        exit_code: row.get("exit_code")?,
+        stop_reason: row.get("stop_reason")?,
+        cancel_requested_at: row.get("cancel_requested_at")?,
+    })
+}
+
+fn process_alive(pid: i64) -> bool {
+    #[cfg(unix)]
+    {
+        if pid <= 0 || pid > i64::from(i32::MAX) {
+            return false;
+        }
+        // Signal 0 checks existence and permission without delivering a signal.
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        alive || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 fn source_by_id(
     connection: &Connection,
     project_id: &str,
@@ -1340,6 +1711,24 @@ fn observation_time(
         return invalid("observed_at must not move backwards from the last successful snapshot");
     }
     Ok(timestamp(observed))
+}
+
+fn run_agent_name(agent: RunAgent) -> &'static str {
+    match agent {
+        RunAgent::Codex => "codex",
+        RunAgent::Claude => "claude",
+    }
+}
+
+fn run_status_name(status: RunStatus) -> &'static str {
+    match status {
+        RunStatus::Running => "running",
+        RunStatus::Succeeded => "succeeded",
+        RunStatus::Failed => "failed",
+        RunStatus::Cancelled => "cancelled",
+        RunStatus::TimedOut => "timed_out",
+        RunStatus::Interrupted => "interrupted",
+    }
 }
 
 fn status_name(status: TaskStatus) -> &'static str {

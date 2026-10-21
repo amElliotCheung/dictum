@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, ChildStderr, Command, Output, Stdio},
     time::{Duration, Instant},
@@ -42,15 +43,22 @@ struct Dashboard {
 
 impl Dashboard {
     fn start(database: &Path, port: u16) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_dictum-mcp"))
+        Self::start_with_env(database, port, &[])
+    }
+
+    fn start_with_env(database: &Path, port: u16, environment: &[(&str, &str)]) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dictum-mcp"));
+        command
             .arg("dashboard")
             .arg("--port")
             .arg(port.to_string())
             .env("DICTUM_DATABASE", database)
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("start dashboard process");
+            .stderr(Stdio::piped());
+        for (name, value) in environment {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().expect("start dashboard process");
         let mut stderr = BufReader::new(child.stderr.take().unwrap());
         let mut base = None;
         let mut using = None;
@@ -100,7 +108,64 @@ impl Dashboard {
         let host = host
             .map(str::to_string)
             .unwrap_or_else(|| format!("127.0.0.1:{}", self.port));
-        http_request(self.port, method, path, &host, headers)
+        http_request(self.port, method, path, &host, headers, &[])
+    }
+
+    fn request_with_body(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> HttpResponse {
+        let host = format!("127.0.0.1:{}", self.port);
+        http_request(self.port, method, path, &host, headers, body)
+    }
+
+    fn post_json(
+        &self,
+        path: &str,
+        value: &Value,
+        origin: Option<&str>,
+        token: Option<&str>,
+    ) -> HttpResponse {
+        self.post_raw(
+            path,
+            "application/json",
+            &serde_json::to_vec(value).unwrap(),
+            origin,
+            token,
+        )
+    }
+
+    fn post_raw(
+        &self,
+        path: &str,
+        content_type: &str,
+        body: &[u8],
+        origin: Option<&str>,
+        token: Option<&str>,
+    ) -> HttpResponse {
+        let mut headers = vec![("Content-Type", content_type)];
+        if let Some(origin) = origin {
+            headers.push(("Origin", origin));
+        }
+        if let Some(token) = token {
+            headers.push(("X-Dictum-CSRF", token));
+        }
+        self.request_with_body("POST", path, &headers, body)
+    }
+
+    fn origin(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    fn run_token(&self) -> (String, i64) {
+        let config = self.get("/api/run-token").json();
+        (
+            config["token"].as_str().unwrap().to_string(),
+            config["timeout_seconds"].as_i64().unwrap(),
+        )
     }
 }
 
@@ -117,6 +182,7 @@ fn http_request(
     target: &str,
     host: &str,
     headers: &[(&str, &str)],
+    body: &[u8],
 ) -> HttpResponse {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
@@ -127,8 +193,9 @@ fn http_request(
     for (name, value) in headers {
         request.push_str(&format!("{name}: {value}\r\n"));
     }
-    request.push_str("Content-Length: 0\r\n\r\n");
+    request.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
     stream.write_all(request.as_bytes()).unwrap();
+    stream.write_all(body).unwrap();
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes).unwrap();
     let text = String::from_utf8(bytes).unwrap();
@@ -207,6 +274,119 @@ fn wait_for_port_free(port: u16) {
 
 fn dashboard_database(directory: &TempDir) -> PathBuf {
     directory.path().join("dashboard.sqlite3")
+}
+
+fn write_agent_script(directory: &Path, name: &str, body: &str) -> PathBuf {
+    let path = directory.join(name);
+    std::fs::write(&path, body).unwrap();
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    path
+}
+
+fn codex_fixture() -> &'static str {
+    r#"#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+  echo "codex-cli 0.145.0"
+  exit 0
+fi
+dir="${DICTUM_FIXTURE_DIR:?}"
+name="$(basename "$PWD")"
+printf '%s\n' "$@" > "$dir/$name-argv.txt"
+env > "$dir/$name-env.txt"
+echo ok > fixture-output.txt
+echo '{"type":"item.completed","item":{"type":"agent_message","text":"Fixture agent started"}}'
+case "$name" in
+  fail)
+    echo "permission denied: fixture cannot proceed" >&2
+    exit 7
+    ;;
+  sleep|cancel|restart|timeout)
+    sleep 300 &
+    child=$!
+    printf '%s\n%s\n' "$$" "$child" > "$dir/$name-pids.txt"
+    echo '{"type":"item.completed","item":{"type":"command_execution","command":"sleep 300"}}'
+    wait "$child"
+    exit 0
+    ;;
+esac
+echo '{"type":"item.completed","item":{"type":"command_execution","command":"echo checked"}}'
+sleep 0.4
+exit 0
+"#
+}
+
+fn claude_fixture() -> &'static str {
+    r#"#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
+  echo "2.1.304 (Claude Code)"
+  exit 0
+fi
+dir="${DICTUM_FIXTURE_DIR:?}"
+name="$(basename "$PWD")"
+printf '%s\n' "$@" > "$dir/$name-argv.txt"
+env > "$dir/$name-env.txt"
+echo ok > fixture-output.txt
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Fixture Claude agent started"},{"type":"tool_use","name":"Bash"}]}}'
+echo '{"type":"result","subtype":"success","result":"Fixture finished"}'
+sleep 0.4
+exit 0
+"#
+}
+
+fn wait_for_run(dashboard: &Dashboard, path: &str) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let detail = dashboard.get(path).json();
+        if detail["run"]["status"].as_str() != Some("running") {
+            return detail;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "run did not finish before the deadline: {detail}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn wait_for_file(path: &Path) -> String {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(value) = std::fs::read_to_string(path)
+            && !value.is_empty()
+        {
+            return value;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fixture file {} was not written",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn process_running(pid: i64) -> bool {
+    let status = Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    status.success()
+}
+
+fn wait_for_process_exit(pid: i64) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while process_running(pid) {
+        assert!(
+            Instant::now() < deadline,
+            "process {pid} was not terminated"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
@@ -1259,6 +1439,657 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
             .len(),
         2
     );
+}
+
+#[test]
+fn dashboard_runs_one_shot_agents_with_duplicate_and_cwd_protection() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = dashboard_database(&directory);
+    let client = Project::open(&database).unwrap();
+    let project_id = client.project_id.clone();
+    let target = create_task(&client, &project_id, "Run target", "one_time", json!({}));
+    let other = create_task(
+        &client,
+        &project_id,
+        "Other run target",
+        "one_time",
+        json!({}),
+    );
+    let claude_task = create_task(
+        &client,
+        &project_id,
+        "Claude run target",
+        "one_time",
+        json!({}),
+    );
+
+    let fixtures = directory.path().join("fixtures");
+    std::fs::create_dir_all(&fixtures).unwrap();
+    let codex = write_agent_script(&fixtures, "codex-agent", codex_fixture());
+    let claude = write_agent_script(&fixtures, "claude-agent", claude_fixture());
+    let success_dir = directory.path().join("success");
+    let other_dir = directory.path().join("other");
+    let claude_dir = directory.path().join("claude");
+    for path in [&success_dir, &other_dir, &claude_dir] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let environment = [
+        ("DICTUM_FIXTURE_DIR", fixtures.to_str().unwrap()),
+        ("DICTUM_CODEX_BIN", codex.to_str().unwrap()),
+        ("DICTUM_CLAUDE_BIN", claude.to_str().unwrap()),
+    ];
+    let dashboard = Dashboard::start_with_env(&database, 0, &environment);
+    let (token, timeout) = dashboard.run_token();
+    assert_eq!(timeout, 1_800);
+    let origin = dashboard.origin();
+
+    let target_runs = format!("/api/projects/{project_id}/tasks/{}/runs", target["id"]);
+    let other_runs = format!("/api/projects/{project_id}/tasks/{}/runs", other["id"]);
+    let claude_runs = format!(
+        "/api/projects/{project_id}/tasks/{}/runs",
+        claude_task["id"]
+    );
+
+    // Run history is readable before any attempt exists.
+    let get_launch = dashboard.get(&target_runs);
+    assert_eq!(get_launch.status, 200);
+    assert_eq!(get_launch.json()["runs"], json!([]));
+    let unsupported = dashboard.request("PUT", &target_runs, None, &[]);
+    assert_eq!(unsupported.status, 405);
+
+    // Mutation authenticity: Origin, JSON content type and the per-service token.
+    let launch_body = json!({
+        "agent": "codex",
+        "working_directory": success_dir.to_str().unwrap()
+    });
+    assert_eq!(
+        dashboard
+            .post_json(&target_runs, &launch_body, None, Some(&token))
+            .status,
+        403
+    );
+    assert_eq!(
+        dashboard
+            .post_json(
+                &target_runs,
+                &launch_body,
+                Some("http://evil.example"),
+                Some(&token)
+            )
+            .status,
+        403
+    );
+    assert_eq!(
+        dashboard
+            .post_json(&target_runs, &launch_body, Some(&origin), None)
+            .status,
+        403
+    );
+    assert_eq!(
+        dashboard
+            .post_json(&target_runs, &launch_body, Some(&origin), Some("wrong"))
+            .status,
+        403
+    );
+    assert_eq!(
+        dashboard
+            .post_raw(
+                &target_runs,
+                "text/plain",
+                &serde_json::to_vec(&launch_body).unwrap(),
+                Some(&origin),
+                Some(&token)
+            )
+            .status,
+        415
+    );
+    assert_eq!(
+        dashboard
+            .post_json(
+                &target_runs,
+                &json!({"agent": "codex", "working_directory": "relative/path"}),
+                Some(&origin),
+                Some(&token)
+            )
+            .status,
+        400
+    );
+    assert_eq!(
+        dashboard
+            .post_json(
+                &target_runs,
+                &json!({
+                    "agent": "codex",
+                    "working_directory": success_dir.to_str().unwrap(),
+                    "command": "rm -rf /"
+                }),
+                Some(&origin),
+                Some(&token)
+            )
+            .status,
+        400
+    );
+
+    let foreign_project: Value = client
+        .raw_call(
+            "create_project",
+            json!({"name": "Foreign", "description": "Run scope must not cross projects."}),
+        )
+        .unwrap();
+    let foreign_runs = format!(
+        "/api/projects/{}/tasks/{}/runs",
+        foreign_project["id"].as_str().unwrap(),
+        target["id"]
+    );
+    assert_eq!(
+        dashboard
+            .post_json(&foreign_runs, &launch_body, Some(&origin), Some(&token))
+            .status,
+        404
+    );
+    assert_eq!(dashboard.get(&foreign_runs).status, 404);
+
+    let launched = dashboard.post_json(&target_runs, &launch_body, Some(&origin), Some(&token));
+    assert_eq!(launched.status, 201, "{}", launched.body);
+    let run = launched.json();
+    let run_id = run["id"].as_i64().unwrap();
+    assert_eq!(run["project_id"], project_id);
+    assert_eq!(run["task_id"], target["id"]);
+    assert_eq!(run["status"], "running");
+    assert_eq!(run["agent"], "codex");
+    assert!(run["agent_version"].as_str().unwrap().contains("0.145.0"));
+    assert_eq!(
+        run["working_directory"],
+        success_dir.canonicalize().unwrap().to_str().unwrap()
+    );
+    assert_eq!(run["input_task_revision"], target["revision"]);
+
+    // Duplicate launches are rejected for the task and for the working directory.
+    let duplicate = dashboard.post_json(&target_runs, &launch_body, Some(&origin), Some(&token));
+    assert_eq!(duplicate.status, 409);
+    assert!(duplicate.body.contains("active run"));
+    let cwd_conflict = dashboard.post_json(&other_runs, &launch_body, Some(&origin), Some(&token));
+    assert_eq!(cwd_conflict.status, 409);
+    assert!(cwd_conflict.body.contains("working directory"));
+
+    let other_launch = dashboard.post_json(
+        &other_runs,
+        &json!({"agent": "codex", "working_directory": other_dir.to_str().unwrap()}),
+        Some(&origin),
+        Some(&token),
+    );
+    assert_eq!(other_launch.status, 201, "{}", other_launch.body);
+    let other_run = other_launch.json();
+
+    let claude_launch = dashboard.post_json(
+        &claude_runs,
+        &json!({"agent": "claude", "working_directory": claude_dir.to_str().unwrap()}),
+        Some(&origin),
+        Some(&token),
+    );
+    assert_eq!(claude_launch.status, 201, "{}", claude_launch.body);
+    let claude_run = claude_launch.json();
+
+    let detail_path = format!("{target_runs}/{run_id}");
+    let detail = wait_for_run(&dashboard, &detail_path);
+    assert_eq!(detail["run"]["status"], "succeeded");
+    assert_eq!(detail["run"]["exit_code"], 0);
+    assert!(detail["run"]["ended_at"].is_string());
+    assert!(
+        detail["progress"]
+            .as_str()
+            .unwrap()
+            .contains("Fixture agent started"),
+        "unexpected progress: {}",
+        detail["progress"]
+    );
+    assert!(
+        detail["progress"]
+            .as_str()
+            .unwrap()
+            .contains("echo checked")
+    );
+    assert!(detail["log"].as_str().unwrap().contains("item.completed"));
+    assert_eq!(detail["results"], json!([]));
+
+    // The fixture received the exact task prompt, run identity and MCP environment.
+    let argv = wait_for_file(&fixtures.join("success-argv.txt"));
+    assert!(argv.contains(&format!("Dictum one-shot run {run_id}")));
+    assert!(argv.contains("workspace-write"));
+    assert!(argv.contains("--ignore-user-config"));
+    assert!(argv.contains("mcp_servers.dictum.env.DICTUM_RUN_ID"));
+    assert!(argv.contains(&format!(
+        "mcp_servers.dictum.command=\"{}\"",
+        env!("CARGO_BIN_EXE_dictum-mcp")
+    )));
+    let captured_env = wait_for_file(&fixtures.join("success-env.txt"));
+    assert!(captured_env.contains(&format!("DICTUM_RUN_ID={run_id}")));
+    assert!(captured_env.contains("DICTUM_DATABASE="));
+    assert!(success_dir.join("fixture-output.txt").exists());
+
+    let claude_detail = wait_for_run(&dashboard, &format!("{claude_runs}/{}", claude_run["id"]));
+    assert_eq!(claude_detail["run"]["status"], "succeeded");
+    assert!(
+        claude_detail["progress"]
+            .as_str()
+            .unwrap()
+            .contains("Fixture Claude agent started")
+    );
+    let claude_argv = wait_for_file(&fixtures.join("claude-argv.txt"));
+    assert!(claude_argv.contains("--permission-mode"));
+    assert!(claude_argv.contains("acceptEdits"));
+    assert!(claude_argv.contains("--permission-prompts"));
+    assert!(claude_argv.contains("--strict-mcp-config"));
+    assert!(claude_argv.contains("--allowedTools"));
+    assert!(claude_argv.contains("mcp__dictum"));
+    assert!(claude_argv.contains("claude-md-and-agents-md"));
+    let claude_env = wait_for_file(&fixtures.join("claude-env.txt"));
+    assert!(claude_env.contains(&format!(
+        "DICTUM_RUN_ID={}",
+        claude_run["id"].as_i64().unwrap()
+    )));
+
+    // A successful process does not change lifecycle state.
+    let context = call(
+        &client,
+        "get_task_context",
+        json!({"task_id": target["id"]}),
+    );
+    assert_eq!(context["task"]["status"], "todo");
+
+    // A Dictum MCP process spawned for the attempt tags its result with the run.
+    let run_id_text = run_id.to_string();
+    let run_client = Project::open_with_env(&database, &[("DICTUM_RUN_ID", &run_id_text)]).unwrap();
+    let other_context = call(&client, "get_task_context", json!({"task_id": other["id"]}));
+    let wrong_task = run_client
+        .raw_call::<Value>(
+            "record_task_result",
+            json!({
+                "project_id": project_id,
+                "task_id": other["id"],
+                "expected_revision": other_context["task"]["revision"],
+                "outcome": "success",
+                "evidence": "This must not be attributed to another task."
+            }),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        wrong_task.contains("does not belong"),
+        "unexpected error: {wrong_task}"
+    );
+    let linked = run_client
+        .call::<Value>(
+            "record_task_result",
+            json!({
+                "project_id": project_id,
+                "task_id": target["id"],
+                "expected_revision": context["task"]["revision"],
+                "outcome": "success",
+                "evidence": "Fixture result linked to its launching run."
+            }),
+        )
+        .unwrap();
+    let linked_detail = dashboard.get(&detail_path).json();
+    assert_eq!(linked_detail["results"][0]["id"], linked["id"]);
+    assert_eq!(
+        linked_detail["results"][0]["evidence"],
+        "Fixture result linked to its launching run."
+    );
+    let rejected = run_client
+        .raw_call::<Value>(
+            "update_task",
+            json!({
+                "project_id": project_id,
+                "task_id": target["id"],
+                "expected_revision": linked["task_revision"],
+                "status": "done"
+            }),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        rejected.contains("scoped to dashboard run"),
+        "unexpected error: {rejected}"
+    );
+
+    let _ = wait_for_run(&dashboard, &format!("{other_runs}/{}", other_run["id"]));
+
+    // Only one live dashboard service may own runs for a database.
+    let second = run_dashboard(&database, &["--port", "0"]);
+    assert!(!second.status.success());
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("another dashboard service"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    // Restarting the dashboard rotates the request token and preserves run history.
+    let port = dashboard.port;
+    drop(dashboard);
+    wait_for_port_free(port);
+    let restarted = Dashboard::start_with_env(&database, port, &environment);
+    let (new_token, _) = restarted.run_token();
+    assert_ne!(new_token, token);
+    let persisted = restarted.get(&detail_path).json();
+    assert_eq!(persisted["run"]["status"], "succeeded");
+    assert_eq!(persisted["results"][0]["id"], linked["id"]);
+    assert_eq!(
+        restarted.get(&target_runs).json()["runs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn dashboard_run_failures_cancel_timeout_restart_and_repeat_attempts_are_durable() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = dashboard_database(&directory);
+    let client = Project::open(&database).unwrap();
+    let project_id = client.project_id.clone();
+
+    let fail_task = create_task(
+        &client,
+        &project_id,
+        "Failing attempt",
+        "one_time",
+        json!({}),
+    );
+    let cancel_task = create_task(
+        &client,
+        &project_id,
+        "Cancelled attempt",
+        "one_time",
+        json!({}),
+    );
+    let timeout_task = create_task(
+        &client,
+        &project_id,
+        "Timeout attempt",
+        "one_time",
+        json!({}),
+    );
+    let restart_task = create_task(
+        &client,
+        &project_id,
+        "Restart attempt",
+        "one_time",
+        json!({}),
+    );
+    let gate = create_task(&client, &project_id, "Gate", "one_time", json!({}));
+    let gated = create_task(
+        &client,
+        &project_id,
+        "Start-gated attempt",
+        "one_time",
+        json!({"prerequisite_task_ids": [gate["id"]]}),
+    );
+    let done = create_task(
+        &client,
+        &project_id,
+        "Completed attempt",
+        "one_time",
+        json!({}),
+    );
+    let done_result = call(
+        &client,
+        "record_task_result",
+        json!({
+            "task_id": done["id"],
+            "expected_revision": done["revision"],
+            "outcome": "success",
+            "evidence": "Completed before the run eligibility check."
+        }),
+    );
+    let mut done_task = done.clone();
+    done_task["revision"] = done_result["task_revision"].clone();
+    update_task(&client, &done_task, json!({"status": "done"}));
+    let recurring = create_task(
+        &client,
+        &project_id,
+        "Recurring attempt",
+        "recurring",
+        json!({}),
+    );
+    let paused = create_task(
+        &client,
+        &project_id,
+        "Paused recurring attempt",
+        "recurring",
+        json!({}),
+    );
+    update_task(&client, &paused, json!({"status": "paused"}));
+
+    let fixtures = directory.path().join("fixtures");
+    std::fs::create_dir_all(&fixtures).unwrap();
+    let codex = write_agent_script(&fixtures, "codex-agent", codex_fixture());
+    let claude = write_agent_script(&fixtures, "claude-agent", claude_fixture());
+    let directories = [
+        "fail",
+        "cancel",
+        "timeout",
+        "restart",
+        "recurring",
+        "success",
+    ];
+    for name in directories {
+        std::fs::create_dir_all(directory.path().join(name)).unwrap();
+    }
+    let environment = [
+        ("DICTUM_FIXTURE_DIR", fixtures.to_str().unwrap()),
+        ("DICTUM_CODEX_BIN", codex.to_str().unwrap()),
+        ("DICTUM_CLAUDE_BIN", claude.to_str().unwrap()),
+        ("DICTUM_RUN_TIMEOUT_SECONDS", "2"),
+    ];
+    let dashboard = Dashboard::start_with_env(&database, 0, &environment);
+    let (token, timeout) = dashboard.run_token();
+    assert_eq!(timeout, 2);
+    let origin = dashboard.origin();
+
+    let launch = |task: &Value, directory_name: &str| {
+        let path = format!("/api/projects/{project_id}/tasks/{}/runs", task["id"]);
+        let body = json!({
+            "agent": "codex",
+            "working_directory": directory.path().join(directory_name).to_str().unwrap()
+        });
+        let response = dashboard.post_json(&path, &body, Some(&origin), Some(&token));
+        (path, response)
+    };
+
+    let (gated_path, gated_response) = launch(&gated, "success");
+    assert_eq!(gated_response.status, 400);
+    assert!(gated_response.body.contains("before-start"));
+    assert_eq!(dashboard.get(&gated_path).json()["runs"], json!([]));
+    let (_, paused_response) = launch(&paused, "success");
+    assert_eq!(paused_response.status, 400);
+    assert!(paused_response.body.contains("only active recurring"));
+    let (_, done_response) = launch(&done_task, "success");
+    assert_eq!(done_response.status, 400);
+    assert!(done_response.body.contains("done one-time task"));
+
+    let (recurring_path, recurring_response) = launch(&recurring, "recurring");
+    assert_eq!(
+        recurring_response.status, 201,
+        "{}",
+        recurring_response.body
+    );
+    let recurring_run = recurring_response.json();
+    let recurring_detail = wait_for_run(
+        &dashboard,
+        &format!("{recurring_path}/{}", recurring_run["id"]),
+    );
+    assert_eq!(recurring_detail["run"]["status"], "succeeded");
+    let recurring_context = call(
+        &client,
+        "get_task_context",
+        json!({"task_id": recurring["id"]}),
+    );
+    assert_eq!(recurring_context["task"]["status"], "active");
+
+    // Failure reports the exit status and stderr without inventing a task result.
+    let (fail_path, fail_response) = launch(&fail_task, "fail");
+    assert_eq!(fail_response.status, 201);
+    let fail_run = fail_response.json();
+    let fail_detail = wait_for_run(&dashboard, &format!("{fail_path}/{}", fail_run["id"]));
+    assert_eq!(fail_detail["run"]["status"], "failed");
+    assert_eq!(fail_detail["run"]["exit_code"], 7);
+    assert!(
+        fail_detail["progress"]
+            .as_str()
+            .unwrap()
+            .contains("permission denied"),
+        "unexpected progress: {}",
+        fail_detail["progress"]
+    );
+    assert_eq!(fail_detail["results"], json!([]));
+
+    // The user resolves the reason, updates the durable brief, and explicitly retries.
+    let fail_context = call(
+        &client,
+        "get_task_context",
+        json!({"task_id": fail_task["id"]}),
+    );
+    let updated = update_task(
+        &client,
+        &fail_context["task"],
+        json!({"progress": "Retry after reading the permission failure."}),
+    );
+    let (_, repeat_response) = launch(&fail_task, "fail");
+    assert_eq!(repeat_response.status, 201);
+    let repeat_run = repeat_response.json();
+    assert_eq!(repeat_run["input_task_revision"], updated["revision"]);
+    let repeat_detail = wait_for_run(&dashboard, &format!("{fail_path}/{}", repeat_run["id"]));
+    assert_eq!(repeat_detail["run"]["status"], "failed");
+    assert_eq!(
+        dashboard.get(&fail_path).json()["runs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // Cancellation terminates the agent and its descendant process group.
+    let (cancel_path, cancel_response) = launch(&cancel_task, "cancel");
+    assert_eq!(cancel_response.status, 201);
+    let cancel_run = cancel_response.json();
+    let cancel_pids = wait_for_file(&fixtures.join("cancel-pids.txt"));
+    let cancel_pids: Vec<i64> = cancel_pids
+        .lines()
+        .map(|line| line.trim().parse().unwrap())
+        .collect();
+    let cancel_response = dashboard.post_json(
+        &format!("{cancel_path}/{}/cancel", cancel_run["id"]),
+        &json!({}),
+        Some(&origin),
+        Some(&token),
+    );
+    assert_eq!(cancel_response.status, 200, "{}", cancel_response.body);
+    let cancel_detail = wait_for_run(&dashboard, &format!("{cancel_path}/{}", cancel_run["id"]));
+    assert_eq!(cancel_detail["run"]["status"], "cancelled");
+    assert_eq!(cancel_detail["run"]["stop_reason"], "cancelled by user");
+    assert!(cancel_detail["run"]["cancel_requested_at"].is_string());
+    for pid in cancel_pids {
+        wait_for_process_exit(pid);
+    }
+
+    // A bounded execution time terminates the same process group.
+    let (timeout_path, timeout_response) = launch(&timeout_task, "timeout");
+    assert_eq!(timeout_response.status, 201);
+    let timeout_run = timeout_response.json();
+    let timeout_pids = wait_for_file(&fixtures.join("timeout-pids.txt"));
+    let timeout_pids: Vec<i64> = timeout_pids
+        .lines()
+        .map(|line| line.trim().parse().unwrap())
+        .collect();
+    let timeout_detail = wait_for_run(&dashboard, &format!("{timeout_path}/{}", timeout_run["id"]));
+    assert_eq!(timeout_detail["run"]["status"], "timed_out");
+    assert!(
+        timeout_detail["run"]["stop_reason"]
+            .as_str()
+            .unwrap()
+            .contains("2 second run limit")
+    );
+    for pid in timeout_pids {
+        wait_for_process_exit(pid);
+    }
+
+    // A hard service restart leaves durable interrupted state and cleans up the
+    // marked agent process group when the new service starts.
+    let (restart_path, restart_response) = launch(&restart_task, "restart");
+    assert_eq!(restart_response.status, 201);
+    let restart_run = restart_response.json();
+    let restart_pids = wait_for_file(&fixtures.join("restart-pids.txt"));
+    let restart_pids: Vec<i64> = restart_pids
+        .lines()
+        .map(|line| line.trim().parse().unwrap())
+        .collect();
+    let port = dashboard.port;
+    drop(dashboard);
+    wait_for_port_free(port);
+    let restarted = Dashboard::start_with_env(&database, port, &environment);
+    let restart_detail = wait_for_run(&restarted, &format!("{restart_path}/{}", restart_run["id"]));
+    assert_eq!(restart_detail["run"]["status"], "interrupted");
+    assert!(
+        restart_detail["run"]["stop_reason"]
+            .as_str()
+            .unwrap()
+            .contains("restarted")
+    );
+    for pid in restart_pids {
+        wait_for_process_exit(pid);
+    }
+    assert_eq!(
+        restarted.get(&restart_path).json()["runs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn dashboard_rejects_unavailable_or_old_agents_without_creating_a_run() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = dashboard_database(&directory);
+    let client = Project::open(&database).unwrap();
+    let project_id = client.project_id.clone();
+    let task = create_task(&client, &project_id, "Run gate", "one_time", json!({}));
+    let workdir = directory.path().join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let missing = directory.path().join("missing-agent");
+    let old = write_agent_script(
+        directory.path(),
+        "old-agent",
+        "#!/bin/sh\nif [ \"${1:-}\" = \"--version\" ]; then echo 'codex-cli 0.1.0'; exit 0; fi\nexit 0\n",
+    );
+    let runs_path = format!("/api/projects/{project_id}/tasks/{}/runs", task["id"]);
+    let body = json!({"agent": "codex", "working_directory": workdir.to_str().unwrap()});
+
+    for (agent, expected) in [
+        (missing.to_str().unwrap(), "cannot run"),
+        (old.to_str().unwrap(), "too old"),
+    ] {
+        let environment = [
+            ("DICTUM_CODEX_BIN", agent),
+            ("DICTUM_CLAUDE_BIN", missing.to_str().unwrap()),
+        ];
+        let dashboard = Dashboard::start_with_env(&database, 0, &environment);
+        let (token, _) = dashboard.run_token();
+        let origin = dashboard.origin();
+        let response = dashboard.post_json(&runs_path, &body, Some(&origin), Some(&token));
+        assert_eq!(response.status, 400, "{}", response.body);
+        assert!(
+            response.body.contains(expected),
+            "expected {expected:?} in {}",
+            response.body
+        );
+        assert_eq!(dashboard.get(&runs_path).json()["runs"], json!([]));
+        let port = dashboard.port;
+        drop(dashboard);
+        wait_for_port_free(port);
+    }
 }
 
 #[test]

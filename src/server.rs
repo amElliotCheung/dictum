@@ -15,13 +15,21 @@ use crate::{
 #[derive(Clone)]
 pub struct DictumServer {
     store: Store,
+    run_id: Option<i64>,
     tool_router: ToolRouter<Self>,
 }
 
 impl DictumServer {
     pub fn new(store: Store) -> Self {
+        Self::with_run_id(store, None)
+    }
+
+    /// A dashboard-launched agent passes its run ID through the environment, so
+    /// results it records are attributed to that attempt without a tool parameter.
+    pub fn with_run_id(store: Store, run_id: Option<i64>) -> Self {
         Self {
             store,
+            run_id,
             tool_router: Self::tool_router(),
         }
     }
@@ -39,6 +47,18 @@ impl DictumServer {
             .map(Json)
             .map_err(|error| error.to_string())
     }
+
+    /// A dashboard-launched agent gets a read-only Dictum boundary plus the one
+    /// result-append path. This keeps task authoring, review and lifecycle state
+    /// with the user while the agent works autonomously in its own directory.
+    fn reject_run_scoped_write(&self) -> Result<(), String> {
+        if let Some(run_id) = self.run_id {
+            return Err(format!(
+                "this Dictum MCP process is scoped to dashboard run {run_id}; it may only read context and record its task result"
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[tool_router]
@@ -55,6 +75,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<CreateProject>,
     ) -> Result<Json<Project>, String> {
+        self.reject_run_scoped_write()?;
         self.database(move |store| store.create_project(input))
             .await
     }
@@ -87,6 +108,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<CreateTask>,
     ) -> Result<Json<Task>, String> {
+        self.reject_run_scoped_write()?;
         self.database(move |store| store.create_task(input)).await
     }
 
@@ -130,6 +152,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<UpdateTask>,
     ) -> Result<Json<Task>, String> {
+        self.reject_run_scoped_write()?;
         self.database(move |store| store.update_task(input)).await
     }
 
@@ -145,7 +168,8 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<RecordTaskResult>,
     ) -> Result<Json<TaskResult>, String> {
-        self.database(move |store| store.record_task_result(input))
+        let run_id = self.run_id;
+        self.database(move |store| store.record_task_result_for_run(input, run_id))
             .await
     }
 
@@ -161,6 +185,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<RecordTaskFeedback>,
     ) -> Result<Json<TaskFeedback>, String> {
+        self.reject_run_scoped_write()?;
         self.database(move |store| store.record_task_feedback(input))
             .await
     }
@@ -189,6 +214,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<CreateSource>,
     ) -> Result<Json<Source>, String> {
+        self.reject_run_scoped_write()?;
         self.database(move |store| store.create_source(input)).await
     }
 
@@ -232,6 +258,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<UpdateSource>,
     ) -> Result<Json<Source>, String> {
+        self.reject_run_scoped_write()?;
         self.database(move |store| store.update_source(input)).await
     }
 
@@ -247,6 +274,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<RecordSourceAction>,
     ) -> Result<Json<Source>, String> {
+        self.reject_run_scoped_write()?;
         self.database(move |store| store.record_source_action(input))
             .await
     }
@@ -263,6 +291,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<RecordDecision>,
     ) -> Result<Json<Decision>, String> {
+        self.reject_run_scoped_write()?;
         self.database(move |store| store.record_decision(input))
             .await
     }

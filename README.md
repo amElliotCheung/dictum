@@ -2,8 +2,8 @@
 
 Dictum is a local project-management MCP server for coding agents. It keeps tasks,
 reusable sources, accepted decisions, and execution results in SQLite so work can
-resume without the original conversation. A bundled, read-only dashboard displays
-the same records in your browser.
+resume without the original conversation. A bundled localhost dashboard displays
+the same records and can launch one explicitly requested local agent attempt.
 
 ## Build and connect
 
@@ -123,7 +123,47 @@ After performing the rework, append a `success` or `no_change` execution with
 This records reported remediation, not human acceptance. New attempts never
 implicitly clear feedback; failures cannot address it. Result history retains the
 review and the addressing result ID. The dashboard displays this same feedback
-and history; writes remain MCP-only.
+and history; record writes remain MCP-only.
+
+## Run a task once
+
+The dashboard can start one bounded local Codex or Claude Code attempt for an
+eligible task. Install the agent CLI and confirm noninteractive execution:
+
+```sh
+codex --version    # requires >= 0.100.0; validated with 0.145.0
+claude --version   # requires >= 2.1.285; validated with 2.1.304
+```
+
+Override executable discovery with `DICTUM_CODEX_BIN` or `DICTUM_CLAUDE_BIN`,
+and pass an explicit model with `DICTUM_CODEX_MODEL` or `DICTUM_CLAUDE_MODEL`
+when the CLI default is not compatible with the installed version. Start the
+dashboard with the same database path, open a task, choose the agent, enter an
+absolute working directory, and press **Run once**.
+
+- Eligible tasks are one-time `todo`, `in_progress` or `blocked` tasks with all
+  before-start gates done, and recurring `active` tasks. `done` and `paused` tasks
+  are rejected. Before-done gates remain completion gates.
+- Only one run may be active for a task and for a canonical working directory.
+  Only one dashboard service may own runs for a database.
+- Codex runs with `codex exec --json` inside a `workspace-write` sandbox,
+  ignores the user's `config.toml` so only the run-scoped Dictum MCP is added,
+  and still loads repository `AGENTS.md`. Claude Code runs in print mode with
+  accept-edits permissions, denied permission prompts, only the run-scoped
+  Dictum MCP, and a setting that loads both `CLAUDE.md` and `AGENTS.md`.
+- The agent's Dictum MCP connection is read-only except for recording one task
+  result. It cannot edit the task, change status, record review feedback or write
+  other project records. A successful process exit never completes the task.
+- Launch returns a run ID immediately. The dashboard shows live progress and a
+  bounded raw log, retains run history across restarts, and supports cancellation.
+  The default limit is 30 minutes; `DICTUM_RUN_TIMEOUT_SECONDS` overrides it.
+  Timeouts, abnormal exits and service restarts are recorded accurately, and the
+  spawned process group is terminated where possible.
+- Run records are separate from `task_results`. Results recorded through the
+  run-scoped MCP connection are linked back to the attempt.
+- Launch and cancel require a loopback Host header, an exact same-origin Origin,
+  and a per-service request token available only to the same-origin page. No CORS
+  headers are served.
 
 ## Open the dashboard
 
@@ -138,9 +178,9 @@ Open <http://127.0.0.1:3000>, select a project, and switch between the One-time
 and Recurring task tabs. Choose a task to see its brief, dependencies, and
 execution history, including outstanding feedback and reported fixes. Project
 decisions and all project sources appear below the task board; expand a source to read inline Markdown or external metadata.
-The dashboard polls for updates. It only reads records; create and update them
-through MCP. The listener binds to `127.0.0.1`; `--port 0` selects a free port
-and prints the URL to stderr.
+The dashboard polls for updates. It reads records and starts or cancels runs;
+create and update records through MCP. The listener binds to `127.0.0.1`;
+`--port 0` selects a free port and prints the URL to stderr.
 
 The committed frontend bundle is embedded in the binary. Normal builds and use
 need no Node.js, frontend server, external fonts, or remote services.
@@ -154,7 +194,9 @@ cargo clippy --locked --all-targets -- -D warnings
 ```
 
 Tests launch the actual MCP binary and HTTP listener with temporary databases.
-Dashboard changes also need a real browser check.
+Controlled fixture agents cover run lifecycle failures; validate the installed
+Codex and Claude CLIs separately. Dashboard changes also need a real browser
+check.
 
 After changing frontend sources, use Node.js 22.12 or newer and rebuild the
 committed assets before rebuilding Rust:
@@ -165,7 +207,7 @@ npm ci
 npm run build
 ```
 
-Only the current schema (v6) is supported. Startup rejects older databases
+Only the current schema (v7) is supported. Startup rejects older databases
 without modifying them; preserve the file and start a new database.
 
 ## License
