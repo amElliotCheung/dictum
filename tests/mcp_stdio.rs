@@ -1,6 +1,10 @@
 //! Exercise the actual binary over MCP stdio, not direct calls to server methods.
 
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    process::{Command, Stdio},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, ensure};
 use chrono::{TimeDelta, Utc};
@@ -450,4 +454,27 @@ async fn mcp_stdio_discovery_lifecycle() -> Result<()> {
 #[tokio::test]
 async fn mcp_stdio_initialize_lifecycle() -> Result<()> {
     tokio::time::timeout(Duration::from_secs(45), workflow(false)).await?
+}
+
+#[test]
+fn invalid_ambient_run_ids_fail_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("invalid-run.sqlite3");
+    for value in ["", "run-7", "0", "-1"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_dictum-mcp"))
+            .env("DICTUM_DATABASE", &database)
+            .env("DICTUM_RUN_ID", value)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run dictum-mcp");
+        assert!(
+            !output.status.success(),
+            "DICTUM_RUN_ID={value:?} was accepted"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("DICTUM_RUN_ID"),
+            "unexpected stderr for {value:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

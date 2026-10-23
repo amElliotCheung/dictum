@@ -10,9 +10,10 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 const APPLICATION_ID: i64 = 0x4449_4354; // DICT
 const SCHEMA: &str = include_str!("schema.sql");
+const RUN_SUMMARY_COLUMNS: &str = "id, project_id, task_id, agent, agent_version, agent_executable, working_directory, input_task_revision, status, started_at, ended_at, exit_code, stop_reason, cancel_requested_at";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -40,7 +41,7 @@ pub enum StoreError {
     #[error("{0}")]
     Conflict(String),
     #[error(
-        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 7 only; preserve the existing file"
+        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 8 only; preserve the existing file"
     )]
     UnsupportedSchema { version: i64, application_id: i64 },
 }
@@ -56,10 +57,13 @@ pub struct CreateRun {
     pub working_directory: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RunningRun {
     pub id: i64,
-    pub pid: i64,
+    pub pid: Option<i64>,
+    pub project_id: String,
+    pub task_id: i64,
+    pub started_at: String,
 }
 
 /// Connections are short lived; clones share the same on-disk database, not a connection.
@@ -444,13 +448,9 @@ impl Store {
         Ok(result)
     }
 
-    pub fn record_task_result(&self, input: RecordTaskResult) -> StoreResult<TaskResult> {
-        self.record_task_result_for_run(input, None)
-    }
-
-    /// Link a result to the dashboard run that spawned this MCP process, when the
-    /// ambient run identity still belongs to the same project and task.
-    pub fn record_task_result_for_run(
+    /// Append a result; when a dashboard run scope is present, link it to that
+    /// run and enforce one result per attempt.
+    pub fn record_task_result(
         &self,
         input: RecordTaskResult,
         ambient_run_id: Option<i64>,
@@ -504,6 +504,16 @@ impl Store {
                     return invalid(format!(
                         "run {id} does not belong to task #{} in this project; a run-scoped process may only record its own task result",
                         task.id
+                    ));
+                }
+                let already_recorded: bool = transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM task_results WHERE run_id=?1)",
+                    params![id],
+                    |row| row.get(0),
+                )?;
+                if already_recorded {
+                    return invalid(format!(
+                        "run {id} already has a recorded task result; one attempt may record at most one result"
                     ));
                 }
                 Some(id)
@@ -712,9 +722,9 @@ impl Store {
         ensure_project(&transaction, project_id)?;
         ensure_exists(&transaction, project_id, "task", task_id)?;
         let runs = {
-            let mut statement = transaction.prepare(
-                "SELECT * FROM task_runs WHERE project_id=?1 AND task_id=?2 ORDER BY id DESC LIMIT ?3",
-            )?;
+            let mut statement = transaction.prepare(&format!(
+                "SELECT {RUN_SUMMARY_COLUMNS} FROM task_runs WHERE project_id=?1 AND task_id=?2 ORDER BY id DESC LIMIT ?3"
+            ))?;
             statement
                 .query_map(params![project_id, task_id, limit], map_run_summary)?
                 .collect::<rusqlite::Result<Vec<_>>>()?
@@ -723,17 +733,48 @@ impl Store {
         Ok(RunList { runs })
     }
 
-    pub fn get_run(&self, project_id: &str, task_id: i64, run_id: i64) -> StoreResult<RunDetail> {
+    pub fn get_run(
+        &self,
+        project_id: &str,
+        task_id: i64,
+        run_id: i64,
+        include_log: bool,
+    ) -> StoreResult<RunDetail> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         ensure_project(&transaction, project_id)?;
         ensure_exists(&transaction, project_id, "task", task_id)?;
-        let run = run_summary_by_id(&transaction, project_id, task_id, run_id)?;
-        let (log, log_truncated, progress) = transaction.query_row(
-            "SELECT log, log_truncated, progress FROM task_runs WHERE id=?1 AND project_id=?2 AND task_id=?3",
-            params![run_id, project_id, task_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
+        let sql = if include_log {
+            format!(
+                "SELECT {RUN_SUMMARY_COLUMNS}, log, log_truncated, progress FROM task_runs WHERE id=?1 AND project_id=?2 AND task_id=?3"
+            )
+        } else {
+            format!(
+                "SELECT {RUN_SUMMARY_COLUMNS}, log_truncated, progress FROM task_runs WHERE id=?1 AND project_id=?2 AND task_id=?3"
+            )
+        };
+        let mut run = None;
+        let mut log = String::new();
+        let mut log_truncated = false;
+        let mut progress = String::new();
+        let found = transaction
+            .query_row(&sql, params![run_id, project_id, task_id], |row| {
+                run = Some(map_run_summary(row)?);
+                if include_log {
+                    log = row.get("log")?;
+                }
+                log_truncated = row.get("log_truncated")?;
+                progress = row.get("progress")?;
+                Ok(())
+            })
+            .optional()?;
+        if found.is_none() {
+            return Err(StoreError::NotFound {
+                entity: "run",
+                id: run_id,
+            });
+        }
+        let run = run.expect("row was present");
         let result_ids = {
             let mut statement = transaction.prepare(
                 "SELECT id FROM task_results WHERE project_id=?1 AND task_id=?2 AND run_id=?3 ORDER BY id",
@@ -787,18 +828,25 @@ impl Store {
         Ok(())
     }
 
-    pub fn update_run_output(
+    pub fn append_run_output(
         &self,
         run_id: i64,
-        log: &str,
-        log_truncated: bool,
+        delta: &str,
+        replace_log: Option<(&str, bool)>,
         progress: &str,
     ) -> StoreResult<()> {
         let connection = self.connect()?;
-        connection.execute(
-            "UPDATE task_runs SET log=?1, log_truncated=?2, progress=?3 WHERE id=?4 AND status='running'",
-            params![log, log_truncated, progress, run_id],
-        )?;
+        if let Some((log, truncated)) = replace_log {
+            connection.execute(
+                "UPDATE task_runs SET log=?1, log_truncated=?2, progress=?3 WHERE id=?4 AND status='running'",
+                params![log, truncated, progress, run_id],
+            )?;
+        } else {
+            connection.execute(
+                "UPDATE task_runs SET log = log || ?1, progress=?2 WHERE id=?3 AND status='running'",
+                params![delta, progress, run_id],
+            )?;
+        }
         Ok(())
     }
 
@@ -818,7 +866,15 @@ impl Store {
         }
         let connection = self.connect()?;
         let changed = connection.execute(
-            "UPDATE task_runs SET status=?1, ended_at=?2, exit_code=?3, stop_reason=?4, log=?5, log_truncated=?6, progress=?7 WHERE id=?8 AND status='running'",
+            "UPDATE task_runs SET
+                status = CASE WHEN status='running' THEN ?1 ELSE status END,
+                ended_at = COALESCE(ended_at, ?2),
+                exit_code = COALESCE(exit_code, ?3),
+                stop_reason = COALESCE(stop_reason, ?4),
+                log = ?5,
+                log_truncated = ?6,
+                progress = ?7
+             WHERE id=?8",
             params![
                 run_status_name(status),
                 timestamp(Utc::now()),
@@ -836,13 +892,16 @@ impl Store {
     pub fn running_runs(&self) -> StoreResult<Vec<RunningRun>> {
         let connection = self.connect()?;
         let mut statement = connection.prepare(
-            "SELECT id, pid FROM task_runs WHERE status='running' AND pid IS NOT NULL ORDER BY id",
+            "SELECT id, pid, project_id, task_id, started_at FROM task_runs WHERE status='running' ORDER BY id",
         )?;
         Ok(statement
             .query_map([], |row| {
                 Ok(RunningRun {
                     id: row.get(0)?,
                     pid: row.get(1)?,
+                    project_id: row.get(2)?,
+                    task_id: row.get(3)?,
+                    started_at: row.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?)
@@ -858,22 +917,39 @@ impl Store {
     }
 
     pub fn claim_service(&self, instance_id: &str, pid: u32) -> StoreResult<()> {
-        let mut connection = self.connect()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing: Option<(String, i64)> = transaction
+        // Inspect the current owner before taking the write lock; `ps` must not
+        // run inside the IMMEDIATE transaction.
+        let connection = self.connect()?;
+        let existing: Option<(String, i64)> = connection
             .query_row(
                 "SELECT instance_id, pid FROM service_lock WHERE id=1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        if let Some((owner, owner_pid)) = existing
+        drop(connection);
+        if let Some((owner, owner_pid)) = &existing
             && owner != instance_id
-            && process_alive(owner_pid)
+            && crate::process::alive(*owner_pid)
+            && !process_is_zombie(*owner_pid)
         {
             return Err(StoreError::Conflict(format!(
                 "another dashboard service (pid {owner_pid}) owns runs for this database"
             )));
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current: Option<(String, i64)> = transaction
+            .query_row(
+                "SELECT instance_id, pid FROM service_lock WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if current != existing {
+            return Err(StoreError::Conflict(
+                "dashboard service ownership changed while checking; retry startup".to_string(),
+            ));
         }
         transaction.execute(
             "INSERT INTO service_lock (id, instance_id, pid, started_at) VALUES (1, ?1, ?2, ?3)
@@ -1542,7 +1618,9 @@ fn run_summary_by_id(
 ) -> StoreResult<RunSummary> {
     connection
         .query_row(
-            "SELECT * FROM task_runs WHERE id=?1 AND project_id=?2 AND task_id=?3",
+            &format!(
+                "SELECT {RUN_SUMMARY_COLUMNS} FROM task_runs WHERE id=?1 AND project_id=?2 AND task_id=?3"
+            ),
             params![id, project_id, task_id],
             map_run_summary,
         )
@@ -1569,21 +1647,21 @@ fn map_run_summary(row: &Row<'_>) -> rusqlite::Result<RunSummary> {
     })
 }
 
-fn process_alive(pid: i64) -> bool {
-    #[cfg(unix)]
-    {
-        if pid <= 0 || pid > i64::from(i32::MAX) {
-            return false;
-        }
-        // Signal 0 checks existence and permission without delivering a signal.
-        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
-        alive || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+/// A zombie cannot retain the lease, but an unavailable process inspection or
+/// an unfamiliar executable name is not evidence that a live owner is gone.
+fn process_is_zombie(pid: i64) -> bool {
+    let output = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "stat="])
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
     }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
-    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .starts_with('Z')
 }
 
 fn source_by_id(

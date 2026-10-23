@@ -1,7 +1,7 @@
 //! Localhost HTTP dashboard: read-only record views plus narrowly scoped
 //! one-shot run launch/cancel controls. All other writes stay on the MCP side.
 
-use std::{sync::Arc, time::Duration};
+use std::{borrow::Cow, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use serde::{Serialize, de::DeserializeOwned};
@@ -338,9 +338,6 @@ async fn dispatch(
             "runs",
             run_id,
         ] => {
-            if !allowed_origin(&request.headers, port, false) {
-                return Response::error(403, "origin is not allowed");
-            }
             let project_id = (*project_id).to_string();
             let task_id = match parse_id("task id", task_id) {
                 Ok(task_id) => task_id,
@@ -350,7 +347,21 @@ async fn dispatch(
                 Ok(run_id) => run_id,
                 Err(response) => return response,
             };
-            match manager.detail(&project_id, task_id, run_id).await {
+            let include_log = match query_value(query, "include_log") {
+                Ok(None) => true,
+                Ok(Some(value)) => match value.as_str() {
+                    "1" | "true" => true,
+                    "0" | "false" => false,
+                    _ => {
+                        return Response::error(400, "include_log must be 0, 1, true or false");
+                    }
+                },
+                Err(()) => return Response::error(400, "invalid query"),
+            };
+            match manager
+                .detail(&project_id, task_id, run_id, include_log)
+                .await
+            {
                 Ok(run) => Response::json(&run),
                 Err(error) => run_error_response(error),
             }
@@ -509,7 +520,7 @@ impl ApiError {
 struct Response {
     status: u16,
     content_type: &'static str,
-    body: Vec<u8>,
+    body: Cow<'static, [u8]>,
     allow: Option<&'static str>,
 }
 
@@ -518,7 +529,7 @@ impl Response {
         Self {
             status,
             content_type,
-            body: body.as_bytes().to_vec(),
+            body: Cow::Borrowed(body.as_bytes()),
             allow: None,
         }
     }
@@ -532,7 +543,7 @@ impl Response {
             Ok(body) => Self {
                 status,
                 content_type: "application/json; charset=utf-8",
-                body,
+                body: Cow::Owned(body),
                 allow: None,
             },
             Err(error) => {
@@ -548,7 +559,7 @@ impl Response {
         Self {
             status,
             content_type: "application/json; charset=utf-8",
-            body,
+            body: Cow::Owned(body),
             allow: None,
         }
     }
@@ -557,7 +568,7 @@ impl Response {
         Self {
             status: 500,
             content_type: "application/json; charset=utf-8",
-            body: b"{\"error\":\"internal server error\"}".to_vec(),
+            body: Cow::Owned(b"{\"error\":\"internal server error\"}".to_vec()),
             allow: None,
         }
     }
@@ -589,7 +600,7 @@ async fn write_response(
     head.push_str("\r\n");
     stream.write_all(head.as_bytes()).await?;
     if !head_only {
-        stream.write_all(&response.body).await?;
+        stream.write_all(response.body.as_ref()).await?;
     }
     stream.shutdown().await
 }

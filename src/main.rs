@@ -35,9 +35,21 @@ async fn run_mcp() -> Result<()> {
 
     eprintln!("dictum-mcp: using {}", database_path.display());
 
-    let run_id = env::var("DICTUM_RUN_ID")
-        .ok()
-        .and_then(|value| value.parse::<i64>().ok());
+    let run_id = match env::var("DICTUM_RUN_ID") {
+        Ok(value) => {
+            let parsed = value
+                .parse::<i64>()
+                .with_context(|| "DICTUM_RUN_ID must be a positive integer")?;
+            if parsed <= 0 {
+                bail!("DICTUM_RUN_ID must be a positive integer");
+            }
+            Some(parsed)
+        }
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(_)) => {
+            bail!("DICTUM_RUN_ID must be valid UTF-8")
+        }
+    };
     let service = DictumServer::with_run_id(store, run_id)
         .serve(stdio())
         .await

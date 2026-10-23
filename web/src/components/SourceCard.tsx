@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api, queryKeys } from '../lib/api';
 import { formatDate } from '../lib/format';
@@ -6,6 +6,7 @@ import type { Source } from '../lib/types';
 import { Markdown } from '../lib/markdown';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
+import { Meta } from './ui/meta';
 
 export function SourceCard({
   projectId,
@@ -171,16 +172,5 @@ function SourceState({ source }: { source: Source }) {
         </Meta>
       ) : null}
     </dl>
-  );
-}
-
-function Meta({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="mt-0.5 text-sm">{children}</dd>
-    </div>
   );
 }

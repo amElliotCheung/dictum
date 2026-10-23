@@ -59,6 +59,17 @@ impl DictumServer {
         }
         Ok(())
     }
+
+    /// Every mutating tool goes through this boundary so a run-scoped process
+    /// cannot silently gain project authoring or review powers.
+    async fn write<T, F>(&self, operation: F) -> Result<Json<T>, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(Store) -> StoreResult<T> + Send + 'static,
+    {
+        self.reject_run_scoped_write()?;
+        self.database(operation).await
+    }
 }
 
 #[tool_router]
@@ -75,9 +86,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<CreateProject>,
     ) -> Result<Json<Project>, String> {
-        self.reject_run_scoped_write()?;
-        self.database(move |store| store.create_project(input))
-            .await
+        self.write(move |store| store.create_project(input)).await
     }
 
     #[tool(
@@ -108,8 +117,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<CreateTask>,
     ) -> Result<Json<Task>, String> {
-        self.reject_run_scoped_write()?;
-        self.database(move |store| store.create_task(input)).await
+        self.write(move |store| store.create_task(input)).await
     }
 
     #[tool(
@@ -152,12 +160,11 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<UpdateTask>,
     ) -> Result<Json<Task>, String> {
-        self.reject_run_scoped_write()?;
-        self.database(move |store| store.update_task(input)).await
+        self.write(move |store| store.update_task(input)).await
     }
 
     #[tool(
-        description = "Append an execution result for either task kind using existing project_id, task_id and latest expected_revision. outcome is success/no_change/failure; evidence is nonblank, at most 4000 characters. Optional addressed_feedback_ids explicitly reports addressing outstanding feedback on this same task; only success/no_change can address it. Describe the fixes and verification in evidence. New results do not implicitly clear feedback; addressing is reported, not human acceptance. Output Source and feedback associations append atomically with a task revision increment. Success/no_change requires all dependency gates done; failure can report unmet gates. Recording never changes lifecycle, including when recurring is paused. Historical source identities persist but contents remain mutable. No scheduling, claiming, exactly-once execution or automatic completion.",
+        description = "Append an execution result for either task kind using existing project_id, task_id and latest expected_revision. outcome is success/no_change/failure; evidence is nonblank, at most 4000 characters. Optional addressed_feedback_ids explicitly reports addressing outstanding feedback on this same task; only success/no_change can address it. Describe the fixes and verification in evidence. New results do not implicitly clear feedback; addressing is reported, not human acceptance. Output Source and feedback associations append atomically with a task revision increment. Success/no_change requires all dependency gates done; failure can report unmet gates. Recording never changes lifecycle, including when recurring is paused. A process scoped to a dashboard run may append at most one result for that run; a second append is rejected. Historical source identities persist but contents remain mutable. No scheduling, claiming, exactly-once execution or automatic completion.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -169,7 +176,7 @@ impl DictumServer {
         Parameters(input): Parameters<RecordTaskResult>,
     ) -> Result<Json<TaskResult>, String> {
         let run_id = self.run_id;
-        self.database(move |store| store.record_task_result_for_run(input, run_id))
+        self.database(move |store| store.record_task_result(input, run_id))
             .await
     }
 
@@ -185,8 +192,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<RecordTaskFeedback>,
     ) -> Result<Json<TaskFeedback>, String> {
-        self.reject_run_scoped_write()?;
-        self.database(move |store| store.record_task_feedback(input))
+        self.write(move |store| store.record_task_feedback(input))
             .await
     }
 
@@ -214,8 +220,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<CreateSource>,
     ) -> Result<Json<Source>, String> {
-        self.reject_run_scoped_write()?;
-        self.database(move |store| store.create_source(input)).await
+        self.write(move |store| store.create_source(input)).await
     }
 
     #[tool(
@@ -258,8 +263,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<UpdateSource>,
     ) -> Result<Json<Source>, String> {
-        self.reject_run_scoped_write()?;
-        self.database(move |store| store.update_source(input)).await
+        self.write(move |store| store.update_source(input)).await
     }
 
     #[tool(
@@ -274,8 +278,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<RecordSourceAction>,
     ) -> Result<Json<Source>, String> {
-        self.reject_run_scoped_write()?;
-        self.database(move |store| store.record_source_action(input))
+        self.write(move |store| store.record_source_action(input))
             .await
     }
 
@@ -291,9 +294,7 @@ impl DictumServer {
         &self,
         Parameters(input): Parameters<RecordDecision>,
     ) -> Result<Json<Decision>, String> {
-        self.reject_run_scoped_write()?;
-        self.database(move |store| store.record_decision(input))
-            .await
+        self.write(move |store| store.record_decision(input)).await
     }
 
     #[tool(

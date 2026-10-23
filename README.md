@@ -145,20 +145,26 @@ absolute working directory, and press **Run once**.
   before-start gates done, and recurring `active` tasks. `done` and `paused` tasks
   are rejected. Before-done gates remain completion gates.
 - Only one run may be active for a task and for a canonical working directory.
-  Only one dashboard service may own runs for a database.
+  Only one dashboard service may own runs for a database. A live owner retains
+  its lease even when process inspection is unavailable or the binary is renamed.
 - Codex runs with `codex exec --json` inside a `workspace-write` sandbox,
   ignores the user's `config.toml` so only the run-scoped Dictum MCP is added,
   and still loads repository `AGENTS.md`. Claude Code runs in print mode with
   accept-edits permissions, denied permission prompts, only the run-scoped
   Dictum MCP, and a setting that loads both `CLAUDE.md` and `AGENTS.md`.
 - The agent's Dictum MCP connection is read-only except for recording one task
-  result. It cannot edit the task, change status, record review feedback or write
-  other project records. A successful process exit never completes the task.
+  result per attempt. It cannot edit the task, change status, record review
+  feedback or write other project records. A successful process exit never
+  completes the task. The agent process inherits no `DICTUM_*` variables; the
+  absolute database path and run identity are supplied only through the
+  run-scoped MCP configuration.
 - Launch returns a run ID immediately. The dashboard shows live progress and a
   bounded raw log, retains run history across restarts, and supports cancellation.
   The default limit is 30 minutes; `DICTUM_RUN_TIMEOUT_SECONDS` overrides it.
   Timeouts, abnormal exits and service restarts are recorded accurately, and the
-  spawned process group is terminated where possible.
+  spawned process group is terminated where possible. Restart cleanup requires
+  a matching database and attempt identity before signalling a process group;
+  unverifiable processes are left untouched and their attempts marked interrupted.
 - Run records are separate from `task_results`. Results recorded through the
   run-scoped MCP connection are linked back to the attempt.
 - Launch and cancel require a loopback Host header, an exact same-origin Origin,
@@ -207,7 +213,7 @@ npm ci
 npm run build
 ```
 
-Only the current schema (v7) is supported. Startup rejects older databases
+Only the current schema (v8) is supported. Startup rejects older databases
 without modifying them; preserve the file and start a new database.
 
 ## License

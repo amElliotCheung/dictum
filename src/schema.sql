@@ -156,7 +156,7 @@ CREATE INDEX task_runs_task ON task_runs(project_id, task_id, id);
 CREATE UNIQUE INDEX task_runs_active_task ON task_runs(project_id, task_id) WHERE status = 'running';
 CREATE UNIQUE INDEX task_runs_active_directory ON task_runs(working_directory) WHERE status = 'running';
 CREATE INDEX task_results_task ON task_results(project_id, task_id, id);
-CREATE INDEX task_results_run ON task_results(project_id, task_id, run_id) WHERE run_id IS NOT NULL;
+CREATE UNIQUE INDEX task_results_run ON task_results(project_id, task_id, run_id) WHERE run_id IS NOT NULL;
 CREATE INDEX task_results_success ON task_results(project_id, task_id, id) WHERE outcome IN ('success', 'no_change');
 CREATE INDEX task_result_sources_source ON task_result_sources(source_id);
 CREATE INDEX task_feedback_result ON task_feedback(project_id, task_id, result_id, id);

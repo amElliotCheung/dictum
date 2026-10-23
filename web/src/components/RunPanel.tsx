@@ -6,7 +6,8 @@ import {
 } from '@tanstack/react-query';
 import { Play, Square } from 'lucide-react';
 import { api, ApiError, queryKeys } from '../lib/api';
-import { formatDate } from '../lib/format';
+import { formatDate, formatIds } from '../lib/format';
+import { cn } from '../lib/utils';
 import type {
   DependencyState,
   RunAgent,
@@ -20,6 +21,7 @@ import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
 import { Input } from './ui/input';
+import { Meta } from './ui/meta';
 
 const runStatusLabels: Record<RunStatus, string> = {
   running: 'Running',
@@ -65,7 +67,7 @@ export function RunPanel({
   const configQuery = useQuery({
     queryKey: queryKeys.runConfig,
     queryFn: api.runConfig,
-    refetchInterval: 30_000,
+    staleTime: 60_000,
   });
 
   const runsQuery = useQuery({
@@ -73,8 +75,8 @@ export function RunPanel({
     queryFn: () => api.runs(projectId, task.id),
     refetchInterval: (query) =>
       query.state.data?.runs.some((run) => run.status === 'running')
-        ? 1_000
-        : 5_000,
+        ? 5_000
+        : 15_000,
   });
 
   const runs = runsQuery.data?.runs ?? [];
@@ -94,9 +96,13 @@ export function RunPanel({
 
   const detailQuery = useQuery({
     queryKey: queryKeys.run(projectId, task.id, selectedRunId ?? 0),
-    queryFn: () => api.run(projectId, task.id, selectedRunId ?? 0),
+    queryFn: () => api.run(projectId, task.id, selectedRunId ?? 0, false),
     enabled: selectedRunId !== null,
-    refetchInterval: selected?.status === 'running' ? 1_000 : false,
+    // Follow this query's own snapshot, not the list. finish_run writes the
+    // terminal status and final output in one update, so the snapshot that
+    // observes the transition is already complete.
+    refetchInterval: (query) =>
+      query.state.data?.run.status === 'running' ? 1_000 : false,
   });
 
   const launch = useMutation({
@@ -320,11 +326,12 @@ export function RunPanel({
                 type="button"
                 onClick={() => setSelectedRunId(run.id)}
                 aria-pressed={run.id === selectedRunId}
-                className={`flex w-full flex-wrap items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs transition-colors ${
+                className={cn(
+                  'flex w-full flex-wrap items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs transition-colors',
                   run.id === selectedRunId
                     ? 'border-primary/40 bg-card shadow-sm'
-                    : 'border-transparent hover:bg-card'
-                }`}
+                    : 'border-transparent hover:bg-card',
+                )}
               >
                 <span className="font-mono text-[11px] text-muted-foreground">
                   #{run.id}
@@ -362,6 +369,8 @@ export function RunPanel({
           }}
           onCancel={() => cancel.mutate(selected.id)}
           cancelling={cancel.isPending}
+          projectId={projectId}
+          taskId={task.id}
         />
       ) : null}
     </section>
@@ -376,6 +385,8 @@ function RunDetailCard({
   onRetry,
   onCancel,
   cancelling,
+  projectId,
+  taskId,
 }: {
   run: RunSummary;
   detail: RunDetail | null;
@@ -384,6 +395,8 @@ function RunDetailCard({
   onRetry: () => void;
   onCancel: () => void;
   cancelling: boolean;
+  projectId: string;
+  taskId: number;
 }) {
   return (
     <Card className="mt-3 p-3">
@@ -494,9 +507,7 @@ function RunDetailCard({
                       {result.output_source_ids.length > 0 ? (
                         <p className="mt-2 text-xs text-muted-foreground">
                           Output sources:{' '}
-                          {result.output_source_ids
-                            .map((id) => `#${id}`)
-                            .join(', ')}
+                          {formatIds(result.output_source_ids)}
                         </p>
                       ) : null}
                     </div>
@@ -506,18 +517,78 @@ function RunDetailCard({
             )}
           </div>
 
-          <details className="rounded-lg border bg-card p-2">
-            <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Raw output
-              {detail.log_truncated ? ' · earlier output truncated' : ''}
-            </summary>
-            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed">
-              {detail.log || 'No output captured.'}
-            </pre>
-          </details>
+          <RunRawOutput
+            key={run.id}
+            projectId={projectId}
+            taskId={taskId}
+            run={run}
+            logTruncated={detail.log_truncated}
+          />
         </div>
       ) : null}
     </Card>
+  );
+}
+
+function RunRawOutput({
+  projectId,
+  taskId,
+  run,
+  logTruncated,
+}: {
+  projectId: string;
+  taskId: number;
+  run: RunSummary;
+  logTruncated: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const query = useQuery({
+    queryKey: queryKeys.runLog(projectId, taskId, run.id),
+    queryFn: () => api.run(projectId, taskId, run.id, true),
+    enabled: open,
+    // Poll until this query's own snapshot is terminal, then fetch once more
+    // only if the user reopens it. The final log is written with the status.
+    refetchInterval: (query) =>
+      query.state.data?.run.status === 'running' ? 2_000 : false,
+  });
+
+  return (
+    <details
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      className="rounded-lg border bg-card p-2"
+    >
+      <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        Raw output
+        {logTruncated ? ' · earlier output truncated' : ''}
+      </summary>
+      {!open ? null : query.isPending && !query.data ? (
+        <p className="mt-2 text-xs text-muted-foreground" role="status">
+          Loading raw output…
+        </p>
+      ) : query.isError && !query.data ? (
+        <div
+          role="alert"
+          className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-900"
+        >
+          Unable to load raw output: {query.error.message}
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            onClick={() => {
+              void query.refetch();
+            }}
+          >
+            Retry
+          </Button>
+        </div>
+      ) : (
+        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed">
+          {query.data?.log || 'No output captured.'}
+        </pre>
+      )}
+    </details>
   );
 }
 
@@ -537,12 +608,9 @@ function Detail({
   children: ReactNode;
 }) {
   return (
-    <div>
-      <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="mt-0.5 break-words">{children}</dd>
-    </div>
+    <Meta label={label} className="break-words text-xs">
+      {children}
+    </Meta>
   );
 }
 
@@ -551,9 +619,9 @@ function runBlockedReason(
   dependencyState: DependencyState,
 ): string | null {
   if (dependencyState.unmet_prerequisite_task_ids.length > 0) {
-    return `Resolve before-start dependencies first: ${dependencyState.unmet_prerequisite_task_ids
-      .map((id) => `#${id}`)
-      .join(', ')}.`;
+    return `Resolve before-start dependencies first: ${formatIds(
+      dependencyState.unmet_prerequisite_task_ids,
+    )}.`;
   }
   if (task.kind === 'one_time' && task.status === 'done') {
     return 'Done one-time tasks must be reopened before another attempt.';

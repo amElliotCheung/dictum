@@ -24,6 +24,7 @@ import { Markdown } from '../lib/markdown';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
+import { Meta } from './ui/meta';
 import { DecisionCard } from './DecisionCard';
 import { RunPanel } from './RunPanel';
 import { SourceBody, SourceCard } from './SourceCard';
@@ -490,16 +491,6 @@ function Subheading({ children }: { children: ReactNode }) {
   );
 }
 
-function Meta({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </dt>
-      <dd className="mt-0.5 text-sm">{children}</dd>
-    </div>
-  );
-}
 
 const statusClasses: Record<TaskStatus, string> = {
   todo: 'border-sky-300 bg-sky-50 text-sky-800',

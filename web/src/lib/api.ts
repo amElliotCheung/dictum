@@ -117,9 +117,11 @@ export const api = {
     projectId: string,
     taskId: number,
     runId: number,
+    includeLog = true,
   ): Promise<RunDetail> {
+    const query = includeLog ? '' : '?include_log=0';
     return getJson<RunDetail>(
-      `${projectPath(projectId)}/tasks/${taskId}/runs/${runId}`,
+      `${projectPath(projectId)}/tasks/${taskId}/runs/${runId}${query}`,
     );
   },
   launchRun(
@@ -168,4 +170,6 @@ export const queryKeys = {
     ['projects', projectId, 'tasks', taskId, 'runs'] as const,
   run: (projectId: string, taskId: number, runId: number) =>
     ['projects', projectId, 'tasks', taskId, 'runs', runId] as const,
+  runLog: (projectId: string, taskId: number, runId: number) =>
+    ['projects', projectId, 'tasks', taskId, 'runs', runId, 'log'] as const,
 };

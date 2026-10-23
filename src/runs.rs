@@ -5,7 +5,7 @@
 //! durable run records separate from append-only task results.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     env,
     path::{Path, PathBuf},
     process::{ExitStatus, Stdio},
@@ -19,7 +19,7 @@ use std::{
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
-    process::{Child, Command},
+    process::Command,
     sync::{Mutex, mpsc, watch},
     task::JoinHandle,
     time::{Instant, sleep, timeout},
@@ -33,6 +33,7 @@ use crate::{
 
 const DEFAULT_TIMEOUT_SECONDS: u64 = 30 * 60;
 const LOG_LIMIT: usize = 256 * 1024;
+const LOG_SLACK: usize = 64 * 1024;
 const PROGRESS_LINE_LIMIT: usize = 600;
 const PROGRESS_LINES: usize = 40;
 const LINE_LIMIT: usize = 64 * 1024;
@@ -83,7 +84,9 @@ pub struct RunManager {
     codex_model: Option<String>,
     claude_model: Option<String>,
     dictum_binary: PathBuf,
+    database_identity: PathBuf,
     active: Mutex<HashMap<i64, watch::Sender<StopKind>>>,
+    lifecycle: Mutex<()>,
     stopping: AtomicBool,
 }
 
@@ -91,8 +94,17 @@ impl RunManager {
     /// Claim single-service ownership, clean up attempts left by a previous
     /// service process, and prepare a run token for same-origin mutations.
     pub async fn start(store: Store) -> Result<Self, RunError> {
+        let database_identity = std::fs::canonicalize(store.path()).map_err(|error| {
+            RunError::Validation(format!("cannot resolve the run database: {error}"))
+        })?;
         let instance_id = Uuid::new_v4().to_string();
-        store.claim_service(&instance_id, std::process::id())?;
+        let claim_store = store.clone();
+        let claim_instance = instance_id.clone();
+        tokio::task::spawn_blocking(move || {
+            claim_store.claim_service(&claim_instance, std::process::id())
+        })
+        .await
+        .map_err(|error| RunError::Worker(error.to_string()))??;
         let manager = Self {
             store,
             instance_id,
@@ -109,7 +121,9 @@ impl RunManager {
             dictum_binary: env::current_exe().map_err(|error| {
                 RunError::Validation(format!("cannot locate dictum-mcp: {error}"))
             })?,
+            database_identity,
             active: Mutex::new(HashMap::new()),
+            lifecycle: Mutex::new(()),
             stopping: AtomicBool::new(false),
         };
         if let Err(error) = manager.reconcile_stale_runs().await {
@@ -143,10 +157,11 @@ impl RunManager {
         project_id: &str,
         task_id: i64,
         run_id: i64,
+        include_log: bool,
     ) -> Result<RunDetail, RunError> {
         let project_id = project_id.to_string();
         store_call(&self.store, move |store| {
-            store.get_run(&project_id, task_id, run_id)
+            store.get_run(&project_id, task_id, run_id, include_log)
         })
         .await
     }
@@ -157,6 +172,7 @@ impl RunManager {
         task_id: i64,
         input: LaunchRun,
     ) -> Result<RunSummary, RunError> {
+        let _lifecycle = self.lifecycle.lock().await;
         if self.stopping.load(Ordering::SeqCst) {
             return Err(RunError::Conflict(
                 "the dashboard service is shutting down; start it again before launching a run"
@@ -182,7 +198,7 @@ impl RunManager {
             working_directory,
         };
         let run = store_call(&self.store, move |store| store.create_run(create)).await?;
-        let prompt = build_prompt(&run);
+        let prompt = build_prompt(&self.database_identity, &run);
         let (stop_tx, stop_rx) = watch::channel(StopKind::Cancel);
         {
             let mut active = self.active.lock().await;
@@ -225,7 +241,7 @@ impl RunManager {
                     // of a misleading conflict for an already-finished attempt.
                     let project = project_id.to_string();
                     let current = store_call(&self.store, move |store| {
-                        store.get_run(&project, task_id, run_id)
+                        store.get_run(&project, task_id, run_id, false)
                     })
                     .await?;
                     if current.run.status == RunStatus::Running {
@@ -243,6 +259,7 @@ impl RunManager {
 
     /// Stop supervisors, kill their process groups, and release service ownership.
     pub async fn shutdown(&self) {
+        let _lifecycle = self.lifecycle.lock().await;
         self.stopping.store(true, Ordering::SeqCst);
         {
             let active = self.active.lock().await;
@@ -259,9 +276,22 @@ impl RunManager {
         }
         // A wedged supervisor must not leave a claimed service lock behind.
         if let Ok(runs) = self.store.running_runs() {
-            for run in runs {
-                terminate_marked_process(run.pid, run.id).await;
-            }
+            let markers = runs
+                .iter()
+                .map(|run| {
+                    (
+                        run.pid,
+                        run_marker(
+                            &self.database_identity,
+                            &run.project_id,
+                            run.task_id,
+                            run.id,
+                            &run.started_at,
+                        ),
+                    )
+                })
+                .collect();
+            cleanup_runs(markers).await;
         }
         let _ = self
             .store
@@ -271,9 +301,22 @@ impl RunManager {
 
     async fn reconcile_stale_runs(&self) -> Result<(), RunError> {
         let runs = store_call(&self.store, |store| store.running_runs()).await?;
-        for run in runs {
-            terminate_marked_process(run.pid, run.id).await;
-        }
+        let markers = runs
+            .iter()
+            .map(|run| {
+                (
+                    run.pid,
+                    run_marker(
+                        &self.database_identity,
+                        &run.project_id,
+                        run.task_id,
+                        run.id,
+                        &run.started_at,
+                    ),
+                )
+            })
+            .collect();
+        cleanup_runs(markers).await;
         let marked = store_call(&self.store, |store| {
             store.interrupt_running_runs("dashboard service restarted before the run finished")
         })
@@ -291,24 +334,48 @@ async fn supervise(
     prompt: String,
     mut stop: watch::Receiver<StopKind>,
 ) {
-    let (status, exit_code, stop_reason, output) =
+    let (status, exit_code, stop_reason, mut output) =
         execute(&manager, &run, &prompt, &mut stop).await;
+    output.trim_to_limit();
     let truncated = output.log_truncated;
     let progress = output.progress_text();
     let log = output.log;
     let run_id = run.id;
-    let _ = store_call(&manager.store, move |store| {
-        store.finish_run(
-            run_id,
-            status,
-            exit_code,
-            stop_reason.as_deref(),
-            &log,
-            truncated,
-            &progress,
-        )
-    })
-    .await;
+    let mut finalized = false;
+    for attempt in 1..=3 {
+        let log = log.clone();
+        let progress = progress.clone();
+        let stop_reason = stop_reason.clone();
+        match store_call(&manager.store, move |store| {
+            store.finish_run(
+                run_id,
+                status,
+                exit_code,
+                stop_reason.as_deref(),
+                &log,
+                truncated,
+                &progress,
+            )
+        })
+        .await
+        {
+            Ok(_) => {
+                finalized = true;
+                break;
+            }
+            Err(error) => {
+                eprintln!(
+                    "dictum-mcp dashboard: could not finalize run {run_id} (attempt {attempt}/3): {error}"
+                );
+                sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
+    if !finalized {
+        eprintln!(
+            "dictum-mcp dashboard: run {run_id} remains marked running after finalization failed; a restart will reconcile it"
+        );
+    }
     manager.active.lock().await.remove(&run.id);
 }
 
@@ -337,12 +404,15 @@ async fn execute(
         }
     };
     let pid = child.id();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let mut wait = tokio::spawn(async move { child.wait().await });
     if let Some(pid) = pid {
         let run_id = run.id;
         if let Err(error) =
             store_call(&manager.store, move |store| store.set_run_pid(run_id, pid)).await
         {
-            let _ = terminate_child(pid, &mut child).await;
+            let _ = terminate_waited(Some(pid), &mut wait).await;
             return (
                 RunStatus::Failed,
                 None,
@@ -351,8 +421,6 @@ async fn execute(
             );
         }
     }
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
     let (tx, mut rx) = mpsc::channel(128);
     if let Some(stdout) = stdout {
         tokio::spawn(read_lines(stdout, StreamKind::Stdout, tx.clone()));
@@ -361,7 +429,6 @@ async fn execute(
         tokio::spawn(read_lines(stderr, StreamKind::Stderr, tx.clone()));
     }
     drop(tx);
-    let mut wait = tokio::spawn(async move { child.wait().await });
     let deadline = tokio::time::sleep(manager.timeout);
     tokio::pin!(deadline);
     let mut stop_kind = None;
@@ -384,7 +451,9 @@ async fn execute(
                 break;
             }
             _ = persist.tick() => {
-                persist_output(manager, run.id, &output).await;
+                if output.dirty && persist_output(manager, run.id, &mut output).await {
+                    output.dirty = false;
+                }
             }
             event = rx.recv(), if !readers_done => {
                 match event {
@@ -441,14 +510,43 @@ async fn execute(
     (status, exit_code, stop_reason, output)
 }
 
-async fn persist_output(manager: &RunManager, run_id: i64, output: &Output) {
-    let log = output.log.clone();
-    let truncated = output.log_truncated;
+async fn persist_output(manager: &RunManager, run_id: i64, output: &mut Output) -> bool {
     let progress = output.progress_text();
-    let _ = store_call(&manager.store, move |store| {
-        store.update_run_output(run_id, &log, truncated, &progress)
+    let (delta, replace_log) = if output.trimmed_since_persist {
+        (
+            String::new(),
+            Some((output.log.clone(), output.log_truncated)),
+        )
+    } else {
+        let delta = output
+            .log
+            .get(output.persisted_len..)
+            .unwrap_or("")
+            .to_string();
+        if delta.is_empty() && progress == output.persisted_progress {
+            return true;
+        }
+        (delta, None)
+    };
+    let stored_progress = progress.clone();
+    let saved = store_call(&manager.store, move |store| {
+        store.append_run_output(
+            run_id,
+            &delta,
+            replace_log
+                .as_ref()
+                .map(|(log, truncated)| (log.as_str(), *truncated)),
+            &stored_progress,
+        )
     })
-    .await;
+    .await
+    .is_ok();
+    if saved {
+        output.persisted_len = output.log.len();
+        output.persisted_progress = progress;
+        output.trimmed_since_persist = false;
+    }
+    saved
 }
 
 fn join_exit(
@@ -467,83 +565,89 @@ async fn terminate_waited(
     if let Some(pid) = pid {
         signal_group(pid, libc::SIGTERM);
     }
+    let mut status = None;
     if let Ok(Ok(result)) = timeout(TERMINATE_GRACE, &mut *wait).await {
-        return result.ok();
+        status = result.ok();
     }
+    // Even when the leader exits on SIGTERM, descendants may ignore it.
     if let Some(pid) = pid {
         signal_group(pid, libc::SIGKILL);
     }
-    match timeout(TERMINATE_GRACE, &mut *wait).await {
-        Ok(Ok(result)) => result.ok(),
-        _ => None,
+    if status.is_none()
+        && let Ok(Ok(result)) = timeout(TERMINATE_GRACE, &mut *wait).await
+    {
+        status = result.ok();
     }
-}
-
-async fn terminate_child(pid: u32, child: &mut Child) -> Option<ExitStatus> {
-    signal_group(pid, libc::SIGTERM);
-    if let Ok(Ok(status)) = timeout(TERMINATE_GRACE, child.wait()).await {
-        return Some(status);
-    }
-    signal_group(pid, libc::SIGKILL);
-    match timeout(TERMINATE_GRACE, child.wait()).await {
-        Ok(Ok(status)) => Some(status),
-        _ => None,
-    }
+    status
 }
 
 fn signal_group(pid: u32, signal: i32) {
-    #[cfg(unix)]
-    {
-        if let Ok(pid) = i32::try_from(pid) {
-            // The child was started as its own process-group leader.
-            unsafe {
-                libc::kill(-pid, signal);
+    crate::process::signal_group(i64::from(pid), signal);
+}
+
+async fn cleanup_runs(runs: Vec<(Option<i64>, String)>) {
+    if runs.is_empty() {
+        return;
+    }
+    let _ = tokio::task::spawn_blocking(move || cleanup_marked_runs(&runs)).await;
+}
+
+/// Best-effort cleanup for attempts left running by a previous service. One
+/// process-table snapshot is matched against the exact database/run markers;
+/// the recorded PID is only trusted when its command still carries its marker.
+fn cleanup_marked_runs(runs: &[(Option<i64>, String)]) {
+    let output = std::process::Command::new("ps")
+        .args(["-ww", "-axo", "pid=,pgid=,command="])
+        .output();
+    let Ok(output) = output else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let rows: Vec<(i64, i64, String)> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let mut parts = line.splitn(3, |character: char| character.is_whitespace());
+            let pid = parts.next()?.parse::<i64>().ok()?;
+            let pgid = parts.next()?.parse::<i64>().ok()?;
+            let command = parts.next()?.trim_start().to_string();
+            Some((pid, pgid, command))
+        })
+        .collect();
+    let mut groups = BTreeSet::new();
+    for (recorded_pid, marker) in runs {
+        if let Some(pid) = recorded_pid
+            && crate::process::alive(*pid)
+            && let Some((_, group, _)) = rows
+                .iter()
+                .find(|(row_pid, _, command)| row_pid == pid && command.contains(marker))
+        {
+            groups.insert(*group);
+        }
+        for (_, group, command) in &rows {
+            if command.contains(marker) {
+                groups.insert(*group);
             }
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (pid, signal);
-    }
-}
-
-async fn terminate_marked_process(pid: i64, run_id: i64) {
-    if pid <= 0 || pid > i64::from(i32::MAX) || !process_alive(pid) {
+    let own_group = crate::process::current_group();
+    let groups: Vec<i64> = groups
+        .into_iter()
+        .filter(|group| *group > 0 && *group != own_group)
+        .collect();
+    if groups.is_empty() {
         return;
     }
-    let pid = pid as u32;
-    if !command_contains_marker(pid, run_id) {
-        return;
+    for group in &groups {
+        crate::process::signal_group(*group, libc::SIGTERM);
     }
-    signal_group(pid, libc::SIGTERM);
-    sleep(Duration::from_millis(250)).await;
-    if process_alive(i64::from(pid)) {
-        signal_group(pid, libc::SIGKILL);
-    }
-}
-
-fn command_contains_marker(pid: u32, run_id: i64) -> bool {
-    let marker = format!("{PROMPT_MARKER} {run_id}");
-    std::process::Command::new("ps")
-        .args(["-ww", "-p", &pid.to_string(), "-o", "command="])
-        .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).contains(&marker))
-        .unwrap_or(false)
-}
-
-fn process_alive(pid: i64) -> bool {
-    #[cfg(unix)]
-    {
-        if pid <= 0 || pid > i64::from(i32::MAX) {
-            return false;
+    std::thread::sleep(Duration::from_millis(250));
+    for group in &groups {
+        if crate::process::group_alive(*group) {
+            crate::process::signal_group(*group, libc::SIGKILL);
         }
-        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
-        alive || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
     }
 }
 
@@ -552,27 +656,92 @@ where
     R: AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(reader);
-    let mut line = String::new();
+    let mut line = Vec::with_capacity(1024);
+    let mut truncated = false;
     loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {
-                let mut text = line.trim_end_matches(['\r', '\n']).to_string();
-                if text.len() > LINE_LIMIT {
-                    let mut cut = LINE_LIMIT;
-                    while cut > 0 && !text.is_char_boundary(cut) {
-                        cut -= 1;
-                    }
-                    text.truncate(cut);
-                    text.push_str(" …[line truncated]");
-                }
-                if tx.send(OutputEvent { stream, line: text }).await.is_err() {
-                    break;
-                }
+        let chunk = match reader.fill_buf().await {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                let _ = tx
+                    .send(OutputEvent {
+                        stream,
+                        line: format!("[output read error: {error}]"),
+                    })
+                    .await;
+                break;
             }
+        };
+        if chunk.is_empty() {
+            if !line.is_empty() {
+                send_line(&tx, stream, &line, truncated).await;
+            }
+            break;
+        }
+        if let Some(position) = chunk.iter().position(|byte| *byte == b'\n') {
+            append_bounded(&mut line, &chunk[..position], &mut truncated);
+            let consumed = position + 1;
+            reader.consume(consumed);
+            if !send_line(&tx, stream, &line, truncated).await {
+                break;
+            }
+            line.clear();
+            truncated = false;
+        } else {
+            let consumed = chunk.len();
+            append_bounded(&mut line, chunk, &mut truncated);
+            reader.consume(consumed);
         }
     }
+}
+
+fn append_bounded(line: &mut Vec<u8>, bytes: &[u8], truncated: &mut bool) {
+    // Keep one extra byte so a line of exactly LINE_LIMIT bytes plus CRLF is
+    // not spuriously marked truncated before the CR is stripped.
+    let capacity = LINE_LIMIT.saturating_add(1);
+    let remaining = capacity.saturating_sub(line.len());
+    if bytes.len() > remaining {
+        line.extend_from_slice(&bytes[..remaining]);
+        *truncated = true;
+    } else {
+        line.extend_from_slice(bytes);
+    }
+}
+
+fn trim_partial_utf8(bytes: &[u8]) -> &[u8] {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => bytes,
+        Err(error) if error.error_len().is_none() && error.valid_up_to() > 0 => {
+            &bytes[..error.valid_up_to()]
+        }
+        Err(_) => bytes,
+    }
+}
+
+/// Lines are always delivered lossily, so non-UTF-8 tool output cannot stop the
+/// reader or close the child's pipe. Truncation happens after CR stripping and
+/// at a UTF-8 boundary.
+async fn send_line(
+    tx: &mpsc::Sender<OutputEvent>,
+    stream: StreamKind,
+    bytes: &[u8],
+    truncated: bool,
+) -> bool {
+    let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+    let bytes = if truncated {
+        trim_partial_utf8(bytes)
+    } else {
+        bytes
+    };
+    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    if truncated || text.len() > LINE_LIMIT {
+        let mut cut = LINE_LIMIT.min(text.len());
+        while cut > 0 && !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push_str(" …[line truncated]");
+    }
+    tx.send(OutputEvent { stream, line: text }).await.is_ok()
 }
 
 fn build_command(
@@ -589,9 +758,14 @@ fn build_command(
         .kill_on_drop(true)
         .process_group(0);
     let database = manager.store.path().to_string_lossy().to_string();
-    command
-        .env("DICTUM_DATABASE", &database)
-        .env("DICTUM_RUN_ID", run.id.to_string());
+    // Run identity and database access belong only to the explicit MCP
+    // configuration below. Leaving any DICTUM_* variable on the agent
+    // environment would taint an unrelated Dictum process it starts.
+    for (name, _) in env::vars_os() {
+        if name.to_string_lossy().starts_with("DICTUM_") {
+            command.env_remove(name);
+        }
+    }
     match run.agent {
         RunAgent::Codex => {
             command
@@ -689,9 +863,38 @@ fn toml_string(value: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-fn build_prompt(run: &RunSummary) -> String {
+/// Encode all persisted identity fields, including the database location, so
+/// recovery never confuses database-local IDs or copied database files. Hex
+/// keeps the marker intact in `ps` output even for paths with whitespace.
+fn run_marker(
+    database: &Path,
+    project_id: &str,
+    task_id: i64,
+    run_id: i64,
+    started_at: &str,
+) -> String {
+    let identity = json!([
+        database.as_os_str().as_encoded_bytes(),
+        project_id,
+        task_id,
+        run_id,
+        started_at,
+    ])
+    .to_string();
+    let encoded: String = identity.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format!("[dictum-run-v1:{encoded}]")
+}
+
+fn build_prompt(database: &Path, run: &RunSummary) -> String {
+    let marker = run_marker(
+        database,
+        &run.project_id,
+        run.task_id,
+        run.id,
+        &run.started_at,
+    );
     format!(
-        "{PROMPT_MARKER} {run_id} for project {project_id}, task #{task_id}.\n\n\
+        "{marker}\n{PROMPT_MARKER} {run_id} for project {project_id}, task #{task_id}.\n\n\
          Before acting, call the Dictum MCP tool get_task_context with project_id \"{project_id}\" and task_id {task_id}. \
          Follow the complete brief, current decisions, context sources, dependency state, and outstanding feedback. \
          The authorized scope is exactly that task; do not modify unrelated project records.\n\n\
@@ -718,22 +921,31 @@ fn resolve_working_directory(raw: &str) -> Result<String, RunError> {
             "working_directory must be an absolute path".to_string(),
         ));
     }
+    canonical_utf8(path, "working_directory", "directory")
+}
+
+fn canonical_utf8(path: &Path, label: &str, kind: &str) -> Result<String, RunError> {
     let canonical = std::fs::canonicalize(path).map_err(|error| {
         RunError::Validation(format!(
-            "working_directory {} cannot be resolved: {error}",
+            "{label} {} cannot be resolved: {error}",
             path.display()
         ))
     })?;
-    if !canonical.is_dir() {
+    let matches = match kind {
+        "directory" => canonical.is_dir(),
+        "file" => canonical.is_file(),
+        _ => false,
+    };
+    if !matches {
         return Err(RunError::Validation(format!(
-            "working_directory {} is not a directory",
+            "{label} {} is not a {kind}",
             canonical.display()
         )));
     }
     canonical
         .to_str()
         .map(str::to_string)
-        .ok_or_else(|| RunError::Validation("working_directory must be valid UTF-8".to_string()))
+        .ok_or_else(|| RunError::Validation(format!("{label} must be valid UTF-8")))
 }
 
 async fn resolve_agent(bin: &str, agent: RunAgent) -> Result<(String, String), RunError> {
@@ -742,7 +954,8 @@ async fn resolve_agent(bin: &str, agent: RunAgent) -> Result<(String, String), R
             "agent executable is empty".to_string(),
         ));
     }
-    let mut command = Command::new(bin);
+    let bin = resolve_executable(bin)?;
+    let mut command = Command::new(&bin);
     command.arg("--version").kill_on_drop(true);
     let output = timeout(VERSION_TIMEOUT, command.output())
         .await
@@ -791,7 +1004,22 @@ async fn resolve_agent(bin: &str, agent: RunAgent) -> Result<(String, String), R
     } else {
         reported.chars().take(200).collect()
     };
-    Ok((bin.to_string(), reported))
+    Ok((bin, reported))
+}
+
+/// A bare name is resolved through PATH at both version check and spawn time.
+/// A slash-containing relative path must be resolved against the dashboard's
+/// working directory; otherwise the agent would run a different file after
+/// `current_dir` changes.
+fn resolve_executable(bin: &str) -> Result<String, RunError> {
+    let path = Path::new(bin);
+    if path.is_absolute() {
+        return Ok(bin.to_string());
+    }
+    if bin.contains('/') || bin.contains('\\') {
+        return canonical_utf8(path, "agent executable", "file");
+    }
+    Ok(bin.to_string())
 }
 
 fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
@@ -852,6 +1080,10 @@ struct Output {
     log: String,
     log_truncated: bool,
     progress: Vec<String>,
+    dirty: bool,
+    persisted_len: usize,
+    persisted_progress: String,
+    trimmed_since_persist: bool,
 }
 
 impl Output {
@@ -861,21 +1093,26 @@ impl Output {
             log: String::new(),
             log_truncated: false,
             progress: Vec::new(),
+            dirty: false,
+            persisted_len: 0,
+            persisted_progress: String::new(),
+            trimmed_since_persist: false,
         }
     }
 
     fn push(&mut self, stream: StreamKind, line: &str) {
+        self.dirty = true;
         match stream {
             StreamKind::Stdout => {
                 self.log.push_str(line);
                 self.log.push('\n');
-                match progress_from_line(self.agent, line) {
-                    Some(progress) => self.push_progress(&progress),
-                    None => {
-                        if serde_json::from_str::<Value>(line).is_err() {
-                            self.push_progress(line);
+                match serde_json::from_str::<Value>(line) {
+                    Ok(value) => {
+                        if let Some(progress) = progress_from_value(self.agent, &value) {
+                            self.push_progress(&progress);
                         }
                     }
+                    Err(_) => self.push_progress(line),
                 }
             }
             StreamKind::Stderr => {
@@ -887,14 +1124,25 @@ impl Output {
                 }
             }
         }
-        if self.log.len() > LOG_LIMIT {
-            let mut cut = self.log.len() - LOG_LIMIT;
-            while cut < self.log.len() && !self.log.is_char_boundary(cut) {
-                cut += 1;
-            }
-            self.log.drain(..cut);
-            self.log_truncated = true;
+        if self.log.len() > LOG_LIMIT + LOG_SLACK {
+            self.trim_log(LOG_LIMIT);
         }
+    }
+
+    fn trim_to_limit(&mut self) {
+        if self.log.len() > LOG_LIMIT {
+            self.trim_log(LOG_LIMIT);
+        }
+    }
+
+    fn trim_log(&mut self, limit: usize) {
+        let mut cut = self.log.len() - limit;
+        while cut < self.log.len() && !self.log.is_char_boundary(cut) {
+            cut += 1;
+        }
+        self.log.drain(..cut);
+        self.log_truncated = true;
+        self.trimmed_since_persist = true;
     }
 
     fn push_progress(&mut self, line: &str) {
@@ -917,11 +1165,10 @@ impl Output {
     }
 }
 
-fn progress_from_line(agent: RunAgent, line: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(line).ok()?;
+fn progress_from_value(agent: RunAgent, value: &Value) -> Option<String> {
     match agent {
-        RunAgent::Claude => claude_progress(&value),
-        RunAgent::Codex => codex_progress(&value),
+        RunAgent::Claude => claude_progress(value),
+        RunAgent::Codex => codex_progress(value),
     }
 }
 
