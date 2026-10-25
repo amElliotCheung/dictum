@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 const APPLICATION_ID: i64 = 0x4449_4354; // DICT
 const SCHEMA: &str = include_str!("schema.sql");
 const RUN_SUMMARY_COLUMNS: &str = "id, project_id, task_id, agent, agent_version, agent_executable, working_directory, input_task_revision, status, started_at, ended_at, exit_code, stop_reason, cancel_requested_at";
@@ -41,7 +41,7 @@ pub enum StoreError {
     #[error("{0}")]
     Conflict(String),
     #[error(
-        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 8 only; preserve the existing file"
+        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 9 only; preserve the existing file"
     )]
     UnsupportedSchema { version: i64, application_id: i64 },
 }
@@ -1204,8 +1204,11 @@ impl Store {
                 ));
             }
         }
-        transaction.execute("INSERT INTO decisions (project_id, statement, rationale, supersedes_id, created_at) VALUES (?5, ?1, ?2, ?3, ?4)", params![input.statement, input.rationale, input.supersedes_id, timestamp(Utc::now()), input.project_id])?;
-        let result = transaction.query_row("SELECT id, project_id, statement, rationale, supersedes_id, created_at, 1 AS is_current FROM decisions WHERE id=?1 AND project_id=?2", params![transaction.last_insert_rowid(), input.project_id], map_decision)?;
+        transaction.execute(
+            "INSERT INTO decisions (project_id, statement, rationale, alternatives_rejected, supersedes_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![input.project_id, input.statement, input.rationale, input.alternatives_rejected, input.supersedes_id, timestamp(Utc::now())],
+        )?;
+        let result = transaction.query_row("SELECT id, project_id, statement, rationale, alternatives_rejected, supersedes_id, created_at, 1 AS is_current FROM decisions WHERE id=?1 AND project_id=?2", params![transaction.last_insert_rowid(), input.project_id], map_decision)?;
         transaction.commit()?;
         Ok(result)
     }
@@ -1744,7 +1747,7 @@ fn decisions(
     project_id: &str,
     include_superseded: bool,
 ) -> StoreResult<Vec<Decision>> {
-    let mut statement = connection.prepare("SELECT d.id, d.project_id, d.statement, d.rationale, d.supersedes_id, d.created_at, NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id) AS is_current FROM decisions d WHERE d.project_id=?2 AND (?1 OR NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id)) ORDER BY d.id")?;
+    let mut statement = connection.prepare("SELECT d.id, d.project_id, d.statement, d.rationale, d.alternatives_rejected, d.supersedes_id, d.created_at, NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id) AS is_current FROM decisions d WHERE d.project_id=?2 AND (?1 OR NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id)) ORDER BY d.id")?;
     Ok(statement
         .query_map(params![include_superseded, project_id], map_decision)?
         .collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1756,6 +1759,7 @@ fn map_decision(row: &Row<'_>) -> rusqlite::Result<Decision> {
         id: row.get("id")?,
         statement: row.get("statement")?,
         rationale: row.get("rationale")?,
+        alternatives_rejected: row.get("alternatives_rejected")?,
         supersedes_id: row.get("supersedes_id")?,
         created_at: row.get("created_at")?,
         is_current: row.get("is_current")?,

@@ -264,7 +264,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
             client,
             scope,
             "record_decision",
-            json!({"statement": format!("Choice for {scope}"), "rationale": "Scoped decision"}),
+            json!({"statement": format!("Choice for {scope}"), "rationale": "Scoped decision", "alternatives_rejected": format!("- Rejected alternative private to {scope}")}),
         );
         let prerequisite = scoped(client, scope, "create_task", brief());
         let mut input = brief();
@@ -302,7 +302,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
             ),
             (
                 "record_decision",
-                json!({"statement": "Foreign successor", "rationale": "Invalid link", "supersedes_id": foreign_decision["id"]}),
+                json!({"statement": "Foreign successor", "rationale": "Invalid link", "alternatives_rejected": "This rejected write must not replace private alternatives.", "supersedes_id": foreign_decision["id"]}),
             ),
         ] {
             input["project_id"] = json!(scope);
@@ -346,6 +346,11 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
         );
         assert_eq!(context["current_decisions"][0]["id"], decision["id"]);
         assert_eq!(context["current_decisions"][0]["project_id"], *scope);
+        assert_eq!(
+            context["current_decisions"][0]["alternatives_rejected"],
+            format!("- Rejected alternative private to {scope}")
+        );
+        assert_eq!(context["current_decisions"], json!([decision]));
         assert_eq!(
             context["dependency_state"]["unmet_completion_task_ids"],
             json!([dependency["id"]])
@@ -401,7 +406,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
         &first,
         &a,
         "record_decision",
-        json!({"statement": "New A choice", "rationale": "Applies only to A", "supersedes_id": a_decision["id"]}),
+        json!({"statement": "New A choice", "rationale": "Applies only to A", "alternatives_rejected": "- Keep the former A choice: superseded for A only.", "supersedes_id": a_decision["id"]}),
     );
     assert_eq!(
         scoped(&second, &b, "list_decisions", json!({}))["decisions"],
@@ -410,6 +415,33 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
     assert_eq!(
         scoped(&second, &a, "list_decisions", json!({}))["decisions"],
         json!([replacement])
+    );
+    let a_history = scoped(
+        &second,
+        &a,
+        "list_decisions",
+        json!({"include_superseded": true}),
+    );
+    let retained = a_history["decisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == a_decision["id"])
+        .unwrap();
+    assert_eq!(
+        retained["alternatives_rejected"],
+        a_decision["alternatives_rejected"]
+    );
+    assert_ne!(
+        retained["alternatives_rejected"],
+        replacement["alternatives_rejected"]
+    );
+    assert!(
+        a_history["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["project_id"] == a)
     );
     assert_eq!(
         scoped(
@@ -457,6 +489,19 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
             json!({"task_id": b_task["id"]})
         )["task"],
         *b_task
+    );
+    assert_eq!(
+        scoped(
+            &restarted,
+            &a,
+            "list_decisions",
+            json!({"include_superseded": true})
+        ),
+        a_history
+    );
+    assert_eq!(
+        scoped(&restarted, &b, "list_decisions", json!({}))["decisions"],
+        json!([b_decision])
     );
 }
 

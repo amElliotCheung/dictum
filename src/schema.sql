@@ -46,6 +46,7 @@ CREATE TABLE decisions (
     project_id TEXT NOT NULL REFERENCES projects(id),
     statement TEXT NOT NULL CHECK (length(trim(statement)) > 0),
     rationale TEXT NOT NULL CHECK (length(trim(rationale)) > 0),
+    alternatives_rejected TEXT,
     supersedes_id INTEGER UNIQUE,
     created_at TEXT NOT NULL,
     UNIQUE (project_id, id),

@@ -95,6 +95,27 @@ Mutable task and source updates require the latest `expected_revision`. See
 [AGENTS.md](AGENTS.md) for all sixteen tools and their contracts, and
 [WORKFLOW.md](WORKFLOW.md) for the embedded agent workflow.
 
+## Record an accepted decision
+
+Call `record_decision` with the accepted statement and rationale. Optional
+`alternatives_rejected` preserves rejected options as Markdown:
+
+```json
+{
+  "project_id": "PROJECT_ID",
+  "statement": "Keep the greeting in the page header.",
+  "rationale": "Visitors see it immediately on every page.",
+  "alternatives_rejected": "- A modal greeting would interrupt navigation."
+}
+```
+
+Omitting `alternatives_rejected` or supplying null stores null; empty text is
+allowed. Decisions are immutable. Record a replacement with `supersedes_id` when
+an accepted choice changes; each decision retains its own alternatives.
+`list_decisions` and the current decisions in `get_task_context` return this field.
+The dashboard shows an **Alternatives rejected** section when the field is
+non-null, in both project and task-context decision cards.
+
 ## Review a result and request rework
 
 Call `record_task_feedback` with the current task revision and the specific result
@@ -213,8 +234,10 @@ npm ci
 npm run build
 ```
 
-Only the current schema (v8) is supported. Startup rejects older databases
-without modifying them; preserve the file and start a new database.
+Only the current schema (v9) is supported. Startup rejects older databases
+without modifying them; preserve the file and use a fresh path such as
+`.dictum/dictum-v9.sqlite3`. Re-create needed records through MCP rather than
+migrating the older database.
 
 ## License
 

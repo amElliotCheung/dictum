@@ -700,12 +700,13 @@ fn manual_actions_are_unscheduled_and_interval_freshness_is_computed() {
 
 #[test]
 fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
-    let (_directory, store) = database();
+    let (directory, store) = database();
     let before = Utc::now() - Duration::seconds(1);
     let first = store
         .record_decision(input(json!({
             "statement": "One project per SQLite database/server process.",
-            "rationale": "Keep the local MVP simple."
+            "rationale": "Keep the local MVP simple.",
+            "alternatives_rejected": "- Shared process: defer until project scoping exists."
         })))
         .unwrap();
     let created = DateTime::parse_from_rfc3339(&first.created_at).unwrap();
@@ -713,16 +714,26 @@ fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
     assert!(created >= before);
     assert!(created <= Utc::now());
     assert!(first.is_current);
+    assert_eq!(
+        first.alternatives_rejected.as_deref(),
+        Some("- Shared process: defer until project scoping exists.")
+    );
     let second = store
         .record_decision(input(json!({
             "statement": "Keep one project per database, shared by local server processes.",
             "rationale": "Allow multiple local agents to share durable state.",
+            "alternatives_rejected": "- Isolated databases: agents would lose shared context.",
             "supersedes_id": first.id
         })))
         .unwrap();
     let current = store.list_decisions(ListDecisions::default()).unwrap();
     assert_eq!(current.len(), 1);
     assert_eq!(current[0].id, second.id);
+    assert_eq!(
+        current[0].alternatives_rejected,
+        second.alternatives_rejected
+    );
+    assert_ne!(first.alternatives_rejected, second.alternatives_rejected);
     assert!(store.record_decision(input(json!({"statement": "Another replacement", "rationale": "Invalid branch.", "supersedes_id": first.id}))).is_err());
     assert!(store.record_decision(input(json!({"statement": "Missing predecessor", "rationale": "Invalid reference.", "supersedes_id": 999_999}))).is_err());
     let history = store
@@ -734,12 +745,59 @@ fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
         .find(|decision| decision.id == first.id)
         .unwrap();
     assert_eq!(retained.statement, first.statement);
+    assert_eq!(retained.alternatives_rejected, first.alternatives_rejected);
     assert_eq!(retained.created_at, first.created_at);
     assert!(!retained.is_current);
     let task = task(&store, "Use current decisions");
     let context = store.get_task_context(task.id).unwrap();
     assert_eq!(context.current_decisions.len(), 1);
     assert_eq!(context.current_decisions[0].id, second.id);
+    assert_eq!(
+        context.current_decisions[0].alternatives_rejected,
+        second.alternatives_rejected
+    );
+    let third = store
+        .record_decision(input(json!({
+            "statement": "Use the established scoped shared database.",
+            "rationale": "No further alternatives were considered.",
+            "supersedes_id": second.id
+        })))
+        .unwrap();
+    assert!(
+        third.alternatives_rejected.is_none(),
+        "omission must not inherit its predecessor's alternatives"
+    );
+    let history = store
+        .list_decisions(input(json!({"include_superseded": true})))
+        .unwrap();
+    assert_eq!(history.len(), 3);
+    assert_eq!(
+        history
+            .iter()
+            .find(|decision| decision.id == second.id)
+            .unwrap()
+            .alternatives_rejected,
+        second.alternatives_rejected
+    );
+    let current_context = store.get_task_context(task.id).unwrap();
+    assert_eq!(current_context.current_decisions[0].id, third.id);
+    assert!(
+        current_context.current_decisions[0]
+            .alternatives_rejected
+            .is_none()
+    );
+    drop(store);
+    let restarted = Project::open(directory.path().join("project.sqlite3")).unwrap();
+    let persisted = restarted
+        .list_decisions(input(json!({"include_superseded": true})))
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&persisted).unwrap(),
+        serde_json::to_value(&history).unwrap()
+    );
+    let context = restarted.get_task_context(task.id).unwrap();
+    assert_eq!(context.current_decisions[0].id, third.id);
+    assert!(context.current_decisions[0].alternatives_rejected.is_none());
 }
 
 #[test]

@@ -11,6 +11,14 @@ export function DecisionCard({ decision }: { decision: Decision }) {
         Rationale
       </p>
       <Markdown text={decision.rationale} />
+      {decision.alternatives_rejected !== null ? (
+        <>
+          <h3 className="mt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            Alternatives rejected
+          </h3>
+          <Markdown text={decision.alternatives_rejected} />
+        </>
+      ) : null}
       <p className="mt-2 text-[11px] text-muted-foreground">
         Decision #{decision.id} · {formatDate(decision.created_at)}
       </p>

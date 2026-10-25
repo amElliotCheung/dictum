@@ -200,6 +200,7 @@ pub struct Decision {
     pub project_id: String,
     pub statement: String,
     pub rationale: String,
+    pub alternatives_rejected: Option<String>,
     pub supersedes_id: Option<i64>,
     pub created_at: String,
     pub is_current: bool,
@@ -575,6 +576,8 @@ pub struct RecordDecision {
     pub project_id: String,
     pub statement: String,
     pub rationale: String,
+    /// Optional Markdown retained on this immutable decision; omitted or null stores null.
+    pub alternatives_rejected: Option<String>,
     pub supersedes_id: Option<i64>,
 }
 

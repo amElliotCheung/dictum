@@ -126,6 +126,7 @@ export interface Decision {
   project_id: string;
   statement: string;
   rationale: string;
+  alternatives_rejected: string | null;
   supersedes_id: number | null;
   created_at: string;
   is_current: boolean;

@@ -155,6 +155,28 @@ async fn workflow(discover: bool) -> Result<()> {
             );
         }
     }
+    let decision_tool = tools
+        .iter()
+        .find(|tool| tool.name == "record_decision")
+        .unwrap();
+    let decision_schema = &decision_tool.input_schema;
+    assert!(
+        !decision_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("alternatives_rejected"))
+    );
+    assert!(
+        decision_schema["properties"]["alternatives_rejected"]
+            .to_string()
+            .contains("null")
+    );
+    let decision_output = serde_json::to_value(&decision_tool.output_schema).unwrap();
+    assert!(
+        decision_output["properties"]
+            .get("alternatives_rejected")
+            .is_some()
+    );
     let update_schema = &tools
         .iter()
         .find(|tool| tool.name == "update_source")
@@ -257,6 +279,16 @@ async fn workflow(discover: bool) -> Result<()> {
     )
     .await?;
     let project_id = project["id"].as_str().unwrap().to_owned();
+    let connection = rusqlite::Connection::open(&database)?;
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    assert_eq!(version, 9);
+    let alternative_column: (String, i64) = connection.query_row(
+        "SELECT type, \"notnull\" FROM pragma_table_info('decisions') WHERE name = 'alternatives_rejected'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(alternative_column, ("TEXT".to_owned(), 0));
+    drop(connection);
     let full_content = format!(
         "# Project conventions\n{}\nEND",
         "完整 context\n".repeat(4000)
@@ -284,13 +316,52 @@ async fn workflow(discover: bool) -> Result<()> {
         "record_decision",
         json!({
             "statement": "Explicit project IDs scope durable records",
-            "rationale": "Share one local database safely"
+            "rationale": "Share one local database safely",
+            "alternatives_rejected": "- **Implicit selection**: concurrent clients could use the wrong project."
         }),
     )
     .await?;
     assert!(decision["created_at"].as_str().unwrap().ends_with('Z'));
+    assert_eq!(
+        decision["alternatives_rejected"],
+        "- **Implicit selection**: concurrent clients could use the wrong project."
+    );
     let decisions = scoped_call(&client, &project_id, "list_decisions", json!({})).await?;
-    assert_eq!(decisions["decisions"].as_array().unwrap().len(), 1);
+    assert_eq!(decisions["decisions"], json!([decision]));
+
+    let defaults_project = call(
+        &client,
+        "create_project",
+        json!({"name": "Decision defaults", "description": "Nullable alternatives remain optional"}),
+    )
+    .await?;
+    let defaults_id = defaults_project["id"].as_str().unwrap();
+    for (index, alternatives) in [None, Some(Value::Null), Some(json!("")), Some(json!(" \n"))]
+        .into_iter()
+        .enumerate()
+    {
+        let expected = alternatives.clone().unwrap_or(Value::Null);
+        let mut input = json!({
+            "statement": format!("Default variant {index}"),
+            "rationale": "Do not invent rejected alternatives."
+        });
+        if let Some(value) = alternatives {
+            input["alternatives_rejected"] = value;
+        }
+        let stored = scoped_call(&client, defaults_id, "record_decision", input).await?;
+        assert!(stored.get("alternatives_rejected").is_some());
+        assert_eq!(stored["alternatives_rejected"], expected);
+        let listed = scoped_call(&client, defaults_id, "list_decisions", json!({})).await?;
+        assert_eq!(
+            listed["decisions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["id"] == stored["id"])
+                .unwrap(),
+            &stored
+        );
+    }
 
     let verification = scoped_call(
         &client,
@@ -330,7 +401,7 @@ async fn workflow(discover: bool) -> Result<()> {
         json!({"task_id": task["id"]}),
     )
     .await?;
-    assert_eq!(context["current_decisions"][0]["id"], decision["id"]);
+    assert_eq!(context["current_decisions"], json!([decision]));
     let sources = context["sources"].as_array().unwrap();
     assert_eq!(sources.len(), 2);
     assert_eq!(
@@ -442,6 +513,7 @@ async fn workflow(discover: bool) -> Result<()> {
         json!([output["id"]])
     );
     assert_eq!(persisted["sources"].as_array().unwrap().len(), 2);
+    assert_eq!(persisted["current_decisions"], json!([decision]));
     restarted.cancel().await?;
     Ok(())
 }

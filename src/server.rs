@@ -283,7 +283,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Record an accepted project-wide decision with its rationale and server-assigned UTC creation time. Optional supersedes_id replaces a currently active decision, preserving history. Each current decision can have only one successor. This is not a proposal or voting workflow.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Record an accepted project-wide decision with its rationale, optional nullable Markdown alternatives_rejected, and server-assigned UTC creation time. Omitted or null alternatives_rejected stores null; empty text is allowed. Decisions are immutable. Optional supersedes_id replaces a currently active decision, preserving its original fields; each successor has its own alternatives_rejected value. Each current decision can have only one successor. This is not a proposal or voting workflow.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -298,7 +298,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Read accepted project decisions. By default returns only current decisions; include_superseded also returns retained history with current flags and supersedes links.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Read accepted project decisions, including each decision's nullable alternatives_rejected Markdown. By default returns only current decisions; include_superseded also returns retained history with current flags, supersedes links and each predecessor's original alternatives_rejected value.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_decisions(

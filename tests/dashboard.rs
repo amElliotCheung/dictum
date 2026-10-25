@@ -1375,7 +1375,7 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
             }
         }),
     );
-    create_task(
+    let task = create_task(
         &client,
         &project_a,
         "Linked task",
@@ -1387,7 +1387,8 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
         "record_decision",
         json!({
             "statement": "Keep tasks above project reference sections.",
-            "rationale": "Tasks are the dashboard's primary content."
+            "rationale": "Tasks are the dashboard's primary content.",
+            "alternatives_rejected": "- Reference-first board: hides the next work item."
         }),
     );
     let current_decision = call(
@@ -1396,6 +1397,7 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
         json!({
             "statement": "Show decisions and sources below the task board.",
             "rationale": "They remain available without opening a task.",
+            "alternatives_rejected": "- **Task-only references**: would hide project context until selection.",
             "supersedes_id": first_decision["id"]
         }),
     );
@@ -1442,6 +1444,35 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
     assert_eq!(decisions[0]["id"], current_decision["id"]);
     assert_eq!(decisions[0]["supersedes_id"], first_decision["id"]);
     assert_eq!(decisions[0]["is_current"], true);
+    assert_eq!(decisions[0], current_decision);
+    assert_eq!(
+        decisions[0]["alternatives_rejected"],
+        "- **Task-only references**: would hide project context until selection."
+    );
+    let context_path = format!("/api/projects/{project_a}/tasks/{}", task["id"]);
+    assert_eq!(
+        dashboard.get(&context_path).json()["current_decisions"],
+        json!([current_decision])
+    );
+    let history = call(
+        &client,
+        "list_decisions",
+        json!({"include_superseded": true}),
+    );
+    let predecessor = history["decisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == first_decision["id"])
+        .unwrap();
+    assert_eq!(
+        predecessor["alternatives_rejected"],
+        first_decision["alternatives_rejected"]
+    );
+    assert_ne!(
+        predecessor["alternatives_rejected"],
+        current_decision["alternatives_rejected"]
+    );
 
     let sources = dashboard.get(&sources_path).json();
     let sources = sources["sources"].as_array().unwrap();
@@ -1479,6 +1510,9 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
     let other_decisions = other_decisions["decisions"].as_array().unwrap();
     assert_eq!(other_decisions.len(), 1);
     assert_eq!(other_decisions[0]["id"], other_decision["id"]);
+    assert_eq!(other_decisions[0], other_decision);
+    assert!(other_decisions[0].get("alternatives_rejected").is_some());
+    assert!(other_decisions[0]["alternatives_rejected"].is_null());
     let other_sources = dashboard
         .get(&format!("/api/projects/{other_project}/sources"))
         .json();
@@ -1540,11 +1574,20 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
     wait_for_port_free(port);
     let restarted = Dashboard::start(&database, port);
     assert_eq!(
-        restarted.get(&decisions_path).json()["decisions"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
+        restarted.get(&decisions_path).json()["decisions"],
+        json!([current_decision])
+    );
+    assert_eq!(
+        restarted.get(&context_path).json()["current_decisions"],
+        json!([current_decision])
+    );
+    assert_eq!(
+        call(
+            &client,
+            "list_decisions",
+            json!({"include_superseded": true})
+        ),
+        history
     );
     assert_eq!(
         restarted.get(&sources_path).json()["sources"]
