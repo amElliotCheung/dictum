@@ -47,6 +47,7 @@
     background-color: var(--color-background);
     color: var(--color-foreground);
     font-family: var(--font-sans);
+    overflow-wrap: anywhere;
     -webkit-font-smoothing: antialiased;
   }
 
@@ -62,7 +63,7 @@
 
 @layer components {
   .markdown {
-    @apply text-sm leading-6 text-foreground;
+    @apply min-w-0 text-sm leading-6 text-foreground;
   }
 
   .markdown > * + * {

@@ -275,7 +275,7 @@ function Lifecycle({
             <div
               key={column.status}
               className={cn(
-                'flex min-h-32 flex-col rounded-xl border border-t-4 bg-muted/30',
+                'flex min-h-32 min-w-0 flex-col rounded-xl border border-t-4 bg-muted/30',
                 column.border,
               )}
             >

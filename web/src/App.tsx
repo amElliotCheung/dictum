@@ -202,7 +202,7 @@ export default function App() {
               navigate(event.target.value || null, null)
             }
             disabled={projects.length === 0}
-            className="h-9 max-w-[20rem] rounded-md border border-input bg-card px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-9 min-w-0 max-w-full rounded-md border border-input bg-card px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-[20rem]"
           >
             <option value="">Choose project…</option>
             {projects.map((candidate) => (
