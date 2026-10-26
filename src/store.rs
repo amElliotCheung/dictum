@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 const APPLICATION_ID: i64 = 0x4449_4354; // DICT
 const SCHEMA: &str = include_str!("schema.sql");
 const RUN_SUMMARY_COLUMNS: &str = "id, project_id, task_id, agent, agent_version, agent_executable, working_directory, input_task_revision, status, started_at, ended_at, exit_code, stop_reason, cancel_requested_at";
@@ -41,7 +41,7 @@ pub enum StoreError {
     #[error("{0}")]
     Conflict(String),
     #[error(
-        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 9 only; preserve the existing file"
+        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 10 only; preserve the existing file"
     )]
     UnsupportedSchema { version: i64, application_id: i64 },
 }
@@ -195,8 +195,8 @@ impl Store {
         ensure_project(&transaction, &input.project_id)?;
         let now = timestamp(Utc::now());
         transaction.execute(
-            "INSERT INTO tasks (project_id, title, problem_or_goal, design, acceptance_criteria, alternatives_rejected, status, revision, created_at, updated_at, kind, trigger_event) VALUES (?7, ?1, ?2, ?3, ?4, ?5, ?8, 1, ?6, ?6, ?9, ?10)",
-            params![input.title, input.problem_or_goal, input.design, encode(&input.acceptance_criteria)?, input.alternatives_rejected, now, input.project_id, status_name(status), kind_name(input.kind), input.trigger_event],
+            "INSERT INTO tasks (project_id, title, problem_or_goal, design, acceptance_criteria, alternatives_rejected, status, revision, created_at, updated_at, kind, trigger_event, priority) VALUES (?7, ?1, ?2, ?3, ?4, ?5, ?8, 1, ?6, ?6, ?9, ?10, ?11)",
+            params![input.title, input.problem_or_goal, input.design, encode(&input.acceptance_criteria)?, input.alternatives_rejected, now, input.project_id, status_name(status), kind_name(input.kind), input.trigger_event, priority_name(input.priority)],
         )?;
         let id = transaction.last_insert_rowid();
         replace_context_sources(
@@ -232,11 +232,17 @@ impl Store {
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         ensure_project(&transaction, &input.project_id)?;
-        let ids = all_ids(
-            &transaction,
-            "SELECT id FROM tasks WHERE project_id=?1 ORDER BY id",
-            &input.project_id,
-        )?;
+        let ids = {
+            let mut statement = transaction.prepare(
+                "SELECT id FROM tasks WHERE project_id=?1 AND (?2 IS NULL OR priority=?2) ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END, id",
+            )?;
+            statement
+                .query_map(
+                    params![input.project_id, input.priority.map(priority_name)],
+                    |row| row.get(0),
+                )?
+                .collect::<rusqlite::Result<Vec<i64>>>()?
+        };
         let query = input.query.as_deref().map(str::to_lowercase);
         let mut result = Vec::new();
         for id in ids {
@@ -277,6 +283,7 @@ impl Store {
             result.push(TaskSummary {
                 project_id: task.project_id,
                 kind: task.kind,
+                priority: task.priority,
                 trigger_event: task.trigger_event,
                 id: task.id,
                 title: task.title,
@@ -340,6 +347,9 @@ impl Store {
         ensure_project(&transaction, &input.project_id)?;
         let mut task = task_by_id(&transaction, &input.project_id, input.task_id)?;
         check_revision("task", task.id, input.expected_revision, task.revision)?;
+        if let Some(priority) = input.priority {
+            task.priority = priority;
+        }
         if let Some(value) = input.trigger_event {
             if task.kind != TaskKind::Recurring {
                 return invalid("trigger_event is only supported for recurring tasks");
@@ -440,8 +450,8 @@ impl Store {
             }
         }
         transaction.execute(
-            "UPDATE tasks SET title=?1, problem_or_goal=?2, design=?3, acceptance_criteria=?4, alternatives_rejected=?5, status=?6, progress=?7, revision=revision+1, updated_at=?8, trigger_event=?11 WHERE id=?9 AND project_id=?10",
-            params![task.title, task.problem_or_goal, task.design, encode(&task.acceptance_criteria)?, task.alternatives_rejected, status_name(task.status), task.progress, timestamp(Utc::now()), task.id, input.project_id, task.trigger_event],
+            "UPDATE tasks SET title=?1, problem_or_goal=?2, design=?3, acceptance_criteria=?4, alternatives_rejected=?5, status=?6, progress=?7, revision=revision+1, updated_at=?8, trigger_event=?11, priority=?12 WHERE id=?9 AND project_id=?10",
+            params![task.title, task.problem_or_goal, task.design, encode(&task.acceptance_criteria)?, task.alternatives_rejected, status_name(task.status), task.progress, timestamp(Utc::now()), task.id, input.project_id, task.trigger_event, priority_name(task.priority)],
         )?;
         let result = task_by_id(&transaction, &input.project_id, task.id)?;
         transaction.commit()?;
@@ -1458,6 +1468,7 @@ fn task_by_id(connection: &Connection, project_id: &str, id: i64) -> StoreResult
                 Ok(Task {
                     project_id: row.get("project_id")?,
                     kind: enum_column(row, "kind")?,
+                    priority: enum_column(row, "priority")?,
                     trigger_event: row.get("trigger_event")?,
                     id: row.get("id")?,
                     title: row.get("title")?,
@@ -1828,6 +1839,14 @@ fn kind_name(kind: TaskKind) -> &'static str {
     match kind {
         TaskKind::OneTime => "one_time",
         TaskKind::Recurring => "recurring",
+    }
+}
+
+fn priority_name(priority: TaskPriority) -> &'static str {
+    match priority {
+        TaskPriority::Low => "low",
+        TaskPriority::Medium => "medium",
+        TaskPriority::High => "high",
     }
 }
 

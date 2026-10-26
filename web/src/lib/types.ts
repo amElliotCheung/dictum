@@ -10,6 +10,7 @@ export interface ProjectList {
 }
 
 export type TaskKind = 'one_time' | 'recurring';
+export type TaskPriority = 'low' | 'medium' | 'high';
 
 export type TaskStatus =
   | 'todo'
@@ -29,6 +30,7 @@ export interface TaskSummary {
   id: number;
   project_id: string;
   kind: TaskKind;
+  priority: TaskPriority;
   trigger_event: string | null;
   title: string;
   status: TaskStatus;
@@ -42,6 +44,7 @@ export interface Task {
   id: number;
   project_id: string;
   kind: TaskKind;
+  priority: TaskPriority;
   trigger_event: string | null;
   title: string;
   problem_or_goal: string;

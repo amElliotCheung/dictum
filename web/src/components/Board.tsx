@@ -6,6 +6,7 @@ import { formatIds, statusLabels } from '../lib/format';
 import type {
   Project,
   TaskKind,
+  TaskPriority,
   TaskStatus,
   TaskSummary,
 } from '../lib/types';
@@ -58,6 +59,24 @@ const tabs: { kind: TaskKind; label: string }[] = [
   { kind: 'one_time', label: 'One-time' },
   { kind: 'recurring', label: 'Recurring' },
 ];
+
+const priorityRank: Record<TaskPriority, number> = {
+  high: 0,
+  medium: 1,
+  low: 2,
+};
+
+const priorityLabels: Record<TaskPriority, string> = {
+  high: 'High',
+  medium: 'Medium',
+  low: 'Low',
+};
+
+const priorityClasses: Record<TaskPriority, string> = {
+  high: 'border-rose-300 bg-rose-50 text-rose-800',
+  medium: 'border-amber-300 bg-amber-50 text-amber-800',
+  low: 'border-slate-300 bg-slate-50 text-slate-700',
+};
 
 export function Board({
   project,
@@ -268,9 +287,13 @@ function Lifecycle({
         )}
       >
         {columns.map((column) => {
-          const columnTasks = tasks.filter(
-            (task) => task.status === column.status,
-          );
+          const columnTasks = tasks
+            .filter((task) => task.status === column.status)
+            .sort(
+              (left, right) =>
+                priorityRank[left.priority] - priorityRank[right.priority] ||
+                left.id - right.id,
+            );
           return (
             <div
               key={column.status}
@@ -333,7 +356,7 @@ function TaskCard({
       type="button"
       data-task-id={task.id}
       onClick={() => onSelect(task.id)}
-      aria-label={`Task ${task.id}: ${task.title}. Status ${statusLabels[task.status]}.`}
+      aria-label={`Task ${task.id}: ${task.title}. Status ${statusLabels[task.status]}. Priority ${priorityLabels[task.priority]}.`}
       className={cn(
         'group w-full rounded-lg border bg-card p-3 text-left shadow-sm transition hover:border-primary/40 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         selected && 'border-primary ring-2 ring-primary',
@@ -343,9 +366,18 @@ function TaskCard({
         <span className="text-xs font-semibold tabular-nums text-muted-foreground">
           #{task.id}
         </span>
-        <Badge variant={task.kind === 'recurring' ? 'secondary' : 'outline'}>
-          {task.kind === 'recurring' ? 'Recurring' : 'One-time'}
-        </Badge>
+        <span className="flex flex-wrap justify-end gap-1">
+          <Badge
+            variant="outline"
+            className={priorityClasses[task.priority]}
+            aria-label={`Priority: ${priorityLabels[task.priority]}`}
+          >
+            {priorityLabels[task.priority]}
+          </Badge>
+          <Badge variant={task.kind === 'recurring' ? 'secondary' : 'outline'}>
+            {task.kind === 'recurring' ? 'Recurring' : 'One-time'}
+          </Badge>
+        </span>
       </span>
       <span className="mt-2 block text-sm font-medium leading-5">
         {task.title}

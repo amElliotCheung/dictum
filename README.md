@@ -68,6 +68,7 @@ tool arguments, not shell commands. Substitute the IDs returned by earlier calls
    {
      "project_id": "PROJECT_ID",
      "title": "Add a greeting",
+     "priority": "high",
      "problem_or_goal": "Visitors need a useful greeting.",
      "design": "Render the greeting described in the linked requirements.",
      "acceptance_criteria": ["The greeting appears in the UI."],
@@ -85,6 +86,15 @@ tool arguments, not shell commands. Substitute the IDs returned by earlier calls
    `context_policy: "always"`, current decisions, and dependency state. Inline
    sources are returned in full. Use `get_source` with `project_id` and `source_id`
    to read an individual source.
+
+Tasks accept `priority: "low"`, `"medium"`, or `"high"`; omitting it at creation
+defaults to `"medium"` for both one-time and recurring tasks. `update_task` can
+change priority with the current `expected_revision`; omitting priority preserves
+it. `list_tasks` accepts an exact priority filter and returns high, medium, then
+low priority tasks, with ascending task IDs within each priority. Task context
+and summaries include priority. The dashboard shows a labeled color badge on
+each task card, keeps this order within status columns, and displays priority in
+task details. Priority does not change dependency gates or run eligibility.
 
 Task creation records the brief; execution still needs authorization from the
 human. Execution evidence and output Source links are appended with
@@ -234,9 +244,9 @@ npm ci
 npm run build
 ```
 
-Only the current schema (v9) is supported. Startup rejects older databases
+Only the current schema (v10) is supported. Startup rejects older databases
 without modifying them; preserve the file and use a fresh path such as
-`.dictum/dictum-v9.sqlite3`. Re-create needed records through MCP rather than
+`.dictum/dictum-v10.sqlite3`. Re-create needed records through MCP rather than
 migrating the older database.
 
 ## License

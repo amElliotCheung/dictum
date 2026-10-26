@@ -859,3 +859,90 @@ fn ordinary_tasks_require_successful_results_before_done_and_preserve_history() 
         json!([historical_output["id"]])
     );
 }
+
+#[test]
+fn recurring_priority_is_independent_of_lifecycle_and_composes_with_discovery_filters() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("priority.sqlite3");
+    let client = Project::open(&database).unwrap();
+    let default = create(&client, "Default recurring priority", "recurring");
+    assert_eq!(default["priority"], "medium");
+    let mut low_input = brief("Release low", "recurring");
+    low_input["priority"] = json!("low");
+    low_input["trigger_event"] = json!("release");
+    let low = call(&client, "create_task", low_input);
+    let mut high_input = brief("Release high", "recurring");
+    high_input["priority"] = json!("high");
+    high_input["trigger_event"] = json!("release");
+    let high = call(&client, "create_task", high_input);
+    let high = update(&client, &high, json!({"status": "paused"}));
+    assert_eq!(high["priority"], "high");
+    assert_eq!(context(&client, &high)["task"]["priority"], "high");
+    assert_eq!(
+        ids(&call(&client, "list_tasks", json!({"kind": "recurring"}))["tasks"]),
+        vec![
+            high["id"].as_i64().unwrap(),
+            default["id"].as_i64().unwrap(),
+            low["id"].as_i64().unwrap()
+        ]
+    );
+    let selected = call(
+        &client,
+        "list_tasks",
+        json!({"kind": "recurring", "status": "paused", "trigger_event": "release", "query": "HIGH", "priority": "high"}),
+    );
+    assert_eq!(ids(&selected["tasks"]), vec![high["id"].as_i64().unwrap()]);
+    assert_eq!(selected["tasks"][0]["priority"], "high");
+    assert!(
+        call(
+            &client,
+            "list_tasks",
+            json!({"kind": "recurring", "priority": "high", "ready_to_start": true})
+        )["tasks"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let low = update(&client, &low, json!({"priority": "high"}));
+    assert_eq!(low["status"], "active");
+    assert_eq!(
+        ids(&call(
+            &client,
+            "list_tasks",
+            json!({"kind": "recurring", "priority": "high"})
+        )["tasks"]),
+        vec![low["id"].as_i64().unwrap(), high["id"].as_i64().unwrap()]
+    );
+    let low = update(
+        &client,
+        &low,
+        json!({"priority": "medium", "status": "paused"}),
+    );
+    assert_eq!(low["priority"], "medium");
+    assert_eq!(low["status"], "paused");
+    for priority in [json!("urgent"), json!(false)] {
+        let mut input = brief("Invalid recurring priority", "recurring");
+        input["priority"] = priority.clone();
+        rejected(&client, &database, "create_task", input);
+        rejected_update(
+            &client,
+            &database,
+            &low,
+            json!({"priority": priority, "status": "active", "progress": "Must not apply"}),
+        );
+    }
+    let result = record(
+        &client,
+        &low,
+        "failure",
+        "Fixture failure after pausing retains priority and status.",
+        &[],
+    );
+    let final_context = context(&client, &low);
+    assert_eq!(final_context["task"]["status"], "paused");
+    assert_eq!(final_context["task"]["priority"], "medium");
+    assert_eq!(final_context["latest_result"], result);
+    drop(client);
+    let restarted = Project::open(&database).unwrap();
+    assert_eq!(context(&restarted, &low), final_context);
+}

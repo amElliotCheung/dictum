@@ -903,16 +903,17 @@ fn filters_use_discovery_fields_and_task_readiness() {
     let dependency = task(&store, "Publish architecture");
     let mut brief = task_input("Blocked implementation");
     brief["prerequisite_task_ids"] = json!([dependency.id]);
+    brief["priority"] = json!("high");
     let waiting = store.create_task(input(brief)).unwrap();
     let matches = store
         .list_tasks(input(
-            json!({"query": "AUTHENTICATION", "ready_to_start": true, "status": "todo"}),
+            json!({"query": "AUTHENTICATION", "ready_to_start": true, "status": "todo", "priority": "medium"}),
         ))
         .unwrap();
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].id, ready.id);
     let blocked = store
-        .list_tasks(input(json!({"ready_to_start": false})))
+        .list_tasks(input(json!({"ready_to_start": false, "priority": "high"})))
         .unwrap();
     assert_eq!(blocked.len(), 1);
     assert_eq!(blocked[0].id, waiting.id);
@@ -930,4 +931,141 @@ fn filters_use_discovery_fields_and_task_readiness() {
         .unwrap();
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].id, local.id);
+}
+
+#[test]
+fn task_priorities_sort_filter_and_survive_revision_checked_updates_and_restart() {
+    let (directory, store) = database();
+    let database_path = directory.path().join("project.sqlite3");
+    let default = task(&store, "Priority default");
+    assert_eq!(default.priority, TaskPriority::Medium);
+    // Inspect the MCP-created fixture's constraints without calling Store directly.
+    let connection = rusqlite::Connection::open(&database_path).unwrap();
+    for priority in [Some("urgent"), None] {
+        assert!(
+            connection
+                .execute(
+                    "UPDATE tasks SET priority = ?1 WHERE id = ?2",
+                    rusqlite::params![priority, default.id]
+                )
+                .is_err()
+        );
+    }
+    drop(connection);
+    assert_eq!(
+        store.get_task_context(default.id).unwrap().task.priority,
+        TaskPriority::Medium
+    );
+    let make = |title: &str, priority: &str| {
+        let mut brief = task_input(title);
+        brief["priority"] = json!(priority);
+        store.create_task(input(brief)).unwrap()
+    };
+    let low = make("Priority low", "low");
+    let high = make("Priority high first", "high");
+    let high_second = make("Priority high second", "high");
+    let ordered = store.list_tasks(ListTasks::default()).unwrap();
+    assert_eq!(
+        ordered.iter().map(|task| task.id).collect::<Vec<_>>(),
+        vec![high.id, high_second.id, default.id, low.id]
+    );
+    assert_eq!(
+        ordered.iter().map(|task| task.priority).collect::<Vec<_>>(),
+        vec![
+            TaskPriority::High,
+            TaskPriority::High,
+            TaskPriority::Medium,
+            TaskPriority::Low
+        ]
+    );
+    assert_eq!(store.list_tasks(input(json!({"priority": "high", "kind": "one_time", "status": "todo", "ready_to_start": true, "query": "PRIORITY HIGH"}))).unwrap().iter().map(|task| task.id).collect::<Vec<_>>(), vec![high.id, high_second.id]);
+    assert!(
+        store
+            .list_tasks(input(json!({"priority": "low", "query": "high"})))
+            .unwrap()
+            .is_empty()
+    );
+    let high = store
+        .update_task(task_patch(
+            &high,
+            json!({"progress": "Priority must be preserved when omitted."}),
+        ))
+        .unwrap();
+    assert_eq!(high.priority, TaskPriority::High);
+    let low = store
+        .update_task(task_patch(
+            &low,
+            json!({"priority": "high", "title": "Priority promoted"}),
+        ))
+        .unwrap();
+    assert_eq!(low.priority, TaskPriority::High);
+    assert_eq!(
+        store
+            .list_tasks(ListTasks::default())
+            .unwrap()
+            .iter()
+            .map(|task| task.id)
+            .collect::<Vec<_>>(),
+        vec![low.id, high.id, high_second.id, default.id]
+    );
+    store
+        .update_task(task_patch(&default, json!({"priority": "low"})))
+        .unwrap();
+    let default = store.get_task_context(default.id).unwrap().task;
+    assert_eq!(default.priority, TaskPriority::Low);
+    let stale = store.update_task(input(json!({"task_id": default.id, "expected_revision": default.revision - 1, "priority": "high", "title": "Must not overwrite"})));
+    assert!(stale.is_err());
+    assert_eq!(
+        store.get_task_context(default.id).unwrap().task.priority,
+        TaskPriority::Low
+    );
+    assert_eq!(
+        store.get_task_context(default.id).unwrap().task.title,
+        default.title
+    );
+    assert_eq!(
+        store.get_task_context(low.id).unwrap().task.priority,
+        TaskPriority::High
+    );
+
+    for priority in [
+        json!("urgent"),
+        json!("HIGH"),
+        json!(""),
+        json!(3),
+        Value::Null,
+    ] {
+        let before = store.list_tasks(ListTasks::default()).unwrap();
+        let mut invalid = task_input("Invalid priority must not create a task");
+        invalid["priority"] = priority;
+        assert!(store.call::<Value>("create_task", invalid).is_err());
+        assert_eq!(
+            serde_json::to_value(store.list_tasks(ListTasks::default()).unwrap()).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+    }
+    for priority in [json!("urgent"), json!("HIGH"), json!(""), json!(3)] {
+        let before = store.get_task_context(high.id).unwrap();
+        assert!(store.call::<Value>("update_task", json!({"task_id": high.id, "expected_revision": high.revision, "priority": priority, "title": "A valid edit must roll back", "progress": "Not applied"})).is_err());
+        assert_eq!(
+            serde_json::to_value(store.get_task_context(high.id).unwrap()).unwrap(),
+            serde_json::to_value(before).unwrap()
+        );
+        assert!(
+            store
+                .call::<Value>("list_tasks", json!({"priority": priority}))
+                .is_err()
+        );
+    }
+    let expected = store.list_tasks(ListTasks::default()).unwrap();
+    drop(store);
+    let restarted = Project::open(&database_path).unwrap();
+    assert_eq!(
+        serde_json::to_value(restarted.list_tasks(ListTasks::default()).unwrap()).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    assert_eq!(
+        restarted.get_task_context(low.id).unwrap().task.priority,
+        TaskPriority::High
+    );
 }

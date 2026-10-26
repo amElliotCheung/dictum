@@ -106,7 +106,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id; links stay within the project. Create a self-contained brief and context links atomically. Immutable kind defaults to one_time with status todo; recurring uses the same brief and task ID across executions and defaults to active. Optional nonblank trigger_event is recurring-only external-event metadata, not a schedule, subscription or authorization. Dependencies must target one_time tasks. This registers work; it does not launch an agent.",
+        description = "Requires an existing project_id; links stay within the project. Create a self-contained brief and context links atomically. Optional priority is low, medium or high and defaults to medium for both task kinds; it does not affect lifecycle or readiness. Immutable kind defaults to one_time with status todo; recurring uses the same brief and task ID across executions and defaults to active. Optional nonblank trigger_event is recurring-only external-event metadata, not a schedule, subscription or authorization. Dependencies must target one_time tasks. This registers work; it does not launch an agent.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -121,7 +121,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id. Discover compact task briefs by kind, status, readiness, exact trigger_event label, or text query. Results include unmet dependencies. ready_to_start means one_time todo with all before-start dependencies done; completion gates do not block starting. Recurring tasks are never ready_to_start: discover explicitly with kind=recurring and status=active. Active is eligibility metadata, not a run in progress, installed schedule or authorization.",
+        description = "Requires an existing project_id. Discover compact task briefs by kind, exact priority, status, readiness, exact trigger_event label, or text query. Results include priority and unmet dependencies, ordered high, medium, low with ascending task ID within each priority. Filters preserve that order. ready_to_start means one_time todo with all before-start dependencies done; completion gates do not block starting. Priority never changes readiness. Recurring tasks are never ready_to_start: discover explicitly with kind=recurring and status=active. Active is eligibility metadata, not a run in progress, installed schedule or authorization.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_tasks(
@@ -149,7 +149,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id and latest expected_revision. Kind is immutable. Omitted fields preserve values; null clears nullable text/trigger_event; supplied relationship arrays replace that set ([] clears). One_time uses todo/in_progress/blocked/done: entering in_progress checks start gates; done requires satisfied start/completion gates, at least one successful execution result (success or no_change), and no outstanding changes_requested feedback. Task edits do not clear feedback. Recurring uses active/paused; trigger_event is recurring-only metadata. Execution results and output sources are append-only through record_task_result. Dependencies must target one_time tasks. Evidence is agent-reported, not independently verified.",
+        description = "Requires an existing project_id and latest expected_revision. Kind is immutable. Omitted fields preserve values; optional priority replaces low, medium or high under the same revision check and does not change lifecycle or readiness. Null clears nullable text/trigger_event; supplied relationship arrays replace that set ([] clears). One_time uses todo/in_progress/blocked/done: entering in_progress checks start gates; done requires satisfied start/completion gates, at least one successful execution result (success or no_change), and no outstanding changes_requested feedback. Task edits do not clear feedback. Recurring uses active/paused; trigger_event is recurring-only metadata. Execution results and output sources are append-only through record_task_result. Dependencies must target one_time tasks. Evidence is agent-reported, not independently verified.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,

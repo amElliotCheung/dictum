@@ -9,6 +9,7 @@ CREATE TABLE tasks (
     id INTEGER PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
     kind TEXT NOT NULL DEFAULT 'one_time' CHECK (kind IN ('one_time', 'recurring')),
+    priority TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high')),
     trigger_event TEXT CHECK (trigger_event IS NULL OR (kind = 'recurring' AND length(trim(trigger_event)) > 0)),
     title TEXT NOT NULL CHECK (length(trim(title)) > 0),
     problem_or_goal TEXT NOT NULL CHECK (length(trim(problem_or_goal)) > 0),

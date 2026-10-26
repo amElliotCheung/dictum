@@ -62,6 +62,15 @@ pub enum TaskKind {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+pub enum TaskPriority {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum ContextPolicy {
     Always,
     #[default]
@@ -155,6 +164,7 @@ pub struct Task {
     pub id: i64,
     pub project_id: String,
     pub kind: TaskKind,
+    pub priority: TaskPriority,
     /// External event label only; not a subscription, schedule, wakeup or authorization.
     pub trigger_event: Option<String>,
     pub title: String,
@@ -185,6 +195,7 @@ pub struct TaskSummary {
     pub id: i64,
     pub project_id: String,
     pub kind: TaskKind,
+    pub priority: TaskPriority,
     pub trigger_event: Option<String>,
     pub title: String,
     pub status: TaskStatus,
@@ -393,6 +404,9 @@ pub struct CreateTask {
     /// Immutable after creation. Defaults to one_time (todo); recurring defaults to active.
     #[serde(default)]
     pub kind: TaskKind,
+    /// Relative importance, separate from lifecycle and readiness. Defaults to medium.
+    #[serde(default)]
+    pub priority: TaskPriority,
     /// Optional nonblank external event label, only for recurring tasks.
     pub trigger_event: Option<String>,
     pub title: String,
@@ -415,6 +429,8 @@ pub struct ListTasks {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: String,
     pub kind: Option<TaskKind>,
+    /// Exact priority filter. Results sort high, medium, low, then ascending ID.
+    pub priority: Option<TaskPriority>,
     /// Exact external event label match.
     pub trigger_event: Option<String>,
     pub status: Option<TaskStatus>,
@@ -437,6 +453,8 @@ pub struct UpdateTask {
     pub project_id: String,
     pub task_id: i64,
     pub expected_revision: i64,
+    /// Omitted: preserve. Supplied: replace under expected_revision.
+    pub priority: Option<TaskPriority>,
     /// Recurring only. Omitted: preserve. Null: clear. Nonblank string: replace.
     #[serde(
         default,

@@ -270,6 +270,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
         let mut input = brief();
         input["context_source_ids"] = json!([external["id"]]);
         input["completion_task_ids"] = json!([prerequisite["id"]]);
+        input["priority"] = json!(if scope == &a { "low" } else { "high" });
         let task = scoped(client, scope, "create_task", input);
         records.push((always, external, decision, prerequisite, task));
     }
@@ -288,7 +289,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
             ),
             (
                 "update_task",
-                json!({"task_id": foreign_task["id"], "expected_revision": foreign_task["revision"], "title": "Foreign edit"}),
+                json!({"task_id": foreign_task["id"], "expected_revision": foreign_task["revision"], "title": "Foreign edit", "priority": "medium"}),
             ),
             ("list_sources", json!({"task_id": foreign_task["id"]})),
             ("get_source", json!({"source_id": foreign_source["id"]})),
@@ -336,6 +337,20 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
             json!({"task_id": task["id"]}),
         );
         assert_eq!(context["task"]["project_id"], *scope);
+        assert_eq!(
+            context["task"]["priority"],
+            if scope == &a { "low" } else { "high" }
+        );
+        let prioritized = scoped(
+            &first,
+            scope,
+            "list_tasks",
+            json!({"priority": if scope == &a { "low" } else { "high" }}),
+        );
+        assert_eq!(prioritized["tasks"].as_array().unwrap().len(), 1);
+        assert_eq!(prioritized["tasks"][0]["id"], task["id"]);
+        assert_eq!(prioritized["tasks"][0]["project_id"], *scope);
+
         assert_eq!(context["sources"].as_array().unwrap().len(), 2);
         assert!(
             context["sources"]

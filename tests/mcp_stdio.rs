@@ -204,6 +204,29 @@ async fn workflow(discover: bool) -> Result<()> {
     );
     assert!(create_task_schema["properties"].get("kind").is_some());
     assert!(
+        !create_task_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("priority"))
+    );
+    assert_eq!(
+        create_task_schema["properties"]["priority"]["default"],
+        "medium"
+    );
+    let priority_property = &create_task_schema["properties"]["priority"];
+    let schema_value = serde_json::to_value(create_task_schema).unwrap();
+    let priority_schema = priority_property
+        .get("$ref")
+        .and_then(Value::as_str)
+        .map(|reference| {
+            schema_value
+                .pointer(reference.strip_prefix('#').unwrap())
+                .unwrap()
+        })
+        .unwrap_or(priority_property);
+    assert_eq!(priority_schema["enum"], json!(["low", "medium", "high"]));
+
+    assert!(
         create_task_schema["properties"]
             .get("trigger_event")
             .is_some()
@@ -214,6 +237,26 @@ async fn workflow(discover: bool) -> Result<()> {
         .unwrap()
         .input_schema;
     assert!(task_update_schema["properties"].get("kind").is_none());
+    assert!(task_update_schema["properties"].get("priority").is_some());
+    assert!(
+        !task_update_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("priority"))
+    );
+    let list_schema = &tools
+        .iter()
+        .find(|tool| tool.name == "list_tasks")
+        .unwrap()
+        .input_schema;
+    assert!(list_schema["properties"].get("priority").is_some());
+    assert!(
+        !list_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("priority"))
+    );
+
     assert!(
         task_update_schema["properties"]["trigger_event"]
             .to_string()
@@ -281,13 +324,22 @@ async fn workflow(discover: bool) -> Result<()> {
     let project_id = project["id"].as_str().unwrap().to_owned();
     let connection = rusqlite::Connection::open(&database)?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
     let alternative_column: (String, i64) = connection.query_row(
         "SELECT type, \"notnull\" FROM pragma_table_info('decisions') WHERE name = 'alternatives_rejected'",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     assert_eq!(alternative_column, ("TEXT".to_owned(), 0));
+    let priority_column: (String, i64, String) = connection.query_row(
+        "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('tasks') WHERE name = 'priority'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    assert_eq!(
+        priority_column,
+        ("TEXT".to_owned(), 1, "'medium'".to_owned())
+    );
     drop(connection);
     let full_content = format!(
         "# Project conventions\n{}\nEND",
@@ -386,6 +438,8 @@ async fn workflow(discover: bool) -> Result<()> {
         }),
     )
     .await?;
+    assert_eq!(verification["priority"], "medium");
+    assert_eq!(task["priority"], "medium");
     let tasks = scoped_call(
         &client,
         &project_id,
@@ -394,6 +448,13 @@ async fn workflow(discover: bool) -> Result<()> {
     )
     .await?;
     assert_eq!(tasks["tasks"].as_array().unwrap().len(), 2);
+    assert!(
+        tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|task| task["priority"] == "medium")
+    );
     let context = scoped_call(
         &client,
         &project_id,
@@ -401,6 +462,7 @@ async fn workflow(discover: bool) -> Result<()> {
         json!({"task_id": task["id"]}),
     )
     .await?;
+    assert_eq!(context["task"]["priority"], "medium");
     assert_eq!(context["current_decisions"], json!([decision]));
     let sources = context["sources"].as_array().unwrap();
     assert_eq!(sources.len(), 2);
@@ -507,6 +569,7 @@ async fn workflow(discover: bool) -> Result<()> {
     )
     .await?;
     assert_eq!(persisted["task"]["status"], "done");
+    assert_eq!(persisted["task"]["priority"], "medium");
     assert_eq!(persisted["task"]["revision"], completed["revision"]);
     assert_eq!(
         persisted["latest_result"]["output_source_ids"],

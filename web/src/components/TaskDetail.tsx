@@ -251,6 +251,9 @@ function DetailBody({
         <Meta label="Status">
           <StatusBadge status={task.status} />
         </Meta>
+        <Meta label="Priority">
+          <span className="capitalize">{task.priority}</span>
+        </Meta>
         <Meta label="Revision">{task.revision}</Meta>
         <Meta label="Trigger">{task.trigger_event ?? '—'}</Meta>
         <Meta label="Created">{formatDate(task.created_at)}</Meta>

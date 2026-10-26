@@ -521,12 +521,36 @@ fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
     let project_b_id = project_b["id"].as_str().unwrap().to_string();
     assert_ne!(project_a, project_b_id);
 
-    let todo = create_task(&client, &project_a, "Todo task", "one_time", json!({}));
-    let in_progress = create_task(&client, &project_a, "Active task", "one_time", json!({}));
+    let todo = create_task(
+        &client,
+        &project_a,
+        "Todo task",
+        "one_time",
+        json!({"priority": "low"}),
+    );
+    let in_progress = create_task(
+        &client,
+        &project_a,
+        "Active task",
+        "one_time",
+        json!({"priority": "high"}),
+    );
     let _in_progress = update_task(&client, &in_progress, json!({"status": "in_progress"}));
-    let blocked = create_task(&client, &project_a, "Blocked task", "one_time", json!({}));
+    let blocked = create_task(
+        &client,
+        &project_a,
+        "Blocked task",
+        "one_time",
+        json!({"priority": "high"}),
+    );
     update_task(&client, &blocked, json!({"status": "blocked"}));
-    let done = create_task(&client, &project_a, "Done task", "one_time", json!({}));
+    let done = create_task(
+        &client,
+        &project_a,
+        "Done task",
+        "one_time",
+        json!({"priority": "low"}),
+    );
     let done_result = call(
         &client,
         "record_task_result",
@@ -562,14 +586,14 @@ fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
         &project_a,
         "Start-gated task",
         "one_time",
-        json!({"prerequisite_task_ids": [gate["id"]]}),
+        json!({"prerequisite_task_ids": [gate["id"]], "priority": "high"}),
     );
     let gated_done = create_task(
         &client,
         &project_a,
         "Done-gated task",
         "one_time",
-        json!({"completion_task_ids": [gate["id"]]}),
+        json!({"completion_task_ids": [gate["id"]], "priority": "low"}),
     );
     let other_task = create_task(
         &client,
@@ -599,7 +623,7 @@ fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
     assert!(projects.iter().any(|project| project["id"] == project_a));
     assert!(projects.iter().any(|project| project["id"] == project_b_id));
 
-    // The board exposes every task, ascending by ID, across all lifecycles.
+    // The board exposes every lifecycle in priority order, then ascending ID for ties.
     let tasks = dashboard
         .get(&format!("/api/projects/{project_a}/tasks"))
         .json();
@@ -609,7 +633,35 @@ fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
         .iter()
         .map(|task| task["id"].as_i64().unwrap())
         .collect();
-    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(
+        json!(ids),
+        json!([
+            in_progress["id"],
+            blocked["id"],
+            gated_start["id"],
+            _active["id"],
+            paused["id"],
+            gate["id"],
+            todo["id"],
+            done["id"],
+            gated_done["id"]
+        ])
+    );
+    assert_eq!(
+        tasks
+            .iter()
+            .map(|task| task["priority"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            "high", "high", "high", "medium", "medium", "medium", "low", "low", "low"
+        ]
+    );
+    assert_eq!(
+        dashboard
+            .get(&format!("/api/projects/{project_a}/tasks/{}", todo["id"]))
+            .json()["task"]["priority"],
+        "low"
+    );
     let statuses: Vec<&str> = tasks
         .iter()
         .map(|task| task["status"].as_str().unwrap())
@@ -642,6 +694,7 @@ fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
     let other_tasks = other_tasks["tasks"].as_array().unwrap();
     assert_eq!(other_tasks.len(), 1);
     assert_eq!(other_tasks[0]["id"], other_task["id"]);
+    assert_eq!(other_tasks[0]["priority"], "medium");
 
     // Cross-project and unknown reads are indistinguishable 404s.
     assert_eq!(
@@ -1052,7 +1105,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     let updated = update_task(
         &client,
         &latest,
-        json!({"progress": "Updated by a concurrent MCP process"}),
+        json!({"progress": "Updated by a concurrent MCP process", "priority": "high"}),
     );
     let tasks = dashboard
         .get(&format!("/api/projects/{project_id}/tasks"))
@@ -1065,8 +1118,11 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
         .unwrap();
     assert_eq!(visible["progress"], "Updated by a concurrent MCP process");
     assert_eq!(visible["revision"], updated["revision"]);
+    assert_eq!(visible["priority"], "high");
+    assert_eq!(tasks["tasks"][0]["id"], task["id"]);
     let context = dashboard.get(&context_path).json();
     assert_eq!(context["task"]["revision"], updated["revision"]);
+    assert_eq!(context["task"]["priority"], "high");
     let created = create_task(
         &client,
         &project_id,
@@ -1097,6 +1153,12 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
         tasks["tasks"].as_array().unwrap().len(),
         3,
         "fixture task, cursor task and fresh MCP task"
+    );
+    assert_eq!(tasks["tasks"][0]["id"], task["id"]);
+    assert_eq!(tasks["tasks"][0]["priority"], "high");
+    assert_eq!(
+        restarted.get(&context_path).json()["task"]["priority"],
+        "high"
     );
 }
 
