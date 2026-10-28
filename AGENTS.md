@@ -4,6 +4,8 @@
 
 ## 1. Project overview
 
+Dictum is a source of truth for product intent, evolution, and future direction. It complements the agent's harness; it does not replace it.
+
 Dictum is a local project-management MCP server for coding agents. Its goal is to let any working agent understand a project, execute a well-defined task, and resume previous work using durable records instead of the original conversation. The agent performs research, external tool calls, implementation, and verification; Dictum manages context, relationships, progress, and accepted decisions.
 
 The MVP uses Rust, `rmcp`, stdio, and one SQLite database containing multiple projects per server process. Multiple local clients must point to the same database to share project state. `DICTUM_DATABASE` selects its path; the default is `.dictum/dictum.sqlite3` relative to the process working directory. Stdout is reserved for MCP; diagnostics go to stderr.
