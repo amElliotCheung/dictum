@@ -17,14 +17,13 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-libc = "0.2"
 rmcp = { version = "3.5.1", default-features = false, features = ["server", "macros", "transport-io"] }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.48", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.48", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
 thiserror = "2.0"
-uuid = { version = "1.26", features = ["v4", "v7"] }
+uuid = { version = "1.26", features = ["v7"] }
 
 [dev-dependencies]
 rmcp = { version = "3.5.1", default-features = false, features = ["client", "transport-child-process"] }

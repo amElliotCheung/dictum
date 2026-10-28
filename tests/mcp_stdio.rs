@@ -1,10 +1,6 @@
 //! Exercise the actual binary over MCP stdio, not direct calls to server methods.
 
-use std::{
-    path::Path,
-    process::{Command, Stdio},
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result, ensure};
 use chrono::{TimeDelta, Utc};
@@ -324,7 +320,42 @@ async fn workflow(discover: bool) -> Result<()> {
     let project_id = project["id"].as_str().unwrap().to_owned();
     let connection = rusqlite::Connection::open(&database)?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
+    let tables = connection
+        .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    assert_eq!(
+        tables,
+        [
+            "decisions",
+            "projects",
+            "sources",
+            "task_context_sources",
+            "task_dependencies",
+            "task_feedback",
+            "task_feedback_addresses",
+            "task_result_sources",
+            "task_results",
+            "tasks",
+        ]
+    );
+    let result_columns = connection
+        .prepare("SELECT name FROM pragma_table_info('task_results') ORDER BY cid")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    assert_eq!(
+        result_columns,
+        [
+            "id",
+            "project_id",
+            "task_id",
+            "outcome",
+            "evidence",
+            "recorded_at",
+            "task_revision",
+        ]
+    );
     let alternative_column: (String, i64) = connection.query_row(
         "SELECT type, \"notnull\" FROM pragma_table_info('decisions') WHERE name = 'alternatives_rejected'",
         [],
@@ -589,27 +620,4 @@ async fn mcp_stdio_discovery_lifecycle() -> Result<()> {
 #[tokio::test]
 async fn mcp_stdio_initialize_lifecycle() -> Result<()> {
     tokio::time::timeout(Duration::from_secs(45), workflow(false)).await?
-}
-
-#[test]
-fn invalid_ambient_run_ids_fail_closed() {
-    let directory = tempfile::tempdir().unwrap();
-    let database = directory.path().join("invalid-run.sqlite3");
-    for value in ["", "run-7", "0", "-1"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_dictum-mcp"))
-            .env("DICTUM_DATABASE", &database)
-            .env("DICTUM_RUN_ID", value)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run dictum-mcp");
-        assert!(
-            !output.status.success(),
-            "DICTUM_RUN_ID={value:?} was accepted"
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("DICTUM_RUN_ID"),
-            "unexpected stderr for {value:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
 }

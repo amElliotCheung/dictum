@@ -75,34 +75,10 @@ CREATE TABLE task_dependencies (
     CHECK (task_id != depends_on_task_id)
 );
 
-CREATE TABLE task_runs (
-    id INTEGER PRIMARY KEY,
-    project_id TEXT NOT NULL,
-    task_id INTEGER NOT NULL,
-    agent TEXT NOT NULL CHECK (agent IN ('codex', 'claude')),
-    agent_version TEXT NOT NULL CHECK (length(trim(agent_version)) > 0),
-    agent_executable TEXT NOT NULL CHECK (length(trim(agent_executable)) > 0),
-    working_directory TEXT NOT NULL CHECK (length(trim(working_directory)) > 0),
-    input_task_revision INTEGER NOT NULL CHECK (input_task_revision >= 1),
-    status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')),
-    started_at TEXT NOT NULL,
-    ended_at TEXT,
-    exit_code INTEGER,
-    stop_reason TEXT,
-    cancel_requested_at TEXT,
-    pid INTEGER,
-    log TEXT NOT NULL DEFAULT '',
-    log_truncated INTEGER NOT NULL DEFAULT 0 CHECK (log_truncated IN (0, 1)),
-    progress TEXT NOT NULL DEFAULT '',
-    UNIQUE (project_id, id),
-    FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id)
-);
-
 CREATE TABLE task_results (
     id INTEGER PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
     task_id INTEGER NOT NULL,
-    run_id INTEGER REFERENCES task_runs(id),
     outcome TEXT NOT NULL CHECK (outcome IN ('success', 'no_change', 'failure')),
     evidence TEXT NOT NULL CHECK (length(trim(evidence)) > 0 AND length(evidence) <= 4000),
     recorded_at TEXT NOT NULL,
@@ -111,13 +87,6 @@ CREATE TABLE task_results (
     UNIQUE (task_id, task_revision),
     UNIQUE (project_id, task_id, id),
     FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id)
-);
-
-CREATE TABLE service_lock (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    instance_id TEXT NOT NULL,
-    pid INTEGER NOT NULL,
-    started_at TEXT NOT NULL
 );
 
 CREATE TABLE task_result_sources (
@@ -154,11 +123,7 @@ CREATE TABLE task_feedback_addresses (
 
 CREATE INDEX tasks_status ON tasks(project_id, status);
 CREATE INDEX tasks_kind ON tasks(project_id, kind);
-CREATE INDEX task_runs_task ON task_runs(project_id, task_id, id);
-CREATE UNIQUE INDEX task_runs_active_task ON task_runs(project_id, task_id) WHERE status = 'running';
-CREATE UNIQUE INDEX task_runs_active_directory ON task_runs(working_directory) WHERE status = 'running';
 CREATE INDEX task_results_task ON task_results(project_id, task_id, id);
-CREATE UNIQUE INDEX task_results_run ON task_results(project_id, task_id, run_id) WHERE run_id IS NOT NULL;
 CREATE INDEX task_results_success ON task_results(project_id, task_id, id) WHERE outcome IN ('success', 'no_change');
 CREATE INDEX task_result_sources_source ON task_result_sources(source_id);
 CREATE INDEX task_feedback_result ON task_feedback(project_id, task_id, result_id, id);

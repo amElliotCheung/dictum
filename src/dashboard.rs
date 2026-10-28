@@ -1,10 +1,9 @@
-//! Localhost HTTP dashboard: read-only record views plus narrowly scoped
-//! one-shot run launch/cancel controls. All other writes stay on the MCP side.
+//! Read-only HTTP dashboard: a sibling transport over the same Store as MCP.
 
-use std::{borrow::Cow, sync::Arc, time::Duration};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -13,7 +12,6 @@ use tokio::{
 
 use crate::{
     model::*,
-    runs::{RunError, RunManager},
     store::{Store, StoreError, StoreResult},
 };
 
@@ -23,12 +21,10 @@ const JS: &str = include_str!("../web/dist/app.js");
 const FAVICON: &str = include_str!("../web/favicon.svg");
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
-const MAX_BODY_BYTES: usize = 16 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'";
 
-/// Serve the embedded dashboard on the IPv4 loopback interface. The dashboard
-/// process is also the single owner of one-shot agent runs for this database.
+/// Serve the embedded dashboard on the IPv4 loopback interface.
 pub async fn serve(store: Store, port: u16) -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", port))
         .await
@@ -36,12 +32,6 @@ pub async fn serve(store: Store, port: u16) -> Result<()> {
     let address = listener
         .local_addr()
         .context("failed to read dashboard listener address")?;
-    let manager = Arc::new(
-        RunManager::start(store.clone())
-            .await
-            .map_err(|error| anyhow::anyhow!("{error}"))
-            .context("failed to start the run service")?,
-    );
     eprintln!("dictum-mcp dashboard: using {}", store.path().display());
     eprintln!(
         "dictum-mcp dashboard: listening on http://127.0.0.1:{}",
@@ -53,10 +43,9 @@ pub async fn serve(store: Store, port: u16) -> Result<()> {
             accepted = listener.accept() => {
                 let (stream, _) = accepted.context("dashboard listener failed")?;
                 let store = store.clone();
-                let manager = Arc::clone(&manager);
                 let port = address.port();
                 tokio::spawn(async move {
-                    if let Err(error) = handle_connection(store, manager, stream, port).await {
+                    if let Err(error) = handle_connection(store, stream, port).await {
                         eprintln!("dictum-mcp dashboard: request failed: {error}");
                     }
                 });
@@ -64,7 +53,6 @@ pub async fn serve(store: Store, port: u16) -> Result<()> {
             () = shutdown_signal() => break,
         }
     }
-    manager.shutdown().await;
     Ok(())
 }
 
@@ -87,7 +75,6 @@ async fn shutdown_signal() {
 enum Method {
     Get,
     Head,
-    Post,
     Other,
 }
 
@@ -95,32 +82,9 @@ struct Request {
     method: Method,
     target: String,
     headers: Vec<(String, String)>,
-    body: Vec<u8>,
 }
 
-impl Request {
-    fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(candidate, _)| candidate == name)
-            .map(|(_, value)| value.as_str())
-    }
-
-    fn is_read(&self) -> bool {
-        matches!(self.method, Method::Get | Method::Head)
-    }
-
-    fn is_post(&self) -> bool {
-        self.method == Method::Post
-    }
-}
-
-async fn handle_connection(
-    store: Store,
-    manager: Arc<RunManager>,
-    mut stream: TcpStream,
-    port: u16,
-) -> std::io::Result<()> {
+async fn handle_connection(store: Store, mut stream: TcpStream, port: u16) -> std::io::Result<()> {
     let request = match timeout(READ_TIMEOUT, read_request(&mut stream)).await {
         Ok(Ok(request)) => request,
         Ok(Err(())) => {
@@ -132,21 +96,19 @@ async fn handle_connection(
         }
     };
     let head_only = request.method == Method::Head;
-    let response = dispatch(&store, &manager, &request, port).await;
+    let response = dispatch(&store, &request, port).await;
     write_response(&mut stream, response, head_only).await
 }
 
-async fn dispatch(
-    store: &Store,
-    manager: &Arc<RunManager>,
-    request: &Request,
-    port: u16,
-) -> Response {
+async fn dispatch(store: &Store, request: &Request, port: u16) -> Response {
     if request.method == Method::Other {
-        return Response::method_not_allowed("GET, HEAD");
+        return Response::method_not_allowed();
     }
     if !allowed_host(&request.headers, port) {
         return Response::error(403, "host is not allowed");
+    }
+    if !allowed_origin(&request.headers, port) {
+        return Response::error(403, "origin is not allowed");
     }
 
     let (path, query) = request
@@ -162,27 +124,11 @@ async fn dispatch(
     };
     let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
 
-    // Read requests may omit Origin (address-bar navigation); a supplied Origin
-    // still has to match. Mutating routes below require it explicitly.
-    if request.is_read() && !allowed_origin(&request.headers, port, false) {
-        return Response::error(403, "origin is not allowed");
-    }
-
     match segments.as_slice() {
-        [] | ["app.css"] | ["app.js"] | ["favicon.svg"] if !request.is_read() => {
-            Response::method_not_allowed("GET, HEAD")
-        }
         [] => Response::static_asset(200, "text/html; charset=utf-8", INDEX),
         ["app.css"] => Response::static_asset(200, "text/css; charset=utf-8", CSS),
         ["app.js"] => Response::static_asset(200, "text/javascript; charset=utf-8", JS),
         ["favicon.svg"] => Response::static_asset(200, "image/svg+xml", FAVICON),
-        ["api", "run-token"] => {
-            if !request.is_read() {
-                return Response::method_not_allowed("GET, HEAD");
-            }
-            Response::json(&manager.config())
-        }
-        ["api", "projects"] if !request.is_read() => Response::method_not_allowed("GET, HEAD"),
         ["api", "projects"] => {
             api_response(store, |store| {
                 Ok(ProjectList {
@@ -190,9 +136,6 @@ async fn dispatch(
                 })
             })
             .await
-        }
-        ["api", "projects", project_id, "tasks"] if !request.is_read() => {
-            Response::method_not_allowed("GET, HEAD")
         }
         ["api", "projects", project_id, "tasks"] => {
             let project_id = (*project_id).to_string();
@@ -206,9 +149,6 @@ async fn dispatch(
             })
             .await
         }
-        ["api", "projects", project_id, "decisions"] if !request.is_read() => {
-            Response::method_not_allowed("GET, HEAD")
-        }
         ["api", "projects", project_id, "decisions"] => {
             let project_id = (*project_id).to_string();
             api_response(store, move |store| {
@@ -220,9 +160,6 @@ async fn dispatch(
                 })
             })
             .await
-        }
-        ["api", "projects", project_id, "sources"] if !request.is_read() => {
-            Response::method_not_allowed("GET, HEAD")
         }
         ["api", "projects", project_id, "sources"] => {
             let project_id = (*project_id).to_string();
@@ -236,9 +173,6 @@ async fn dispatch(
             })
             .await
         }
-        ["api", "projects", project_id, "tasks", task_id] if !request.is_read() => {
-            Response::method_not_allowed("GET, HEAD")
-        }
         ["api", "projects", project_id, "tasks", task_id] => {
             let project_id = (*project_id).to_string();
             let task_id = match parse_id("task id", task_id) {
@@ -249,9 +183,6 @@ async fn dispatch(
                 store.get_task_context(&project_id, task_id)
             })
             .await
-        }
-        ["api", "projects", project_id, "tasks", task_id, "results"] if !request.is_read() => {
-            Response::method_not_allowed("GET, HEAD")
         }
         ["api", "projects", project_id, "tasks", task_id, "results"] => {
             let project_id = (*project_id).to_string();
@@ -277,9 +208,6 @@ async fn dispatch(
             })
             .await
         }
-        ["api", "projects", project_id, "sources", source_id] if !request.is_read() => {
-            Response::method_not_allowed("GET, HEAD")
-        }
         ["api", "projects", project_id, "sources", source_id] => {
             let project_id = (*project_id).to_string();
             let source_id = match parse_id("source id", source_id) {
@@ -287,121 +215,6 @@ async fn dispatch(
                 Err(response) => return response,
             };
             api_response(store, move |store| store.get_source(&project_id, source_id)).await
-        }
-        ["api", "projects", project_id, "tasks", task_id, "runs"] if request.is_read() => {
-            let project_id = (*project_id).to_string();
-            let task_id = match parse_id("task id", task_id) {
-                Ok(task_id) => task_id,
-                Err(response) => return response,
-            };
-            match manager.list(&project_id, task_id).await {
-                Ok(runs) => Response::json(&runs),
-                Err(error) => run_error_response(error),
-            }
-        }
-        ["api", "projects", project_id, "tasks", task_id, "runs"] if !request.is_post() => {
-            Response::method_not_allowed("POST")
-        }
-        ["api", "projects", project_id, "tasks", task_id, "runs"] => {
-            if let Err(response) = authorize_mutation(request, manager, port) {
-                return response;
-            }
-            let project_id = (*project_id).to_string();
-            let task_id = match parse_id("task id", task_id) {
-                Ok(task_id) => task_id,
-                Err(response) => return response,
-            };
-            let input = match parse_json_body::<LaunchRun>(request) {
-                Ok(input) => input,
-                Err(response) => return response,
-            };
-            match manager.launch(&project_id, task_id, input).await {
-                Ok(run) => Response::json_status(201, &run),
-                Err(error) => run_error_response(error),
-            }
-        }
-        [
-            "api",
-            "projects",
-            project_id,
-            "tasks",
-            task_id,
-            "runs",
-            run_id,
-        ] if !request.is_read() => Response::method_not_allowed("GET, HEAD"),
-        [
-            "api",
-            "projects",
-            project_id,
-            "tasks",
-            task_id,
-            "runs",
-            run_id,
-        ] => {
-            let project_id = (*project_id).to_string();
-            let task_id = match parse_id("task id", task_id) {
-                Ok(task_id) => task_id,
-                Err(response) => return response,
-            };
-            let run_id = match parse_id("run id", run_id) {
-                Ok(run_id) => run_id,
-                Err(response) => return response,
-            };
-            let include_log = match query_value(query, "include_log") {
-                Ok(None) => true,
-                Ok(Some(value)) => match value.as_str() {
-                    "1" | "true" => true,
-                    "0" | "false" => false,
-                    _ => {
-                        return Response::error(400, "include_log must be 0, 1, true or false");
-                    }
-                },
-                Err(()) => return Response::error(400, "invalid query"),
-            };
-            match manager
-                .detail(&project_id, task_id, run_id, include_log)
-                .await
-            {
-                Ok(run) => Response::json(&run),
-                Err(error) => run_error_response(error),
-            }
-        }
-        [
-            "api",
-            "projects",
-            project_id,
-            "tasks",
-            task_id,
-            "runs",
-            run_id,
-            "cancel",
-        ] if !request.is_post() => Response::method_not_allowed("POST"),
-        [
-            "api",
-            "projects",
-            project_id,
-            "tasks",
-            task_id,
-            "runs",
-            run_id,
-            "cancel",
-        ] => {
-            if let Err(response) = authorize_mutation(request, manager, port) {
-                return response;
-            }
-            let project_id = (*project_id).to_string();
-            let task_id = match parse_id("task id", task_id) {
-                Ok(task_id) => task_id,
-                Err(response) => return response,
-            };
-            let run_id = match parse_id("run id", run_id) {
-                Ok(run_id) => run_id,
-                Err(response) => return response,
-            };
-            match manager.cancel(&project_id, task_id, run_id).await {
-                Ok(run) => Response::json(&run),
-                Err(error) => run_error_response(error),
-            }
         }
         _ => Response::error(404, "not found"),
     }
@@ -430,62 +243,6 @@ where
     }
 }
 
-fn authorize_mutation(request: &Request, manager: &RunManager, port: u16) -> Result<(), Response> {
-    if !allowed_origin(&request.headers, port, true) {
-        return Err(Response::error(403, "origin is not allowed"));
-    }
-    let json = request
-        .header("content-type")
-        .is_some_and(is_json_content_type);
-    if !json {
-        return Err(Response::error(
-            415,
-            "content-type must be application/json",
-        ));
-    }
-    let token = request.header("x-dictum-csrf").unwrap_or("");
-    if !constant_time_eq(token.as_bytes(), manager.token().as_bytes()) {
-        return Err(Response::error(403, "request token is not valid"));
-    }
-    Ok(())
-}
-
-fn parse_json_body<T: DeserializeOwned>(request: &Request) -> Result<T, Response> {
-    if request.body.is_empty() {
-        return Err(Response::error(400, "request body is required"));
-    }
-    serde_json::from_slice(&request.body)
-        .map_err(|error| Response::error(400, &format!("invalid JSON body: {error}")))
-}
-
-fn is_json_content_type(value: &str) -> bool {
-    let value = value.split(';').next().unwrap_or("").trim();
-    value.eq_ignore_ascii_case("application/json")
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut difference = 0_u8;
-    for (left, right) in left.iter().zip(right) {
-        difference |= left ^ right;
-    }
-    difference == 0
-}
-
-fn run_error_response(error: RunError) -> Response {
-    match error {
-        RunError::Validation(message) => Response::error(400, &message),
-        RunError::Conflict(message) => Response::error(409, &message),
-        RunError::Store(error) => ApiError::Store(error).into_response(),
-        RunError::Worker(message) => {
-            eprintln!("dictum-mcp dashboard: run worker failed: {message}");
-            Response::error(500, "internal server error")
-        }
-    }
-}
-
 enum ApiError {
     Store(StoreError),
     Worker(String),
@@ -499,7 +256,6 @@ impl ApiError {
                 StoreError::ProjectNotFound(_) | StoreError::NotFound { .. } => {
                     Response::error(404, &error.to_string())
                 }
-                StoreError::Conflict(message) => Response::error(409, message),
                 StoreError::RevisionConflict { .. } => Response::error(409, &error.to_string()),
                 StoreError::Database(_)
                 | StoreError::Io(_)
@@ -520,8 +276,8 @@ impl ApiError {
 struct Response {
     status: u16,
     content_type: &'static str,
-    body: Cow<'static, [u8]>,
-    allow: Option<&'static str>,
+    body: Vec<u8>,
+    allow: bool,
 }
 
 impl Response {
@@ -529,22 +285,18 @@ impl Response {
         Self {
             status,
             content_type,
-            body: Cow::Borrowed(body.as_bytes()),
-            allow: None,
+            body: body.as_bytes().to_vec(),
+            allow: false,
         }
     }
 
     fn json<T: Serialize>(value: &T) -> Self {
-        Self::json_status(200, value)
-    }
-
-    fn json_status<T: Serialize>(status: u16, value: &T) -> Self {
         match serde_json::to_vec(value) {
             Ok(body) => Self {
-                status,
+                status: 200,
                 content_type: "application/json; charset=utf-8",
-                body: Cow::Owned(body),
-                allow: None,
+                body,
+                allow: false,
             },
             Err(error) => {
                 eprintln!("dictum-mcp dashboard: serialization failed: {error}");
@@ -559,8 +311,8 @@ impl Response {
         Self {
             status,
             content_type: "application/json; charset=utf-8",
-            body: Cow::Owned(body),
-            allow: None,
+            body,
+            allow: false,
         }
     }
 
@@ -568,14 +320,14 @@ impl Response {
         Self {
             status: 500,
             content_type: "application/json; charset=utf-8",
-            body: Cow::Owned(b"{\"error\":\"internal server error\"}".to_vec()),
-            allow: None,
+            body: b"{\"error\":\"internal server error\"}".to_vec(),
+            allow: false,
         }
     }
 
-    fn method_not_allowed(allow: &'static str) -> Self {
+    fn method_not_allowed() -> Self {
         Self {
-            allow: Some(allow),
+            allow: true,
             ..Self::error(405, "method not allowed")
         }
     }
@@ -594,13 +346,13 @@ async fn write_response(
         response.body.len(),
         CSP
     );
-    if let Some(allow) = response.allow {
-        head.push_str(&format!("Allow: {allow}\r\n"));
+    if response.allow {
+        head.push_str("Allow: GET, HEAD\r\n");
     }
     head.push_str("\r\n");
     stream.write_all(head.as_bytes()).await?;
     if !head_only {
-        stream.write_all(response.body.as_ref()).await?;
+        stream.write_all(&response.body).await?;
     }
     stream.shutdown().await
 }
@@ -608,9 +360,10 @@ async fn write_response(
 async fn read_request(stream: &mut TcpStream) -> Result<Request, ()> {
     let mut data = Vec::new();
     let mut buffer = [0_u8; 2048];
-    let header_end = loop {
+    loop {
         if let Some(end) = find_header_end(&data) {
-            break end + 4;
+            data.truncate(end + 4);
+            return parse_request(&data);
         }
         if data.len() >= MAX_HEADER_BYTES {
             return Err(());
@@ -620,42 +373,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<Request, ()> {
             Ok(count) => data.extend_from_slice(&buffer[..count]),
             Err(_) => return Err(()),
         }
-    };
-    if header_end > MAX_HEADER_BYTES {
-        return Err(());
     }
-    let mut request = parse_request(&data[..header_end])?;
-    let length = content_length(&request.headers)?;
-    if length > MAX_BODY_BYTES {
-        return Err(());
-    }
-    while data.len() < header_end + length {
-        match stream.read(&mut buffer).await {
-            Ok(0) => return Err(()),
-            Ok(count) => data.extend_from_slice(&buffer[..count]),
-            Err(_) => return Err(()),
-        }
-        if data.len() > header_end + MAX_BODY_BYTES {
-            return Err(());
-        }
-    }
-    request.body = data[header_end..header_end + length].to_vec();
-    Ok(request)
-}
-
-fn content_length(headers: &[(String, String)]) -> Result<usize, ()> {
-    if headers.iter().any(|(name, _)| name == "transfer-encoding") {
-        return Err(());
-    }
-    let mut lengths = headers.iter().filter(|(name, _)| name == "content-length");
-    let length = match lengths.next() {
-        Some((_, value)) => value.parse::<usize>().map_err(|_| ())?,
-        None => 0,
-    };
-    if lengths.next().is_some() {
-        return Err(());
-    }
-    Ok(length)
 }
 
 fn find_header_end(data: &[u8]) -> Option<usize> {
@@ -671,7 +389,6 @@ fn parse_request(bytes: &[u8]) -> Result<Request, ()> {
     let method = match parts.next().ok_or(())? {
         "GET" => Method::Get,
         "HEAD" => Method::Head,
-        "POST" => Method::Post,
         _ => Method::Other,
     };
     let target = parts.next().ok_or(())?.to_string();
@@ -691,7 +408,6 @@ fn parse_request(bytes: &[u8]) -> Result<Request, ()> {
         method,
         target,
         headers,
-        body: Vec::new(),
     })
 }
 
@@ -713,14 +429,14 @@ fn allowed_host(headers: &[(String, String)], port: u16) -> bool {
     allowed.iter().any(|candidate| candidate == &host)
 }
 
-fn allowed_origin(headers: &[(String, String)], port: u16, required: bool) -> bool {
+fn allowed_origin(headers: &[(String, String)], port: u16) -> bool {
     let origins: Vec<&str> = headers
         .iter()
         .filter(|(name, _)| name == "origin")
         .map(|(_, value)| value.trim())
         .collect();
     if origins.is_empty() {
-        return !required;
+        return true;
     }
     if origins.len() != 1 {
         return false;
@@ -822,14 +538,12 @@ fn hex(value: u8) -> Option<u8> {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
-        201 => "Created",
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         408 => "Request Timeout",
         409 => "Conflict",
-        415 => "Unsupported Media Type",
         500 => "Internal Server Error",
         _ => "Error",
     }

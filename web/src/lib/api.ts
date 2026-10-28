@@ -1,11 +1,6 @@
 import type {
   DecisionList,
   ProjectList,
-  RunAgent,
-  RunConfig,
-  RunDetail,
-  RunList,
-  RunSummary,
   Source,
   SourceList,
   TaskContext,
@@ -23,16 +18,9 @@ export class ApiError extends Error {
   }
 }
 
-async function requestJson<T>(
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
+async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(path, {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      ...init?.headers,
-    },
+    headers: { Accept: 'application/json' },
     cache: 'no-store',
   });
   let payload: unknown = null;
@@ -52,21 +40,6 @@ async function requestJson<T>(
     throw new ApiError(response.status, message);
   }
   return payload as T;
-}
-
-function getJson<T>(path: string): Promise<T> {
-  return requestJson<T>(path);
-}
-
-function postJson<T>(path: string, token: string, body: unknown): Promise<T> {
-  return requestJson<T>(path, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Dictum-CSRF': token,
-    },
-    body: JSON.stringify(body),
-  });
 }
 
 function projectPath(projectId: string): string {
@@ -107,48 +80,6 @@ export const api = {
   source(projectId: string, sourceId: number): Promise<Source> {
     return getJson<Source>(`${projectPath(projectId)}/sources/${sourceId}`);
   },
-  runConfig(): Promise<RunConfig> {
-    return getJson<RunConfig>('/api/run-token');
-  },
-  runs(projectId: string, taskId: number): Promise<RunList> {
-    return getJson<RunList>(`${projectPath(projectId)}/tasks/${taskId}/runs`);
-  },
-  run(
-    projectId: string,
-    taskId: number,
-    runId: number,
-    includeLog = true,
-  ): Promise<RunDetail> {
-    const query = includeLog ? '' : '?include_log=0';
-    return getJson<RunDetail>(
-      `${projectPath(projectId)}/tasks/${taskId}/runs/${runId}${query}`,
-    );
-  },
-  launchRun(
-    projectId: string,
-    taskId: number,
-    token: string,
-    agent: RunAgent,
-    workingDirectory: string,
-  ): Promise<RunSummary> {
-    return postJson<RunSummary>(
-      `${projectPath(projectId)}/tasks/${taskId}/runs`,
-      token,
-      { agent, working_directory: workingDirectory },
-    );
-  },
-  cancelRun(
-    projectId: string,
-    taskId: number,
-    runId: number,
-    token: string,
-  ): Promise<RunSummary> {
-    return postJson<RunSummary>(
-      `${projectPath(projectId)}/tasks/${taskId}/runs/${runId}/cancel`,
-      token,
-      {},
-    );
-  },
 };
 
 export const queryKeys = {
@@ -165,11 +96,4 @@ export const queryKeys = {
     ['projects', projectId, 'project-sources'] as const,
   source: (projectId: string, sourceId: number) =>
     ['projects', projectId, 'sources', sourceId] as const,
-  runConfig: ['run-config'] as const,
-  runs: (projectId: string, taskId: number) =>
-    ['projects', projectId, 'tasks', taskId, 'runs'] as const,
-  run: (projectId: string, taskId: number, runId: number) =>
-    ['projects', projectId, 'tasks', taskId, 'runs', runId] as const,
-  runLog: (projectId: string, taskId: number, runId: number) =>
-    ['projects', projectId, 'tasks', taskId, 'runs', runId, 'log'] as const,
 };
