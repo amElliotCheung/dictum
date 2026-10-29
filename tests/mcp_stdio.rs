@@ -111,16 +111,16 @@ async fn workflow(discover: bool) -> Result<()> {
             "create_source",
             "create_task",
             "get_source",
+            "get_task_comment",
             "get_task_context",
             "list_decisions",
             "list_projects",
             "list_sources",
-            "list_task_results",
+            "list_task_comments",
             "list_tasks",
             "record_decision",
             "record_source_action",
-            "record_task_feedback",
-            "record_task_result",
+            "record_task_comment",
             "update_project",
             "update_source",
             "update_task",
@@ -295,16 +295,10 @@ async fn workflow(discover: bool) -> Result<()> {
     );
     let result_schema = &tools
         .iter()
-        .find(|tool| tool.name == "record_task_result")
+        .find(|tool| tool.name == "record_task_comment")
         .unwrap()
         .input_schema;
-    for field in [
-        "project_id",
-        "task_id",
-        "expected_revision",
-        "outcome",
-        "evidence",
-    ] {
+    for field in ["project_id", "task_id", "task_revision", "body"] {
         assert!(
             result_schema["required"]
                 .as_array()
@@ -312,18 +306,47 @@ async fn workflow(discover: bool) -> Result<()> {
                 .contains(&json!(field))
         );
     }
-    assert!(
-        !result_schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("output_source_ids"))
-    );
-    for field in ["id", "recorded_at", "task_revision"] {
+    for field in ["execution_result", "reply_to_comment_id"] {
+        assert!(result_schema["properties"].get(field).is_some());
+        assert!(
+            !result_schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(field))
+        );
+    }
+    for field in [
+        "id",
+        "recorded_at",
+        "expected_revision",
+        "outcome",
+        "evidence",
+        "author",
+        "disposition",
+    ] {
         assert!(result_schema["properties"].get(field).is_none());
     }
+    for schema in [create_task_schema, task_update_schema, list_schema] {
+        assert!(
+            schema["properties"]["parent_task_id"]
+                .to_string()
+                .contains("null")
+        );
+    }
+    let comment_get_schema = &tools
+        .iter()
+        .find(|tool| tool.name == "get_task_comment")
+        .unwrap()
+        .input_schema;
+    assert!(
+        comment_get_schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("comment_id"))
+    );
     let history_schema = &tools
         .iter()
-        .find(|tool| tool.name == "list_task_results")
+        .find(|tool| tool.name == "list_task_comments")
         .unwrap()
         .input_schema;
     assert!(
@@ -332,7 +355,7 @@ async fn workflow(discover: bool) -> Result<()> {
             .unwrap()
             .contains(&json!("task_id"))
     );
-    for field in ["page_size", "before_id"] {
+    for field in ["page_size", "before_id", "has_execution_result"] {
         assert!(history_schema["properties"].get(field).is_some());
         assert!(
             !history_schema["required"]
@@ -355,7 +378,7 @@ async fn workflow(discover: bool) -> Result<()> {
     let project_id = project["id"].as_str().unwrap().to_owned();
     let connection = rusqlite::Connection::open(&database)?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(version, 12);
+    assert_eq!(version, 13);
     let tables = connection
         .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")?
         .query_map([], |row| row.get::<_, String>(0))?
@@ -366,17 +389,15 @@ async fn workflow(discover: bool) -> Result<()> {
             "decisions",
             "projects",
             "sources",
+            "task_comment_sources",
+            "task_comments",
             "task_context_sources",
             "task_dependencies",
-            "task_feedback",
-            "task_feedback_addresses",
-            "task_result_sources",
-            "task_results",
             "tasks",
         ]
     );
     let result_columns = connection
-        .prepare("SELECT name FROM pragma_table_info('task_results') ORDER BY cid")?
+        .prepare("SELECT name FROM pragma_table_info('task_comments') ORDER BY cid")?
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     assert_eq!(
@@ -385,10 +406,11 @@ async fn workflow(discover: bool) -> Result<()> {
             "id",
             "project_id",
             "task_id",
-            "outcome",
-            "evidence",
-            "recorded_at",
             "task_revision",
+            "body",
+            "reply_to_comment_id",
+            "outcome",
+            "recorded_at",
         ]
     );
     let alternative_column: (String, i64) = connection.query_row(
@@ -595,23 +617,15 @@ async fn workflow(discover: bool) -> Result<()> {
     let output = scoped_call(&client, &project_id, "create_source", json!({
         "name": "Verification report", "description": "Result and evidence for implemented feature", "content": "Revision demo-123; command cargo test; all passed."
     })).await?;
-    let verification_result = scoped_call(&client, &project_id, "record_task_result", json!({
-        "task_id": verification["id"], "expected_revision": verification["revision"], "outcome": "success",
-        "evidence": "Tested demo-123 with cargo test; all passed (test fixture evidence)",
-        "output_source_ids": [output["id"]]
-    })).await?;
+    let verification_result = scoped_call(&client, &project_id, "record_task_comment", json!({"task_id": verification["id"], "task_revision": verification["revision"], "body": "Tested demo-123 with cargo test; all passed (test fixture evidence)", "execution_result": {"outcome": "success", "output_source_ids": [output["id"]]}})).await?;
     scoped_call(&client, &project_id, "update_task", json!({
         "task_id": verification["id"], "expected_revision": verification_result["task_revision"], "status": "done"
     })).await?;
     let feature_result = scoped_call(
         &client,
         &project_id,
-        "record_task_result",
-        json!({
-            "task_id": task["id"], "expected_revision": running["revision"], "outcome": "success",
-            "evidence": "Implemented and verified by the completed verification task",
-            "output_source_ids": [output["id"]]
-        }),
+        "record_task_comment",
+        json!({"task_id": task["id"], "task_revision": running["revision"], "body": "Implemented and verified by the completed verification task", "execution_result": {"outcome": "success", "output_source_ids": [output["id"]]}}),
     )
     .await?;
     let completed = scoped_call(&client, &project_id, "update_task", json!({
@@ -638,7 +652,7 @@ async fn workflow(discover: bool) -> Result<()> {
     assert_eq!(persisted["task"]["priority"], "medium");
     assert_eq!(persisted["task"]["revision"], completed["revision"]);
     assert_eq!(
-        persisted["latest_result"]["output_source_ids"],
+        persisted["latest_execution"]["execution_result"]["output_source_ids"],
         json!([output["id"]])
     );
     assert_eq!(persisted["sources"].as_array().unwrap().len(), 2);

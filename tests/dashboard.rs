@@ -318,14 +318,8 @@ fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
     );
     let done_result = call(
         &client,
-        "record_task_result",
-        json!({
-            "project_id": project_a,
-            "task_id": done["id"],
-            "expected_revision": done["revision"],
-            "outcome": "success",
-            "evidence": "Verified in the dashboard fixture."
-        }),
+        "record_task_comment",
+        json!({"project_id": project_a, "task_id": done["id"], "task_revision": done["revision"], "body": "Verified in the dashboard fixture.", "execution_result": {"outcome": "success"}}),
     );
     let mut done_with_result = done.clone();
     done_with_result["revision"] = done_result["task_revision"].clone();
@@ -711,39 +705,26 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     );
     let task = update_task(&client, &task, json!({"progress": "Prepared for history"}));
     let mut revision = task["revision"].as_i64().unwrap();
-    let mut latest_result_id = 0;
+    let mut latest_execution_id = 0;
     for index in 0..25 {
         let result = call(
             &client,
-            "record_task_result",
-            json!({
-                "project_id": project_id,
-                "task_id": task["id"],
-                "expected_revision": revision,
-                "outcome": "success",
-                "evidence": format!("Recorded evidence for run {index}"),
-                "output_source_ids": [output_source["id"]]
-            }),
+            "record_task_comment",
+            json!({"project_id": project_id, "task_id": task["id"], "task_revision": revision, "body": format!("Recorded evidence for run {index}"), "execution_result": {"outcome": "success", "output_source_ids": [output_source["id"]]}}),
         );
         revision = result["task_revision"].as_i64().unwrap();
-        latest_result_id = result["id"].as_i64().unwrap();
+        latest_execution_id = result["id"].as_i64().unwrap();
     }
     let other_task = create_task(&client, &project_id, "Cursor task", "one_time", json!({}));
     let other_result = call(
         &client,
-        "record_task_result",
-        json!({
-            "project_id": project_id,
-            "task_id": other_task["id"],
-            "expected_revision": other_task["revision"],
-            "outcome": "success",
-            "evidence": "A result belonging to another task."
-        }),
+        "record_task_comment",
+        json!({"project_id": project_id, "task_id": other_task["id"], "task_revision": other_task["revision"], "body": "A result belonging to another task.", "execution_result": {"outcome": "success"}}),
     );
 
     let dashboard = Dashboard::start(&database, 0);
     let context_path = format!("/api/projects/{project_id}/tasks/{}", task["id"]);
-    let results_path = format!("{context_path}/results");
+    let results_path = format!("{context_path}/comments");
 
     let context = dashboard.get(&context_path).json();
     assert_eq!(context["task"]["id"], task["id"]);
@@ -757,22 +738,25 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
         .unwrap();
     assert_eq!(embedded["content"], adversarial);
     assert_eq!(embedded["snapshot"]["checkpoint"], "checkpoint-1");
-    assert_eq!(context["latest_result"]["id"], latest_result_id);
-    assert_eq!(context["latest_successful_result"]["id"], latest_result_id);
+    assert_eq!(context["latest_execution"]["id"], latest_execution_id);
+    assert_eq!(
+        context["latest_successful_execution"]["id"],
+        latest_execution_id
+    );
 
     let first_page = dashboard
         .get(&format!("{results_path}?page_size=20"))
         .json();
-    assert_eq!(first_page["results"].as_array().unwrap().len(), 20);
+    assert_eq!(first_page["comments"].as_array().unwrap().len(), 20);
     let cursor = first_page["next_before_id"].as_i64().unwrap();
-    assert_eq!(cursor, first_page["results"][19]["id"].as_i64().unwrap());
+    assert_eq!(cursor, first_page["comments"][19]["id"].as_i64().unwrap());
     let second_page = dashboard
         .get(&format!("{results_path}?page_size=20&before_id={cursor}"))
         .json();
-    assert_eq!(second_page["results"].as_array().unwrap().len(), 5);
+    assert_eq!(second_page["comments"].as_array().unwrap().len(), 5);
     assert!(second_page["next_before_id"].is_null());
     assert_eq!(
-        first_page["results"][0]["output_source_ids"],
+        first_page["comments"][0]["execution_result"]["output_source_ids"],
         json!([output_source["id"]])
     );
     assert_eq!(
@@ -821,7 +805,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     );
     let history_before = call(
         &client,
-        "list_task_results",
+        "list_task_comments",
         json!({"task_id": task["id"], "page_size": 100}),
     );
     let tasks_before = call(&client, "list_tasks", json!({}));
@@ -853,7 +837,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     );
     let history_after = call(
         &client,
-        "list_task_results",
+        "list_task_comments",
         json!({"task_id": task["id"], "page_size": 100}),
     );
     let tasks_after = call(&client, "list_tasks", json!({}));
@@ -866,8 +850,8 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
         context_after["task"]["updated_at"]
     );
     assert_eq!(
-        context_before["latest_result"]["id"],
-        context_after["latest_result"]["id"]
+        context_before["latest_execution"]["id"],
+        context_after["latest_execution"]["id"]
     );
     assert_eq!(source_before["revision"], source_after["revision"]);
     assert_eq!(source_before["updated_at"], source_after["updated_at"]);
@@ -881,7 +865,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
         source_before["next_action_at"],
         source_after["next_action_at"]
     );
-    assert_eq!(history_before["results"], history_after["results"]);
+    assert_eq!(history_before["comments"], history_after["comments"]);
     assert_eq!(tasks_before["tasks"], tasks_after["tasks"]);
 
     // A concurrent MCP write becomes visible to the next HTTP read.
@@ -947,247 +931,117 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
 }
 
 #[test]
-fn dashboard_result_feedback_survives_history_changes_and_explicit_resolution() {
+fn dashboard_comment_history_keeps_flat_replies_version_targets_and_immutable_executions() {
     let directory = tempfile::tempdir().unwrap();
     let database = dashboard_database(&directory);
     let client = Project::open(&database).unwrap();
     let project_id = client.project_id.clone();
-    let foreign_project = call(
-        &client,
-        "create_project",
-        json!({"name": "Other project", "description": "Feedback must stay project scoped."}),
-    );
     let output = call(
         &client,
         "create_source",
-        json!({
-            "name": "Original implementation",
-            "description": "The output rejected by its reviewer.",
-            "content": "# Original output\n\nThe implementation omits restart persistence."
-        }),
+        json!({"name": "Implementation", "description": "Execution output", "content": "# Original output"}),
     );
     let task = create_task(
         &client,
         &project_id,
-        "Review and revise implementation",
+        "Review implementation",
         "one_time",
         json!({}),
     );
     let original = call(
         &client,
-        "record_task_result",
-        json!({
-            "task_id": task["id"],
-            "expected_revision": task["revision"],
-            "outcome": "success",
-            "evidence": "The original implementation passed its initial checks.",
-            "output_source_ids": [output["id"]]
-        }),
+        "record_task_comment",
+        json!({"task_id": task["id"], "task_revision": task["revision"], "body": "The implementation passed its initial checks.", "execution_result": {"outcome": "success", "output_source_ids": [output["id"]]}}),
     );
-    let subsequent = call(
-        &client,
-        "record_task_result",
-        json!({
-            "task_id": task["id"],
-            "expected_revision": original["task_revision"],
-            "outcome": "success",
-            "evidence": "A later run also reported success before human review."
-        }),
-    );
-    let mut done = task.clone();
-    done["revision"] = subsequent["task_revision"].clone();
-    let done = update_task(&client, &done, json!({"status": "done"}));
-
+    let done = update_task(&client, &task, json!({"status": "done"}));
     let dashboard = Dashboard::start(&database, 0);
     let context_path = format!("/api/projects/{project_id}/tasks/{}", task["id"]);
-    let results_path = format!("{context_path}/results");
-    let before_review = dashboard.get(&context_path).json();
-    assert_eq!(before_review["task"]["status"], "done");
-    assert_eq!(before_review["outstanding_feedback"], json!([]));
-
-    // The existing dashboard process sees feedback written by a concurrent MCP client.
-    let feedback = call(
+    let comments_path = format!("{context_path}/comments");
+    let review = call(
         &client,
-        "record_task_feedback",
-        json!({
-            "task_id": task["id"],
-            "result_id": original["id"],
-            "expected_revision": done["revision"],
-            "disposition": "changes_requested",
-            "body": "## Changes required\n\nThe output loses state after restart. Persist the result and verify a fresh process can read it."
-        }),
+        "record_task_comment",
+        json!({"task_id": task["id"], "task_revision": task["revision"], "reply_to_comment_id": original["id"], "body": "## Review
+
+Please inspect restart persistence before changing the brief."}),
     );
     let reviewed = dashboard.get(&context_path).json();
-    assert_eq!(reviewed["task"]["status"], "todo");
-    assert_eq!(reviewed["task"]["revision"], feedback["task_revision"]);
-    assert_eq!(reviewed["outstanding_feedback"][0]["feedback"], feedback);
-    assert_eq!(
-        reviewed["outstanding_feedback"][0]["result"]["id"],
-        original["id"]
-    );
-    assert_eq!(
-        reviewed["outstanding_feedback"][0]["result"]["output_source_ids"],
-        json!([output["id"]])
-    );
-    assert_eq!(feedback["project_id"], project_id);
-    assert_eq!(feedback["task_id"], task["id"]);
-    assert!(
-        feedback["recorded_at"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty())
-    );
-    assert!(feedback["addressed_by_result_id"].is_null());
-
-    let revised = update_task(
-        &client,
-        &reviewed["task"],
-        json!({"design": "Persist outputs and verify them after restarting the process."}),
-    );
-    let mut revision = revised["revision"].clone();
-    let mut newest_failure_id = Value::Null;
+    assert_eq!(reviewed["task"], done);
+    assert_eq!(reviewed["recent_comments"][0], review);
+    assert_eq!(reviewed["latest_execution"], original);
+    assert!(reviewed.get("outstanding_feedback").is_none());
     for index in 0..21 {
-        let failure = call(
+        call(
             &client,
-            "record_task_result",
-            json!({
-                "task_id": task["id"],
-                "expected_revision": revision,
-                "outcome": "failure",
-                "evidence": format!("Revision attempt {index}: restart persistence still fails.")
-            }),
+            "record_task_comment",
+            json!({"task_id": task["id"], "task_revision": done["revision"], "body": format!("Subsequent discussion {index}")}),
         );
-        revision = failure["task_revision"].clone();
-        newest_failure_id = failure["id"].clone();
     }
-    let outstanding = dashboard.get(&context_path).json();
-    assert_eq!(outstanding["task"]["design"], revised["design"]);
-    assert_eq!(outstanding["latest_result"]["id"], newest_failure_id);
-    assert_eq!(
-        outstanding["latest_successful_result"]["id"],
-        subsequent["id"]
-    );
-    assert_eq!(
-        outstanding["outstanding_feedback"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(outstanding["outstanding_feedback"][0]["feedback"], feedback);
-    assert_eq!(
-        outstanding["outstanding_feedback"][0]["result"]["evidence"],
-        original["evidence"]
-    );
-    let first_page = dashboard.get(&results_path).json();
-    assert_eq!(first_page["results"].as_array().unwrap().len(), 20);
-    assert!(
-        first_page["results"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|result| result["id"] != original["id"])
-    );
+    let bounded = dashboard.get(&context_path).json();
+    assert_eq!(bounded["task"], done);
+    assert_eq!(bounded["recent_comments"].as_array().unwrap().len(), 10);
+    assert_eq!(bounded["latest_execution"], original);
+    let first_page = dashboard.get(&comments_path).json();
+    assert_eq!(first_page["comments"].as_array().unwrap().len(), 20);
     let older_path = format!(
-        "{results_path}?before_id={}",
+        "{comments_path}?before_id={}",
         first_page["next_before_id"].as_i64().unwrap()
     );
     let older = dashboard.get(&older_path).json();
-    let original_with_feedback = older["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|result| result["id"] == original["id"])
-        .unwrap();
-    assert_eq!(original_with_feedback["feedback"], json!([feedback]));
-
-    let foreign_context = format!(
-        "/api/projects/{}/tasks/{}",
-        foreign_project["id"].as_str().unwrap(),
-        task["id"]
-    );
-    assert_eq!(dashboard.get(&foreign_context).status, 404);
+    assert_eq!(older["comments"].as_array().unwrap().len(), 3);
+    assert_eq!(older["comments"][1], review);
+    assert_eq!(older["comments"][2], original);
     assert_eq!(
-        dashboard.get(&format!("{foreign_context}/results")).status,
-        404
+        dashboard
+            .get(&format!("{comments_path}/{}", original["id"]))
+            .json(),
+        original
     );
-    let state_before_reads = call(&client, "get_task_context", json!({"task_id": task["id"]}));
-    let history_before_reads = call(
+    assert_eq!(
+        dashboard
+            .get(&format!("{comments_path}?has_execution_result=true"))
+            .json()["comments"],
+        json!([original])
+    );
+    let before_reads = call(
         &client,
-        "list_task_results",
+        "list_task_comments",
         json!({"task_id": task["id"], "page_size": 100}),
     );
     for _ in 0..3 {
-        assert_eq!(dashboard.get(&context_path).json(), outstanding);
+        assert_eq!(dashboard.get(&context_path).json(), bounded);
         assert_eq!(dashboard.get(&older_path).json(), older);
         assert_eq!(
             dashboard.request("POST", &context_path, None, &[]).status,
             405
         );
         assert_eq!(
-            dashboard.request("POST", &results_path, None, &[]).status,
-            405
+            dashboard.request("POST", &comments_path, None, &[]).status,
+            403
         );
     }
     assert_eq!(
-        call(&client, "get_task_context", json!({"task_id": task["id"]})),
-        state_before_reads
-    );
-    assert_eq!(
         call(
             &client,
-            "list_task_results",
+            "list_task_comments",
             json!({"task_id": task["id"], "page_size": 100})
         ),
-        history_before_reads
+        before_reads
     );
-
-    // Only the explicitly identified successful follow-up resolves the request.
-    let addressed = call(
-        &client,
-        "record_task_result",
-        json!({
-            "task_id": task["id"],
-            "expected_revision": revision,
-            "outcome": "success",
-            "evidence": "Restarted both processes and verified the stored output persists.",
-            "addressed_feedback_ids": [feedback["id"]]
-        }),
-    );
-    let resolved = dashboard.get(&context_path).json();
-    assert_eq!(resolved["outstanding_feedback"], json!([]));
-    assert_eq!(resolved["latest_result"]["id"], addressed["id"]);
-    assert_eq!(
-        resolved["latest_result"]["addressed_feedback_ids"],
-        json!([feedback["id"]])
-    );
-    assert_eq!(resolved["task"]["status"], "todo");
-    let resolved_history = dashboard.get(&older_path).json();
-    let resolved_original = resolved_history["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|result| result["id"] == original["id"])
-        .unwrap();
-    assert_eq!(
-        resolved_original["feedback"][0]["addressed_by_result_id"],
-        addressed["id"]
-    );
-
     drop(client);
     let port = dashboard.port;
     drop(dashboard);
     wait_for_port_free(port);
     let restarted_client = Project::open(&database).unwrap();
     let restarted = Dashboard::start(&database, port);
-    assert_eq!(restarted.get(&context_path).json(), resolved);
-    assert_eq!(restarted.get(&older_path).json(), resolved_history);
+    assert_eq!(restarted.get(&context_path).json(), bounded);
+    assert_eq!(restarted.get(&older_path).json(), older);
     assert_eq!(
         call(
             &restarted_client,
             "get_task_context",
-            json!({"project_id": project_id, "task_id": task["id"]})
+            json!({"task_id": task["id"]})
         ),
-        resolved
+        bounded
     );
 }
 

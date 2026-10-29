@@ -1,50 +1,18 @@
-import {
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { X } from 'lucide-react';
 import { api, ApiError, queryKeys } from '../lib/api';
-import {
-  formatDate,
-  formatKind,
-  statusLabels,
-} from '../lib/format';
-import type {
-  TaskContext,
-  TaskFeedback,
-  TaskResult,
-  TaskResultList,
-  TaskStatus,
-  TaskSummary,
-} from '../lib/types';
+import { formatDate, formatKind, statusLabels } from '../lib/format';
+import type { Task, TaskContext, TaskStatus, TaskSummary } from '../lib/types';
 import { Markdown } from '../lib/markdown';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Card } from './ui/card';
 import { Meta } from './ui/meta';
 import { DecisionCard } from './DecisionCard';
-import { SourceBody, SourceCard } from './SourceCard';
+import { SourceBody } from './SourceCard';
+import { TaskComments } from './TaskComments';
 
-interface HistoryState {
-  requested: boolean;
-  pending: boolean;
-  fetchingOlder: boolean;
-  hasNext: boolean;
-  error: string | null;
-  onLoadOlder: () => void;
-  onRetry: () => void;
-}
-
-export function TaskDetail({
-  projectId,
-  taskId,
-  tasks,
-  onClose,
-  onOpenTask,
-}: {
+export function TaskDetail({ projectId, taskId, tasks, onClose, onOpenTask }: {
   projectId: string;
   taskId: number;
   tasks: TaskSummary[];
@@ -52,773 +20,172 @@ export function TaskDetail({
   onOpenTask: (taskId: number) => void;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
-  const [historyRequested, setHistoryRequested] = useState(false);
   const validTask = Number.isInteger(taskId) && taskId > 0;
-
+  useEffect(() => { closeRef.current?.focus(); }, [projectId, taskId]);
   useEffect(() => {
-    setHistoryRequested(false);
-  }, [taskId]);
-
-  useEffect(() => {
-    closeRef.current?.focus();
-  }, [taskId]);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-      }
-    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
-
   const contextQuery = useQuery({
     queryKey: queryKeys.context(projectId, taskId),
     queryFn: () => api.context(projectId, taskId),
     enabled: validTask,
-    refetchInterval: 5000,
+    refetchInterval: 5_000,
   });
-
-  const resultsQuery = useInfiniteQuery({
-    queryKey: queryKeys.results(projectId, taskId),
-    queryFn: ({ pageParam }) => api.results(projectId, taskId, pageParam),
-    initialPageParam: undefined as number | undefined,
-    getNextPageParam: (lastPage: TaskResultList) =>
-      lastPage.next_before_id ?? undefined,
-    enabled: validTask && historyRequested,
-    refetchInterval: historyRequested ? 5000 : false,
-  });
-
   const context = contextQuery.data;
-  const contextError = contextQuery.error;
-  const notFound =
-    contextError instanceof ApiError && contextError.status === 404;
-  const boundedResults: TaskResult[] = context
-    ? [
-        ...context.outstanding_feedback.map(({ result }) => result),
-        context.latest_result,
-        context.latest_successful_result,
-      ].filter(
-        (result): result is TaskResult => result !== null,
-      )
-    : [];
-  const history = mergeResults(boundedResults, resultsQuery.data?.pages);
-
-  useEffect(() => {
-    if (historyRequested && context?.task.revision !== undefined) {
-      void resultsQuery.refetch();
-    }
-  }, [context?.task.revision, historyRequested, resultsQuery.refetch]);
-
-  const historyState: HistoryState = {
-    requested: historyRequested,
-    pending: resultsQuery.isPending,
-    fetchingOlder: resultsQuery.isFetchingNextPage,
-    hasNext: resultsQuery.hasNextPage,
-    error: resultsQuery.isError
-      ? (resultsQuery.error.message ?? 'Unknown error')
-      : null,
-    onLoadOlder: () => {
-      if (!historyRequested) {
-        setHistoryRequested(true);
-      } else if (resultsQuery.hasNextPage && !resultsQuery.isFetchingNextPage) {
-        void resultsQuery.fetchNextPage();
-      }
-    },
-    onRetry: () => {
-      void resultsQuery.refetch();
-    },
-  };
-
+  const notFound = contextQuery.error instanceof ApiError && contextQuery.error.status === 404;
   return (
     <>
-      <div
-        aria-hidden="true"
-        onClick={onClose}
-        className="fixed inset-0 z-20 bg-slate-950/20 backdrop-blur-[1px]"
-      />
-      <aside
-        role="dialog"
-        aria-modal="false"
-        aria-labelledby="task-detail-title"
-        tabIndex={-1}
-        className="fixed inset-y-0 right-0 z-30 flex w-full max-w-2xl flex-col border-l bg-card shadow-2xl"
-      >
+      <div aria-hidden="true" onClick={onClose} className="fixed inset-0 z-20 bg-slate-950/20 backdrop-blur-[1px]" />
+      <aside role="dialog" aria-modal="false" aria-labelledby="task-detail-title" tabIndex={-1} className="fixed inset-y-0 right-0 z-30 flex w-full max-w-2xl flex-col border-l bg-card shadow-2xl">
         <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
           <div className="min-w-0">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              Task {validTask ? `#${taskId}` : ''}
-            </p>
-            <h2
-              id="task-detail-title"
-              className="truncate text-lg font-semibold"
-            >
-              {context?.task.title ??
-                (validTask ? 'Loading task…' : 'Invalid task selection')}
-            </h2>
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Task {validTask ? `#${taskId}` : ''}</p>
+            <h2 id="task-detail-title" className="truncate text-lg font-semibold">{context?.task.title ?? (validTask ? 'Loading task…' : 'Invalid task selection')}</h2>
           </div>
-          <Button
-            ref={closeRef}
-            variant="ghost"
-            size="icon"
-            onClick={onClose}
-            aria-label="Close task details"
-          >
-            <X className="h-4 w-4" />
-          </Button>
+          <Button ref={closeRef} variant="ghost" size="icon" onClick={onClose} aria-label="Close task details"><X className="h-4 w-4" /></Button>
         </div>
-
         <div className="flex-1 overflow-y-auto px-4 py-4">
           {!validTask ? (
-            <PanelState
-              title="Invalid task selection"
-              message="The task ID in this URL is not a positive integer. Close this panel and choose a task from the board."
-            />
-          ) : contextQuery.isPending ? (
-            <LoadingDetail />
-          ) : contextQuery.isError && !context ? (
-            <PanelState
-              title={notFound ? 'Task not found' : 'Unable to load task'}
-              message={
-                notFound
-                  ? `No task #${taskId} exists in this project. It may belong to another project or have been removed.`
-                  : (contextError?.message ?? 'Unknown error')
-              }
-              onRetry={() => {
-                void contextQuery.refetch();
-              }}
-            />
-          ) : context ? (
+            <PanelState title="Invalid task selection" message="The task ID in this URL is not a positive integer. Close this panel and choose a task from the board." />
+          ) : contextQuery.isPending ? <LoadingDetail /> : !context ? (
+            <PanelState title={notFound ? 'Task not found' : 'Unable to load task'} message={notFound ? `No task #${taskId} exists in this project.` : contextQuery.error?.message ?? 'Unknown error'} onRetry={() => { void contextQuery.refetch(); }} />
+          ) : (
             <>
-              {contextQuery.isError ? (
-                <div
-                  role="status"
-                  className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900"
-                >
-                  Refresh failed: {contextQuery.error.message}. Showing the last
-                  successfully loaded task.
-                </div>
-              ) : null}
-              <DetailBody
-                projectId={projectId}
-                context={context}
-                tasks={tasks}
-                history={history}
-                historyState={historyState}
-                onOpenTask={onOpenTask}
-              />
+              {contextQuery.isError ? <RefreshNotice message={contextQuery.error.message} onRetry={() => { void contextQuery.refetch(); }} /> : null}
+              <TaskContent key={`${projectId}:${taskId}`} context={context} tasks={tasks} onOpenTask={onOpenTask} />
             </>
-          ) : null}
+          )}
         </div>
       </aside>
     </>
   );
 }
 
-function DetailBody({
-  projectId,
-  context,
-  tasks,
-  history,
-  historyState,
-  onOpenTask,
-}: {
-  projectId: string;
-  context: TaskContext;
-  tasks: TaskSummary[];
-  history: TaskResult[];
-  historyState: HistoryState;
-  onOpenTask: (taskId: number) => void;
-}) {
-  const { task, dependency_state } = context;
-  const outstandingIds = new Set(
-    context.outstanding_feedback.map(({ feedback }) => feedback.id),
-  );
-  const addressedByResult = new Map<number, number>();
-  for (const result of history) {
-    for (const feedbackId of result.addressed_feedback_ids) {
-      addressedByResult.set(feedbackId, result.id);
-    }
-  }
-
+function TaskContent({ context, tasks, onOpenTask }: { context: TaskContext; tasks: TaskSummary[]; onOpenTask: (taskId: number) => void }) {
+  const { task, dependency_state, parent_task } = context;
   return (
     <div className="space-y-6">
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Meta label="Kind">{formatKind(task.kind)}</Meta>
-        <Meta label="Status">
-          <StatusBadge status={task.status} />
-        </Meta>
-        <Meta label="Priority">
-          <span className="capitalize">{task.priority}</span>
-        </Meta>
-        <Meta label="Revision">{task.revision}</Meta>
+        <Meta label="Status"><StatusBadge status={task.status} /></Meta>
+        <Meta label="Priority"><span className="capitalize">{task.priority}</span></Meta>
+        <Meta label="Version">{task.revision}</Meta>
         <Meta label="Trigger">{task.trigger_event ?? '—'}</Meta>
         <Meta label="Created">{formatDate(task.created_at)}</Meta>
         <Meta label="Updated">{formatDate(task.updated_at)}</Meta>
       </dl>
-
-      {context.outstanding_feedback.length > 0 ? (
-        <OutstandingFeedback
-          projectId={projectId}
-          entries={context.outstanding_feedback}
-        />
-      ) : null}
-
-      {task.kind === 'recurring' ? (
-        <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-900">
-          Active is eligibility for externally authorized work. It does not mean
-          an agent is running or that a schedule is installed.
-        </p>
-      ) : null}
-
-      {task.progress ? (
-        <Section title="Progress">
-          <Markdown text={task.progress} />
-        </Section>
-      ) : null}
-
-      <Section title="Brief">
-        <div className="space-y-4">
-          <div>
-            <Subheading>Problem or goal</Subheading>
-            <Markdown text={task.problem_or_goal} />
+      {parent_task ? (
+        <section className="rounded-lg border bg-muted/20 p-3" aria-label="Parent task">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-medium text-muted-foreground">Parent task · version {parent_task.revision}</p>
+            <Button variant="outline" size="sm" onClick={() => onOpenTask(parent_task.id)}>Open parent #{parent_task.id}</Button>
           </div>
-          <div>
-            <Subheading>Design</Subheading>
-            <Markdown text={task.design} />
-          </div>
-          <div>
-            <Subheading>Acceptance criteria</Subheading>
-            <ol className="list-decimal space-y-2 pl-5">
-              {task.acceptance_criteria.map((criterion, index) => (
-                <li key={index}>
-                  <Markdown text={criterion} />
-                </li>
-              ))}
-            </ol>
-          </div>
-          {task.alternatives_rejected ? (
-            <div>
-              <Subheading>Alternatives rejected</Subheading>
-              <Markdown text={task.alternatives_rejected} />
-            </div>
-          ) : null}
-        </div>
-      </Section>
-
+          <p className="mt-2 text-sm font-semibold">{parent_task.title}</p>
+          <details className="mt-3"><summary className="cursor-pointer text-xs font-medium">Read parent brief</summary><div className="mt-3"><TaskBrief task={parent_task} /></div></details>
+        </section>
+      ) : null}
+      {task.kind === 'recurring' ? <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-900">Active is eligibility for externally authorized work. Recurring tasks never reach done.</p> : null}
+      {task.progress ? <Section title="Progress"><Markdown text={task.progress} /></Section> : null}
+      <Section title="Brief"><TaskBrief task={task} /></Section>
+      {task.parent_task_id === null ? <Subtasks projectId={task.project_id} taskId={task.id} tasks={tasks} onOpenTask={onOpenTask} /> : null}
       <Section title="Dependencies">
         <div className="grid gap-4 sm:grid-cols-2">
-          <DependencyGroup
-            title="Before start"
-            ids={task.prerequisite_task_ids}
-            unmet={dependency_state.unmet_prerequisite_task_ids}
-            tasks={tasks}
-            onOpenTask={onOpenTask}
-          />
-          <DependencyGroup
-            title={task.kind === 'recurring' ? 'Before success' : 'Before done'}
-            ids={task.completion_task_ids}
-            unmet={dependency_state.unmet_completion_task_ids}
-            tasks={tasks}
-            onOpenTask={onOpenTask}
-          />
+          <DependencyGroup title="Before start" ids={task.prerequisite_task_ids} unmet={dependency_state.unmet_prerequisite_task_ids} tasks={tasks} onOpenTask={onOpenTask} />
+          <DependencyGroup title={task.kind === 'recurring' ? 'Before success' : 'Before done'} ids={task.completion_task_ids} unmet={dependency_state.unmet_completion_task_ids} tasks={tasks} onOpenTask={onOpenTask} />
         </div>
-        <p className="mt-3 text-xs text-muted-foreground">
-          {task.kind === 'recurring'
-            ? 'Recurring tasks never reach done. All dependencies must be done before recording success or no change; failure reports remain allowed.'
-            : dependency_state.ready_to_start
-              ? 'Ready to start: all before-start gates are done. Completion gates still apply before done.'
-              : 'Lifecycle status and dependency readiness are separate. A todo task can still be blocked by an unmet before-start gate.'}
-        </p>
+        <p className="mt-3 text-xs text-muted-foreground">{task.kind === 'recurring' ? 'All dependencies must be done before recording success or no change; failure reports remain allowed.' : dependency_state.ready_to_start ? 'Ready to start: all before-start gates are done. Completion gates still apply before done.' : 'Lifecycle status and dependency readiness are separate. A todo task can still be blocked by its before-start gates.'}</p>
       </Section>
-
+      <TaskComments context={context} />
       <Section title="Current decisions">
-        {context.current_decisions.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No current decisions for this project.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {context.current_decisions.map((decision) => (
-              <DecisionCard key={decision.id} decision={decision} />
-            ))}
-          </div>
-        )}
+        {context.current_decisions.length ? <div className="space-y-2">{context.current_decisions.map((decision) => <DecisionCard key={decision.id} decision={decision} />)}</div> : <p className="text-sm text-muted-foreground">No current decisions for this project.</p>}
       </Section>
-
       <Section title="Context sources">
-        <p className="mb-3 text-xs text-muted-foreground">
-          Inline documents are returned in full. External sources show their
-          locator, action and state only; the dashboard never fetches a locator
-          automatically.
-        </p>
-        {context.sources.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No context sources for this task.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {context.sources.map((source) => (
-              <details
-                key={source.id}
-                className="rounded-lg border bg-card"
-              >
-                <summary className="cursor-pointer px-3 py-2 text-sm font-medium">
-                  {source.name}
-                  <span className="ml-2 text-xs font-normal text-muted-foreground">
-                    {source.context_policy === 'always'
-                      ? 'always included'
-                      : 'when relevant'}{' '}
-                    · {source.content !== null ? 'inline' : 'external'}
-                  </span>
-                </summary>
-                <div className="border-t px-3 py-3">
-                  <SourceBody source={source} />
-                </div>
-              </details>
-            ))}
-          </div>
-        )}
-      </Section>
-
-      <Section
-        title="Execution history"
-        aside={
-          <span className="text-xs text-muted-foreground">
-            {history.length} loaded
-          </span>
-        }
-      >
-        <p className="mb-3 text-xs text-muted-foreground">
-          Starts with the bounded latest and latest-successful entries. Older
-          results with outstanding feedback remain included. Older pages use
-          the same keyset pagination as MCP. Evidence is
-          agent-reported; recorded_at is server receipt time. Recording a result
-          never changes lifecycle.
-        </p>
-        {history.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No execution history recorded.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {history.map((result) => (
-              <ResultCard
-                key={result.id}
-                result={result}
-                projectId={projectId}
-                outstandingIds={outstandingIds}
-                contextRevision={task.revision}
-                addressedByResult={addressedByResult}
-              />
-            ))}
-          </div>
-        )}
-        {historyState.error ? (
-          <div
-            role="alert"
-            className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-900"
-          >
-            <span>Could not load older results: {historyState.error}</span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={historyState.onRetry}
-            >
-              Retry
-            </Button>
-          </div>
-        ) : null}
-        <div className="mt-3">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={historyState.onLoadOlder}
-            disabled={
-              historyState.requested &&
-              (historyState.pending ||
-                historyState.fetchingOlder ||
-                !historyState.hasNext)
-            }
-          >
-            {historyState.requested
-              ? historyState.pending || historyState.fetchingOlder
-                ? 'Loading…'
-                : historyState.hasNext
-                  ? 'Load older results'
-                  : 'End of recorded history'
-              : 'Load older results'}
-          </Button>
-        </div>
-      </Section>
-    </div>
-  );
-}
-
-function Section({
-  title,
-  aside,
-  children,
-}: {
-  title: string;
-  aside?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <section className="border-t pt-5">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-          {title}
-        </h3>
-        {aside}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function Subheading({ children }: { children: ReactNode }) {
-  return (
-    <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-      {children}
-    </h4>
-  );
-}
-
-
-const statusClasses: Record<TaskStatus, string> = {
-  todo: 'border-sky-300 bg-sky-50 text-sky-800',
-  in_progress: 'border-amber-300 bg-amber-50 text-amber-800',
-  blocked: 'border-rose-300 bg-rose-50 text-rose-800',
-  done: 'border-emerald-300 bg-emerald-50 text-emerald-800',
-  active: 'border-violet-300 bg-violet-50 text-violet-800',
-  paused: 'border-slate-300 bg-slate-50 text-slate-700',
-};
-
-function StatusBadge({ status }: { status: TaskStatus }) {
-  return (
-    <Badge variant="outline" className={statusClasses[status]}>
-      {statusLabels[status]}
-    </Badge>
-  );
-}
-
-function DependencyGroup({
-  title,
-  ids,
-  unmet,
-  tasks,
-  onOpenTask,
-}: {
-  title: string;
-  ids: number[];
-  unmet: number[];
-  tasks: TaskSummary[];
-  onOpenTask: (taskId: number) => void;
-}) {
-  return (
-    <div>
-      <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}
-      </h4>
-      {ids.length === 0 ? (
-        <p className="mt-1 text-sm text-muted-foreground">None</p>
-      ) : (
-        <div className="mt-1 flex flex-wrap gap-2">
-          {ids.map((id) => {
-            const blocked = unmet.includes(id);
-            const task = tasks.find((candidate) => candidate.id === id);
-            return (
-              <Button
-                key={id}
-                variant="outline"
-                size="sm"
-                className={
-                  blocked
-                    ? 'border-rose-300 bg-rose-50 text-rose-800'
-                    : undefined
-                }
-                onClick={() => onOpenTask(id)}
-                title={task?.title}
-              >
-                #{id}
-                {blocked ? ' · unmet' : ''}
-              </Button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ResultCard({
-  result,
-  projectId,
-  showFeedback = true,
-  outstandingIds,
-  contextRevision,
-  addressedByResult,
-}: {
-  result: TaskResult;
-  projectId: string;
-  showFeedback?: boolean;
-  outstandingIds?: ReadonlySet<number>;
-  contextRevision?: number;
-  addressedByResult?: ReadonlyMap<number, number>;
-}) {
-  const outcomeClass =
-    result.outcome === 'success'
-      ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
-      : result.outcome === 'no_change'
-        ? 'border-sky-300 bg-sky-50 text-sky-800'
-        : 'border-rose-300 bg-rose-50 text-rose-800';
-  const outcomeLabel =
-    result.outcome === 'no_change' ? 'No change' : result.outcome;
-  return (
-    <Card className="p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="outline" className={outcomeClass}>
-          {outcomeLabel}
-        </Badge>
-        <span className="text-xs text-muted-foreground">
-          #{result.id} · recorded {formatDate(result.recorded_at)} · task
-          revision {result.task_revision}
-        </span>
-      </div>
-      <div className="mt-2">
-        <Markdown text={result.evidence} />
-      </div>
-      {result.addressed_feedback_ids.length > 0 ? (
-        <p className="mt-2 text-xs text-emerald-800">
-          Addresses feedback{' '}
-          {result.addressed_feedback_ids.map((id) => `#${id}`).join(', ')}.
-        </p>
-      ) : null}
-      {result.output_source_ids.length > 0 ? (
-        <div className="mt-3 space-y-2">
-          {result.output_source_ids.map((sourceId) => (
-            <SourceCard
-              key={sourceId}
-              projectId={projectId}
-              sourceId={sourceId}
-              label={`Output source #${sourceId}`}
-            />
-          ))}
-        </div>
-      ) : null}
-      {showFeedback && result.feedback.length > 0 ? (
-        <div className="mt-4 space-y-2 border-t pt-3">
-          <h4 className="text-xs font-semibold">Feedback on this result</h4>
-          {result.feedback
-            .filter((feedback) => !outstandingIds?.has(feedback.id))
-            .map((feedback) => {
-              const resolutionId =
-                feedback.addressed_by_result_id ??
-                addressedByResult?.get(feedback.id) ??
-                null;
-              const outstanding =
-                resolutionId === null &&
-                (outstandingIds === undefined ||
-                  feedback.task_revision > (contextRevision ?? 0) ||
-                  outstandingIds.has(feedback.id));
-              return (
-                <FeedbackCard
-                  key={feedback.id}
-                  feedback={feedback}
-                  outstanding={outstanding}
-                  resolutionId={resolutionId}
-                />
-              );
-            })}
-          {result.feedback.some((feedback) =>
-            outstandingIds?.has(feedback.id),
-          ) ? (
-            <p className="text-xs text-muted-foreground">
-              Outstanding feedback on this result is shown above.
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-      <p className="mt-2 text-[11px] text-muted-foreground">
-        Agent-reported evidence; recorded_at is the server receipt time, not
-        independently observed execution time.
-      </p>
-    </Card>
-  );
-}
-
-function OutstandingFeedback({
-  projectId,
-  entries,
-}: {
-  projectId: string;
-  entries: TaskContext['outstanding_feedback'];
-}) {
-  const byResult = new Map<
-    number,
-    { result: TaskResult; feedback: TaskFeedback[] }
-  >();
-  for (const entry of entries) {
-    const group = byResult.get(entry.result.id);
-    if (group) {
-      group.feedback.push(entry.feedback);
-    } else {
-      byResult.set(entry.result.id, {
-        result: entry.result,
-        feedback: [entry.feedback],
-      });
-    }
-  }
-
-  return (
-    <section className="rounded-xl border border-amber-300 bg-amber-50/50 p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-amber-950">
-          Outstanding feedback
-        </h3>
-        <Badge variant="outline" className="border-amber-300 text-amber-900">
-          {entries.length} unaddressed
-        </Badge>
-      </div>
-      <p className="mb-3 mt-1 text-xs text-amber-950">
-        These comments remain in task context until a later result explicitly
-        addresses them. Execution success does not mean the result was accepted.
-      </p>
-      <div className="space-y-4">
-        {[...byResult.values()].map(({ result, feedback }) => (
-          <div key={result.id} className="space-y-2">
-            <h4 className="text-xs font-semibold">On result #{result.id}</h4>
-            {feedback.map((entry) => (
-              <FeedbackCard
-                key={entry.id}
-                feedback={entry}
-                outstanding
-                resolutionId={null}
-              />
-            ))}
-            <details className="rounded-lg border bg-card">
-              <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
-                Original result #{result.id}: evidence and outputs
-              </summary>
-              <div className="border-t p-2">
-                <ResultCard
-                  result={result}
-                  projectId={projectId}
-                  showFeedback={false}
-                />
-              </div>
+        <p className="mb-3 text-xs text-muted-foreground">Inline documents are returned in full. External locators are never fetched automatically.</p>
+        {context.sources.length ? (
+          <div className="space-y-2">{context.sources.map((source) => (
+            <details key={source.id} className="rounded-lg border bg-card">
+              <summary className="cursor-pointer px-3 py-2 text-sm font-medium">{source.name}<span className="ml-2 text-xs font-normal text-muted-foreground">{source.context_policy === 'always' ? 'always included' : 'when relevant'} · #{source.id}</span></summary>
+              <div className="border-t p-3"><SourceBody source={source} /></div>
             </details>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function FeedbackCard({
-  feedback,
-  outstanding,
-  resolutionId,
-}: {
-  feedback: TaskFeedback;
-  outstanding: boolean;
-  resolutionId: number | null;
-}) {
-  const changesRequested = feedback.disposition === 'changes_requested';
-  return (
-    <div className="rounded-lg border bg-card p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge
-          variant="outline"
-          className={
-            changesRequested
-              ? 'border-rose-300 bg-rose-50 text-rose-800'
-              : 'border-sky-300 bg-sky-50 text-sky-800'
-          }
-        >
-          {changesRequested ? 'Changes requested' : 'Comment'}
-        </Badge>
-        <Badge
-          variant="outline"
-          className={
-            outstanding
-              ? 'border-amber-300 bg-amber-50 text-amber-900'
-              : 'border-emerald-300 bg-emerald-50 text-emerald-800'
-          }
-        >
-          {outstanding
-            ? 'Unaddressed'
-            : resolutionId !== null
-              ? `Addressed by result #${resolutionId}`
-              : 'Addressed · refreshing history'}
-        </Badge>
-      </div>
-      <p className="mb-2 mt-2 text-[11px] text-muted-foreground">
-        Feedback #{feedback.id} · recorded {formatDate(feedback.recorded_at)} ·
-        task revision {feedback.task_revision}
-      </p>
-      <Markdown text={feedback.body} />
+          ))}</div>
+        ) : <p className="text-sm text-muted-foreground">No context sources for this task.</p>}
+      </Section>
     </div>
   );
 }
 
-function LoadingDetail() {
+function TaskBrief({ task }: { task: Task }) {
   return (
-    <div className="space-y-3" role="status" aria-label="Loading task details">
-      {Array.from({ length: 6 }).map((_, index) => (
-        <div
-          key={index}
-          className="h-16 animate-pulse rounded-lg bg-muted"
-        />
-      ))}
+    <div className="space-y-4">
+      <div><Subheading>Problem or goal</Subheading><Markdown text={task.problem_or_goal} /></div>
+      <div><Subheading>Design</Subheading><Markdown text={task.design} /></div>
+      <div><Subheading>Acceptance criteria</Subheading><ol className="list-decimal space-y-2 pl-5">{task.acceptance_criteria.map((criterion, index) => <li key={index}><Markdown text={criterion} /></li>)}</ol></div>
+      {task.alternatives_rejected ? <div><Subheading>Alternatives rejected</Subheading><Markdown text={task.alternatives_rejected} /></div> : null}
     </div>
   );
 }
 
-function PanelState({
-  title,
-  message,
-  onRetry,
-}: {
-  title: string;
-  message: string;
-  onRetry?: () => void;
-}) {
+function Subtasks({ projectId, taskId, tasks, onOpenTask }: { projectId: string; taskId: number; tasks: TaskSummary[]; onOpenTask: (taskId: number) => void }) {
+  const childrenQuery = useQuery({ queryKey: queryKeys.children(projectId, taskId), queryFn: () => api.tasks(projectId, taskId), refetchInterval: 5_000 });
   return (
-    <div className="rounded-xl border border-dashed bg-muted/40 p-6">
-      <h3 className="text-sm font-semibold">{title}</h3>
-      <p className="mt-1 text-sm text-muted-foreground">{message}</p>
-      {onRetry ? (
-        <Button
-          variant="outline"
-          size="sm"
-          className="mt-3"
-          onClick={onRetry}
-        >
-          Retry
-        </Button>
+    <Section title="Subtasks">
+      {childrenQuery.isError ? <RefreshNotice message={childrenQuery.error.message} onRetry={() => { void childrenQuery.refetch(); }} label="Subtasks" /> : null}
+      {childrenQuery.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading subtasks…</p> : null}
+      {childrenQuery.data?.tasks.length === 0 ? <p className="text-sm text-muted-foreground">No subtasks.</p> : null}
+      <div className="space-y-3">{(childrenQuery.data?.tasks ?? []).map((child) => <Subtask key={child.id} projectId={projectId} task={child} tasks={tasks} onOpenTask={onOpenTask} />)}</div>
+    </Section>
+  );
+}
+
+function Subtask({ projectId, task, tasks, onOpenTask }: { projectId: string; task: TaskSummary; tasks: TaskSummary[]; onOpenTask: (taskId: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const contextQuery = useQuery({ queryKey: queryKeys.context(projectId, task.id), queryFn: () => api.context(projectId, task.id), enabled: open, refetchInterval: open ? 5_000 : false, retry: false });
+  const contentId = `subtask-content-${task.id}`;
+  return (
+    <div className="overflow-hidden rounded-lg border bg-card">
+      <button type="button" aria-expanded={open} aria-controls={contentId} onClick={() => setOpen((value) => !value)} className="flex w-full flex-wrap items-center justify-between gap-2 p-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+        <span className="min-w-0 flex-1"><span className="text-xs text-muted-foreground">#{task.id} · {formatKind(task.kind)} · {task.priority} priority</span><span className="mt-1 block text-sm font-medium">{task.title}</span></span>
+        <StatusBadge status={task.status} /><span className="text-xs text-muted-foreground">{open ? 'Collapse' : 'Expand'}</span>
+      </button>
+      {open ? (
+        <div id={contentId} className="border-t p-3">
+          {contextQuery.isError ? <RefreshNotice message={contextQuery.error.message} onRetry={() => { void contextQuery.refetch(); }} label={`Subtask #${task.id}`} /> : null}
+          {contextQuery.isPending ? <LoadingDetail /> : contextQuery.data ? <TaskContent context={contextQuery.data} tasks={tasks} onOpenTask={onOpenTask} /> : null}
+        </div>
       ) : null}
     </div>
   );
 }
 
-function mergeResults(
-  bounded: TaskResult[],
-  pages: TaskResultList[] | undefined,
-): TaskResult[] {
-  const byId = new Map<number, TaskResult>();
-  for (const result of bounded) {
-    byId.set(result.id, result);
-  }
-  for (const page of pages ?? []) {
-    for (const result of page.results) {
-      if (!byId.has(result.id)) {
-        byId.set(result.id, result);
-      }
-    }
-  }
-  return [...byId.values()].sort((left, right) => right.id - left.id);
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return <section className="border-t pt-5"><h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>{children}</section>;
+}
+function Subheading({ children }: { children: ReactNode }) {
+  return <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{children}</h4>;
+}
+const statusClasses: Record<TaskStatus, string> = {
+  todo: 'border-sky-300 bg-sky-50 text-sky-800', in_progress: 'border-amber-300 bg-amber-50 text-amber-800',
+  blocked: 'border-rose-300 bg-rose-50 text-rose-800', done: 'border-emerald-300 bg-emerald-50 text-emerald-800',
+  active: 'border-violet-300 bg-violet-50 text-violet-800', paused: 'border-slate-300 bg-slate-50 text-slate-700',
+};
+function StatusBadge({ status }: { status: TaskStatus }) {
+  return <Badge variant="outline" className={statusClasses[status]}>{statusLabels[status]}</Badge>;
+}
+function DependencyGroup({ title, ids, unmet, tasks, onOpenTask }: { title: string; ids: number[]; unmet: number[]; tasks: TaskSummary[]; onOpenTask: (taskId: number) => void }) {
+  return (
+    <div><h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h4>
+      {ids.length ? <div className="mt-1 flex flex-wrap gap-2">{ids.map((id) => <Button key={id} variant="outline" size="sm" className={unmet.includes(id) ? 'border-rose-300 bg-rose-50 text-rose-800' : undefined} onClick={() => onOpenTask(id)} title={tasks.find((candidate) => candidate.id === id)?.title}>#{id}{unmet.includes(id) ? ' · unmet' : ''}</Button>)}</div> : <p className="mt-1 text-sm text-muted-foreground">None</p>}
+    </div>
+  );
+}
+function LoadingDetail() {
+  return <div className="space-y-3" role="status" aria-label="Loading task details">{Array.from({ length: 4 }).map((_, index) => <div key={index} className="h-16 animate-pulse rounded-lg bg-muted" />)}</div>;
+}
+function RefreshNotice({ message, onRetry, label = 'Task' }: { message: string; onRetry: () => void; label?: string }) {
+  return <div role="status" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"><p>{label} refresh failed: {message}. Any previously loaded content is retained.</p><Button variant="outline" size="sm" className="mt-2" onClick={onRetry}>Retry {label.toLowerCase()}</Button></div>;
+}
+function PanelState({ title, message, onRetry }: { title: string; message: string; onRetry?: () => void }) {
+  return <div className="rounded-xl border border-dashed bg-muted/40 p-6"><h3 className="text-sm font-semibold">{title}</h3><p className="mt-1 text-sm text-muted-foreground">{message}</p>{onRetry ? <Button variant="outline" size="sm" className="mt-3" onClick={onRetry}>Retry</Button> : null}</div>;
 }

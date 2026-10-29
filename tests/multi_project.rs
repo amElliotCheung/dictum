@@ -168,14 +168,14 @@ fn project_description_edits_preserve_identity_context_and_restart_state() {
     let result = scoped(
         &client,
         scope,
-        "record_task_result",
-        json!({"task_id": task["id"], "expected_revision": task["revision"], "outcome": "failure", "evidence": "Fixture prerequisite remains unmet", "output_source_ids": [source["id"]]}),
+        "record_task_comment",
+        json!({"task_id": task["id"], "task_revision": task["revision"], "body": "Fixture prerequisite remains unmet", "execution_result": {"outcome": "failure", "output_source_ids": [source["id"]]}}),
     );
     scoped(
         &client,
         scope,
-        "record_task_feedback",
-        json!({"task_id": task["id"], "result_id": result["id"], "expected_revision": result["task_revision"], "body": "Preserve this feedback"}),
+        "record_task_comment",
+        json!({"task_id": task["id"], "reply_to_comment_id": result["id"], "task_revision": result["task_revision"], "body": "Preserve this feedback"}),
     );
     scoped(
         &client,
@@ -382,10 +382,14 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
         ("create_task", brief()),
         ("list_tasks", json!({})),
         ("get_task_context", json!({"task_id": task["id"]})),
-        ("list_task_results", json!({"task_id": task["id"]})),
+        ("list_task_comments", json!({"task_id": task["id"]})),
         (
-            "record_task_result",
-            json!({"task_id": task["id"], "expected_revision": task["revision"], "outcome": "success", "evidence": "Should never be saved"}),
+            "get_task_comment",
+            json!({"task_id": task["id"], "comment_id": 1}),
+        ),
+        (
+            "record_task_comment",
+            json!({"task_id": task["id"], "task_revision": task["revision"], "body": "Should never be saved", "execution_result": {"outcome": "success"}}),
         ),
         (
             "update_task",
@@ -428,10 +432,10 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
     }
     for (name, mut input) in [
         ("get_task_context", json!({"task_id": 999_999})),
-        ("list_task_results", json!({"task_id": 999_999})),
+        ("list_task_comments", json!({"task_id": 999_999})),
         (
-            "record_task_result",
-            json!({"task_id": 999_999, "expected_revision": 1, "outcome": "success", "evidence": "Unknown task"}),
+            "record_task_comment",
+            json!({"task_id": 999_999, "task_revision": 1, "body": "Unknown task", "execution_result": {"outcome": "success"}}),
         ),
         (
             "update_task",
@@ -514,10 +518,10 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
     ] {
         for (name, mut input) in [
             ("get_task_context", json!({"task_id": foreign_task["id"]})),
-            ("list_task_results", json!({"task_id": foreign_task["id"]})),
+            ("list_task_comments", json!({"task_id": foreign_task["id"]})),
             (
-                "record_task_result",
-                json!({"task_id": foreign_task["id"], "expected_revision": foreign_task["revision"], "outcome": "failure", "evidence": "Foreign report"}),
+                "record_task_comment",
+                json!({"task_id": foreign_task["id"], "task_revision": foreign_task["revision"], "body": "Foreign report", "execution_result": {"outcome": "failure"}}),
             ),
             (
                 "update_task",
@@ -769,8 +773,8 @@ fn ready_filter_is_project_scoped_and_only_reports_startable_todo_tasks() {
                 let result = scoped(
                     &client,
                     scope,
-                    "record_task_result",
-                    json!({"task_id": task["id"], "expected_revision": task["revision"], "outcome": "success", "evidence": "Fixture verification result"}),
+                    "record_task_comment",
+                    json!({"task_id": task["id"], "task_revision": task["revision"], "body": "Fixture verification result", "execution_result": {"outcome": "success"}}),
                 );
                 result["task_revision"].clone()
             } else {

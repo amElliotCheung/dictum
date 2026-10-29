@@ -42,22 +42,26 @@ fn record(client: &Project, task: &Value, outcome: &str, evidence: &str, outputs
     let before = Utc::now();
     let result = call(
         client,
-        "record_task_result",
-        json!({
-            "task_id": task["id"], "expected_revision": task["revision"],
-            "outcome": outcome, "evidence": evidence, "output_source_ids": outputs
-        }),
+        "record_task_comment",
+        json!({"task_id": task["id"], "task_revision": task["revision"], "body": evidence, "execution_result": {"outcome": outcome, "output_source_ids": outputs}}),
     );
     let after = Utc::now();
     assert_eq!(result["task_id"], task["id"]);
     assert_eq!(result["project_id"], task["project_id"]);
-    assert_eq!(result["outcome"], outcome);
-    assert_eq!(result["evidence"], evidence);
-    assert_eq!(result["output_source_ids"], json!(outputs));
+    assert_eq!(result["execution_result"]["outcome"], outcome);
+    assert_eq!(result["body"], evidence);
     assert_eq!(
-        result["task_revision"],
-        task["revision"].as_i64().unwrap() + 1
+        result["execution_result"]["output_source_ids"],
+        json!(
+            outputs
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        )
     );
+    assert_eq!(result["task_revision"], task["revision"]);
     let timestamp = result["recorded_at"].as_str().unwrap();
     assert!(timestamp.ends_with('Z'));
     let recorded_at = DateTime::parse_from_rfc3339(timestamp).unwrap();
@@ -70,7 +74,7 @@ fn record(client: &Project, task: &Value, outcome: &str, evidence: &str, outputs
 
 fn history(client: &Project, task: &Value, mut options: Value) -> Value {
     options["task_id"] = task["id"].clone();
-    call(client, "list_task_results", options)
+    call(client, "list_task_comments", options)
 }
 
 fn source(client: &Project, name: &str, content: &str) -> Value {
@@ -165,8 +169,8 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
     assert_eq!(task["status"], "active");
     assert_eq!(task["trigger_event"], "release-published");
     let initial = context(&client, &task);
-    assert!(initial["latest_result"].is_null());
-    assert!(initial["latest_successful_result"].is_null());
+    assert!(initial["latest_execution"].is_null());
+    assert!(initial["latest_successful_execution"].is_null());
     assert_eq!(initial["sources"].as_array().unwrap().len(), 2);
     assert_eq!(
         initial["sources"]
@@ -177,7 +181,7 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
             .unwrap()["content"],
         full_content
     );
-    assert_eq!(history(&client, &task, json!({}))["results"], json!([]));
+    assert_eq!(history(&client, &task, json!({}))["comments"], json!([]));
 
     let first = record(
         &client,
@@ -187,8 +191,8 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
         &[output["id"].as_i64().unwrap()],
     );
     let after_first = context(&client, &task);
-    assert_eq!(after_first["latest_result"], first);
-    assert_eq!(after_first["latest_successful_result"], first);
+    assert_eq!(after_first["latest_execution"], first);
+    assert_eq!(after_first["latest_successful_execution"], first);
     assert_eq!(after_first["sources"], initial["sources"]);
     assert_eq!(
         call(&client, "get_source", json!({"source_id": output["id"]}))["content"],
@@ -207,8 +211,8 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
     let restarted = Project::open(&database).unwrap();
     let restored = context(&restarted, &task);
     assert_eq!(restored["task"], stored_task);
-    assert_eq!(restored["latest_result"], second);
-    assert_eq!(restored["latest_successful_result"], second);
+    assert_eq!(restored["latest_execution"], second);
+    assert_eq!(restored["latest_successful_execution"], second);
     assert_eq!(restored["sources"], initial["sources"]);
     let failure = record(
         &restarted,
@@ -218,8 +222,8 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
         &[],
     );
     let failed = context(&restarted, &task);
-    assert_eq!(failed["latest_result"], failure);
-    assert_eq!(failed["latest_successful_result"], second);
+    assert_eq!(failed["latest_execution"], failure);
+    assert_eq!(failed["latest_successful_execution"], second);
     assert_eq!(failed["task"]["status"], "active");
     let paused = update(&restarted, &failed["task"], json!({"status": "paused"}));
     let unchanged = record(
@@ -232,8 +236,8 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
     let final_context = context(&restarted, &task);
     assert_eq!(final_context["task"]["id"], task["id"]);
     assert_eq!(final_context["task"]["status"], "paused");
-    assert_eq!(final_context["latest_result"], unchanged);
-    assert_eq!(final_context["latest_successful_result"], unchanged);
+    assert_eq!(final_context["latest_execution"], unchanged);
+    assert_eq!(final_context["latest_successful_execution"], unchanged);
     assert_eq!(final_context["sources"], initial["sources"]);
     for field in [
         "title",
@@ -250,11 +254,14 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
         vec![task["id"].as_i64().unwrap()]
     );
     assert!(final_context.get("results").is_none());
-    assert!(!final_context.to_string().contains("Release one inspected"));
+    assert_eq!(
+        final_context["recent_comments"].as_array().unwrap().len(),
+        4
+    );
     assert!(!final_context.to_string().contains("Execution report"));
     let expected_history = json!([unchanged, failure, second, first]);
     assert_eq!(
-        history(&restarted, &task, json!({}))["results"],
+        history(&restarted, &task, json!({}))["comments"],
         expected_history
     );
 
@@ -264,7 +271,7 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
         json!({"source_id": output["id"], "expected_revision": output["revision"], "content": "Updated report; source references do not freeze content."}),
     );
     assert_eq!(
-        history(&restarted, &task, json!({}))["results"],
+        history(&restarted, &task, json!({}))["comments"],
         expected_history
     );
     assert_eq!(
@@ -275,7 +282,7 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
     let restarted_again = Project::open(&database).unwrap();
     assert_eq!(context(&restarted_again, &task), final_context);
     assert_eq!(
-        history(&restarted_again, &task, json!({}))["results"],
+        history(&restarted_again, &task, json!({}))["comments"],
         expected_history
     );
 }
@@ -302,8 +309,8 @@ fn keyset_history_pages_are_stable_when_other_clients_append() {
     }
     expected.reverse();
     let page = history(&first, &task, json!({"page_size": 7}));
-    assert_eq!(ids(&page["results"]), expected[..7]);
-    assert_eq!(page["next_before_id"], page["results"][6]["id"]);
+    assert_eq!(ids(&page["comments"]), expected[..7]);
+    assert_eq!(page["next_before_id"], page["comments"][6]["id"]);
     let interleaved = record(
         &second,
         &task,
@@ -318,17 +325,17 @@ fn keyset_history_pages_are_stable_when_other_clients_append() {
         "Unrelated execution creates an ID gap.",
         &[],
     );
-    let mut received = ids(&page["results"]);
+    let mut received = ids(&page["comments"]);
     let mut cursor = page["next_before_id"].clone();
     while !cursor.is_null() {
         let page = history(&first, &task, json!({"page_size": 7, "before_id": cursor}));
-        assert!(page["results"].as_array().unwrap().len() <= 7);
-        received.extend(ids(&page["results"]));
+        assert!(page["comments"].as_array().unwrap().len() <= 7);
+        received.extend(ids(&page["comments"]));
         cursor = page["next_before_id"].clone();
         if !cursor.is_null() {
             assert_eq!(
                 cursor,
-                page["results"].as_array().unwrap().last().unwrap()["id"]
+                page["comments"].as_array().unwrap().last().unwrap()["id"]
             );
         }
     }
@@ -338,18 +345,18 @@ fn keyset_history_pages_are_stable_when_other_clients_append() {
         received.len()
     );
     let default_page = history(&first, &task, json!({}));
-    assert_eq!(default_page["results"].as_array().unwrap().len(), 20);
-    assert_eq!(default_page["results"][0], interleaved);
+    assert_eq!(default_page["comments"].as_array().unwrap().len(), 20);
+    assert_eq!(default_page["comments"][0], interleaved);
     let all = history(&second, &task, json!({"page_size": 100}));
-    assert_eq!(all["results"].as_array().unwrap().len(), 24);
+    assert_eq!(all["comments"].as_array().unwrap().len(), 24);
     assert!(all["next_before_id"].is_null());
     assert_eq!(
-        history(&first, &task, json!({"page_size": 1}))["results"],
+        history(&first, &task, json!({"page_size": 1}))["comments"],
         json!([interleaved])
     );
     let oldest = expected.last().unwrap();
     let empty = history(&first, &task, json!({"before_id": oldest}));
-    assert_eq!(empty["results"], json!([]));
+    assert_eq!(empty["comments"], json!([]));
     assert!(empty["next_before_id"].is_null());
 
     let foreign_project = call(
@@ -362,14 +369,14 @@ fn keyset_history_pages_are_stable_when_other_clients_append() {
     let foreign_task = call(&first, "create_task", foreign_input);
     let foreign_result = call(
         &second,
-        "record_task_result",
-        json!({"project_id": foreign_project["id"], "task_id": foreign_task["id"], "expected_revision": foreign_task["revision"], "outcome": "success", "evidence": "Foreign execution."}),
+        "record_task_comment",
+        json!({"project_id": foreign_project["id"], "task_id": foreign_task["id"], "task_revision": foreign_task["revision"], "body": "Foreign execution.", "execution_result": {"outcome": "success"}}),
     );
     for page_size in [json!(0), json!(-1), json!(101), json!(1.5), json!("2")] {
         rejected(
             &first,
             &database,
-            "list_task_results",
+            "list_task_comments",
             json!({"task_id": task["id"], "page_size": page_size}),
         );
     }
@@ -385,103 +392,77 @@ fn keyset_history_pages_are_stable_when_other_clients_append() {
         rejected(
             &first,
             &database,
-            "list_task_results",
+            "list_task_comments",
             json!({"task_id": task["id"], "before_id": before_id}),
         );
     }
 }
 
 #[test]
-fn invalid_and_stale_results_roll_back_evidence_outputs_and_revision() {
+fn historical_execution_comments_preserve_version_targets_outputs_and_task_revision() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("atomic.sqlite3");
     let first = Project::open(&database).unwrap();
     let second = Project::open(&database).unwrap();
-    let task = create(&first, "Atomic reporting", "recurring");
+    let task = create(&first, "Versioned reporting", "recurring");
     let output = source(&first, "Valid output", "Durable evidence");
-    let foreign_project = call(
-        &first,
-        "create_project",
-        json!({"name": "Other", "description": "Foreign records"}),
-    );
-    let foreign_output = call(
-        &first,
-        "create_source",
-        json!({"project_id": foreign_project["id"], "name": "Foreign", "description": "Wrong project", "content": "Foreign evidence"}),
-    );
-    let valid = json!({"task_id": task["id"], "expected_revision": task["revision"], "outcome": "success", "evidence": "Checked revision abc123: all checks passed.", "output_source_ids": [output["id"]]});
-    for evidence in [
-        json!(""),
-        json!(" \n\t"),
-        json!("界".repeat(4_001)),
-        Value::Null,
-    ] {
-        let mut input = valid.clone();
-        input["evidence"] = evidence;
-        rejected(&first, &database, "record_task_result", input);
-    }
-    for outcome in [json!("done"), json!("SUCCESS"), Value::Null] {
-        let mut input = valid.clone();
-        input["outcome"] = outcome;
-        rejected(&first, &database, "record_task_result", input);
-    }
-    for field in ["task_id", "expected_revision", "outcome", "evidence"] {
-        let mut input = valid.clone();
-        input.as_object_mut().unwrap().remove(field);
-        rejected(&first, &database, "record_task_result", input);
-    }
-    for (field, value) in [
-        ("id", json!(123)),
-        ("recorded_at", json!("2020-01-01T00:00:00Z")),
-        ("task_revision", json!(40)),
-    ] {
-        let mut input = valid.clone();
-        input[field] = value;
-        rejected(&first, &database, "record_task_result", input);
-    }
-    for invalid_source in [json!(999_999), json!(0), foreign_output["id"].clone()] {
-        let mut input = valid.clone();
-        input["output_source_ids"] = json!([output["id"], invalid_source]);
-        rejected(&first, &database, "record_task_result", input);
-    }
-    let max_evidence = "界".repeat(4_000);
     let accepted = record(
         &first,
         &task,
         "success",
-        &max_evidence,
+        "Version one checks passed.",
         &[output["id"].as_i64().unwrap()],
     );
-    rejected(&second, &database, "record_task_result", valid);
-    rejected_update(
-        &second,
-        &database,
-        &task,
-        json!({"status": "paused", "progress": "Stale update"}),
-    );
+    assert_eq!(context(&first, &task)["task"], task);
     let updated = update(
         &second,
-        &context(&second, &task)["task"],
+        &task,
         json!({"progress": "A newer client changed the brief."}),
     );
-    let mut stale = json!({"task_id": task["id"], "expected_revision": accepted["task_revision"], "outcome": "failure", "evidence": "Stale failure", "output_source_ids": [output["id"]]});
-    rejected(&first, &database, "record_task_result", stale.clone());
-    stale["expected_revision"] = updated["revision"].clone();
-    stale.as_object_mut().unwrap().remove("output_source_ids");
-    let second_result = call(&first, "record_task_result", stale);
-    assert_eq!(second_result["output_source_ids"], json!([]));
-    assert_eq!(
-        history(&second, &task, json!({}))["results"],
-        json!([second_result, accepted])
+    let historical = record(
+        &first,
+        &task,
+        "failure",
+        "Late report for version one.",
+        &[],
     );
+    let duplicate = record(
+        &second,
+        &updated,
+        "no_change",
+        "Version two checked; source identity deduplicates.",
+        &[
+            output["id"].as_i64().unwrap(),
+            output["id"].as_i64().unwrap(),
+        ],
+    );
+    assert_eq!(historical["task_revision"], task["revision"]);
+    assert_eq!(duplicate["task_revision"], updated["revision"]);
     assert_eq!(
-        context(&second, &task)["task"]["revision"],
-        updated["revision"].as_i64().unwrap() + 1
+        duplicate["execution_result"]["output_source_ids"],
+        json!([output["id"]])
+    );
+    assert_eq!(context(&first, &task)["task"], updated);
+    assert_eq!(
+        history(&second, &task, json!({}))["comments"],
+        json!([duplicate, historical, accepted])
+    );
+    rejected_update(
+        &first,
+        &database,
+        &task,
+        json!({"status": "paused", "progress": "Stale edit"}),
+    );
+    rejected(
+        &first,
+        &database,
+        "record_task_comment",
+        json!({"task_id": task["id"], "task_revision": updated["revision"].as_i64().unwrap() + 1, "body": "Future report", "execution_result": {"outcome": "success"}}),
     );
 }
 
 #[test]
-fn simultaneous_result_writers_have_one_revision_winner_and_no_partial_output_links() {
+fn simultaneous_execution_comments_preserve_both_reports_and_their_own_outputs() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("concurrent.sqlite3");
     let client = Project::open(&database).unwrap();
@@ -498,47 +479,41 @@ fn simultaneous_result_writers_have_one_revision_winner_and_no_partial_output_li
             let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
                 let client = Project::open(database).unwrap();
-                let input = json!({
-                    "task_id": task["id"], "expected_revision": task["revision"],
-                    "outcome": "success", "evidence": format!("Writer {index}: execution passed."),
-                    "output_source_ids": [output["id"]]
-                });
                 barrier.wait();
-                client.call::<Value>("record_task_result", input)
+                let report = record(
+                    &client,
+                    &task,
+                    "success",
+                    &format!("Writer {index}: execution passed."),
+                    &[output["id"].as_i64().unwrap()],
+                );
+                assert_eq!(
+                    report["execution_result"]["output_source_ids"],
+                    json!([output["id"]])
+                );
+                report
             })
         })
         .collect();
-    let results: Vec<_> = writers
+    let mut results: Vec<_> = writers
         .into_iter()
         .map(|writer| writer.join().unwrap())
         .collect();
-    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
-    let rejection = results
-        .iter()
-        .find_map(|result| result.as_ref().err())
-        .unwrap();
-    assert!(
-        rejection.to_string().contains("revision"),
-        "unexpected conflict: {rejection}"
-    );
-    let winner = results.into_iter().find_map(Result::ok).unwrap();
+    assert_ne!(results[0]["id"], results[1]["id"]);
+    for report in &results {
+        assert_eq!(report["task_revision"], task["revision"]);
+    }
+    results.sort_by_key(|report| std::cmp::Reverse(report["id"].as_i64().unwrap()));
     assert_eq!(
-        winner["task_revision"],
-        task["revision"].as_i64().unwrap() + 1
+        history(&client, &task, json!({}))["comments"],
+        json!(results)
     );
-    assert_eq!(
-        history(&client, &task, json!({}))["results"],
-        json!([winner])
-    );
-    let final_context = context(&client, &task);
-    assert_eq!(final_context["task"]["revision"], winner["task_revision"]);
-    assert_eq!(final_context["task"]["status"], "active");
-    assert_eq!(final_context["latest_result"], winner);
+    assert_eq!(context(&client, &task)["task"], task);
     drop(client);
     let restarted = Project::open(&database).unwrap();
     assert_eq!(
-        history(&restarted, &task, json!({}))["results"],
-        json!([winner])
+        history(&restarted, &task, json!({}))["comments"],
+        json!(results)
     );
 }
 
@@ -737,8 +712,8 @@ fn recurring_tasks_cannot_be_dependency_targets_and_success_obeys_all_ordinary_g
             rejected(
                 &client,
                 &database,
-                "record_task_result",
-                json!({"task_id": task["id"], "expected_revision": task["revision"], "outcome": outcome, "evidence": "Gates must prevent success", "output_source_ids": [output["id"]]}),
+                "record_task_comment",
+                json!({"task_id": task["id"], "task_revision": task["revision"], "body": "Gates must prevent success", "execution_result": {"outcome": outcome, "output_source_ids": [output["id"]]}}),
             );
         }
         let failure = record(
@@ -750,8 +725,8 @@ fn recurring_tasks_cannot_be_dependency_targets_and_success_obeys_all_ordinary_g
         );
         let failed = context(&client, &task);
         assert_eq!(failed["task"]["status"], initial_status);
-        assert_eq!(failed["latest_result"], failure);
-        assert!(failed["latest_successful_result"].is_null());
+        assert_eq!(failed["latest_execution"], failure);
+        assert!(failed["latest_successful_execution"].is_null());
     }
     let gated = call(&client, "list_tasks", json!({"query": "Gated report"}))["tasks"]
         .as_array()
@@ -776,8 +751,8 @@ fn recurring_tasks_cannot_be_dependency_targets_and_success_obeys_all_ordinary_g
             rejected(
                 &client,
                 &database,
-                "record_task_result",
-                json!({"task_id": task["id"], "expected_revision": task["revision"], "outcome": outcome, "evidence": "Completion gate is still unmet."}),
+                "record_task_comment",
+                json!({"task_id": task["id"], "task_revision": task["revision"], "body": "Completion gate is still unmet.", "execution_result": {"outcome": outcome}}),
             );
         }
     }
@@ -824,8 +799,8 @@ fn ordinary_tasks_require_successful_results_before_done_and_preserve_history() 
     let failure = record(&client, &task, "failure", "The verification failed.", &[]);
     let after_failure = context(&client, &task);
     assert_eq!(after_failure["task"]["status"], "in_progress");
-    assert_eq!(after_failure["latest_result"], failure);
-    assert!(after_failure["latest_successful_result"].is_null());
+    assert_eq!(after_failure["latest_execution"], failure);
+    assert!(after_failure["latest_successful_execution"].is_null());
     rejected_update(
         &client,
         &database,
@@ -841,21 +816,21 @@ fn ordinary_tasks_require_successful_results_before_done_and_preserve_history() 
     );
     let after_success = context(&client, &task);
     assert_eq!(after_success["task"]["status"], "in_progress");
-    assert_eq!(after_success["latest_result"], success);
-    assert_eq!(after_success["latest_successful_result"], success);
+    assert_eq!(after_success["latest_execution"], success);
+    assert_eq!(after_success["latest_successful_execution"], success);
     let done = update(&client, &after_success["task"], json!({"status": "done"}));
     assert_eq!(done["status"], "done");
     let history_value = history(&client, &done, json!({}));
-    assert_eq!(history_value["results"], json!([success, failure]));
+    assert_eq!(history_value["comments"], json!([success, failure]));
     assert_eq!(
-        history_value["results"][0]["output_source_ids"],
+        history_value["comments"][0]["execution_result"]["output_source_ids"],
         json!([historical_output["id"]])
     );
     drop(client);
     let restarted = Project::open(&database).unwrap();
     assert_eq!(context(&restarted, &done)["task"], done);
     assert_eq!(
-        history(&restarted, &done, json!({}))["results"][0]["output_source_ids"],
+        history(&restarted, &done, json!({}))["comments"][0]["execution_result"]["output_source_ids"],
         json!([historical_output["id"]])
     );
 }
@@ -941,7 +916,7 @@ fn recurring_priority_is_independent_of_lifecycle_and_composes_with_discovery_fi
     let final_context = context(&client, &low);
     assert_eq!(final_context["task"]["status"], "paused");
     assert_eq!(final_context["task"]["priority"], "medium");
-    assert_eq!(final_context["latest_result"], result);
+    assert_eq!(final_context["latest_execution"], result);
     drop(client);
     let restarted = Project::open(&database).unwrap();
     assert_eq!(context(&restarted, &low), final_context);

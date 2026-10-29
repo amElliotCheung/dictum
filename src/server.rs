@@ -92,7 +92,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id; links stay within the project. Create a self-contained brief and context links atomically. Optional priority is low, medium or high and defaults to medium for both task kinds; it does not affect lifecycle or readiness. Immutable kind defaults to one_time with status todo; recurring uses the same brief and task ID across executions and defaults to active. Optional nonblank trigger_event is recurring-only external-event metadata, not a schedule, subscription or authorization. Dependencies must target one_time tasks. This registers work; it does not launch an agent.",
+        description = "Create a task in an existing project_id with its brief and context links atomically. Optional parent_task_id attaches it beneath a same-kind root in this project; subtasks cannot have children. Put shared goals, constraints and overall approach in the parent; write child-specific work, design and acceptance criteria in the subtask. Avoid duplicating shared text and read both briefs together through get_task_context. Parentage is organizational: lifecycle, priority, context sources and dependencies stay explicit on each task. Priority defaults to medium. Immutable kind defaults to one_time (todo); recurring defaults to active and reuses one task across executions. Optional nonblank trigger_event is recurring-only external-event metadata, not a schedule or authorization. Dependencies must target one_time tasks. Creation starts task revision 1 and does not execute work.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -107,7 +107,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id. Discover compact task briefs by kind, exact priority, status, readiness, exact trigger_event label, or text query. Results include priority and unmet dependencies, ordered high, medium, low with ascending task ID within each priority. Filters preserve that order. ready_to_start means one_time todo with all before-start dependencies done; completion gates do not block starting. Priority never changes readiness. Recurring tasks are never ready_to_start: discover explicitly with kind=recurring and status=active. Active is eligibility metadata, not a run in progress, installed schedule or authorization.",
+        description = "Requires an existing project_id. Discover compact task summaries by kind, exact priority, status, readiness, exact trigger_event label, or text query. Omit parent_task_id for all tasks, pass null for roots, or an existing task ID for its direct children; these filters combine with the others. Summaries retain their compact shape; get_task_context exposes parentage. Results sort high, medium, low priority, then ascending ID. ready_to_start means one_time todo with all explicit before-start dependencies done; parentage and completion gates do not block starting. Recurring tasks are never ready_to_start: discover with kind=recurring,status=active. Active is eligibility metadata, not a schedule or authorization.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_tasks(
@@ -123,7 +123,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id. Load the full brief, progress, dependency state, current decisions and deduplicated context-linked plus always sources. Inline documents are full and untruncated; external sources include locator/action/state. Execution history is bounded to latest_result and latest_successful_result (success/no_change); identical IDs identify the same entry. outstanding_feedback always includes every unaddressed comment/change request and its original result, even outside bounded history. Read it before rework. Results include feedback and addressing links. Expand output Source IDs with get_source; use list_task_results for older history. Reading never records execution or advances freshness.",
+        description = "Requires an existing project_id. Load the full task brief, current parent_task brief when present, progress, explicit dependency state, current decisions and deduplicated task-linked plus always sources. Read both briefs together: the parent holds shared goals, constraints and overall approach, and the subtask holds child-specific work, design and acceptance criteria. Parent sources, dependencies and comments are not inherited. Inline documents are full and untruncated. recent_comments contains the ten newest comments; latest_execution and latest_successful_execution (success/no_change) may duplicate those IDs. Each comment retains its targeted task_revision, so compare with task.revision to distinguish historical context. Historical brief snapshots are not stored. Expand output Sources with get_source and older comments/reply targets with list_task_comments or get_task_comment. Reading never records work or advances freshness.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn get_task_context(
@@ -135,7 +135,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id and latest expected_revision. Kind is immutable. Omitted fields preserve values; optional priority replaces low, medium or high under the same revision check and does not change lifecycle or readiness. Null clears nullable text/trigger_event; supplied relationship arrays replace that set ([] clears). One_time uses todo/in_progress/blocked/done: entering in_progress checks start gates; done requires satisfied start/completion gates, at least one successful execution result (success or no_change), and no outstanding changes_requested feedback. Task edits do not clear feedback. Recurring uses active/paused; trigger_event is recurring-only metadata. Execution results and output sources are append-only through record_task_result. Dependencies must target one_time tasks. Evidence is agent-reported, not independently verified.",
+        description = "Requires an existing project_id and latest expected_revision. Every accepted update advances task revision and updated_at, including identical values; appending comments does neither. Kind is immutable. Omitted fields preserve values; null clears nullable text/trigger_event. For parent_task_id, null detaches and an ID reparents beneath a same-kind root in this project; a task with children cannot become a child. Parentage has no implicit lifecycle or dependency effects. Supplied relationship arrays replace that set ([] clears). Entering one_time in_progress checks start gates; done requires all start/completion gates satisfied and at least one success/no_change execution comment, including historical task versions. Recurring uses active/paused; trigger_event is recurring-only metadata. Comments never reopen or complete tasks; request rework by explicitly editing the brief or status. Dependencies must target one_time tasks.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -150,46 +150,42 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Append an execution result for either task kind using existing project_id, task_id and latest expected_revision. outcome is success/no_change/failure; evidence is nonblank, at most 4000 characters. Optional addressed_feedback_ids explicitly reports addressing outstanding feedback on this same task; only success/no_change can address it. Describe the fixes and verification in evidence. New results do not implicitly clear feedback; addressing is reported, not human acceptance. Output Source and feedback associations append atomically with a task revision increment. Success/no_change requires all dependency gates done; failure can report unmet gates. Recording never changes lifecycle, including when recurring is paused. Historical source identities persist but contents remain mutable. No scheduling, claiming, exactly-once execution or automatic completion.",
+        description = "Append an immutable task comment using existing project_id, task_id and required task_revision targeting any version from 1 through the current task revision. Historical versions are valid even if the task changes concurrently; no historical brief snapshot is stored. body is nonblank Markdown, at most 4000 characters. Optional reply_to_comment_id references an existing comment on this same task. Optional execution_result contains outcome success/no_change/failure and output_source_ids; body then supplies reported execution evidence. Success/no_change requires all current dependency gates done, even for historical targets; failure and ordinary comments may report unmet gates. Output associations append atomically. Comments never change task version, updated_at or lifecycle, including when done or paused. Source identities persist but their contents remain mutable. Evidence is reported, not independently verified.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
             open_world_hint = false
         )
     )]
-    async fn record_task_result(
+    async fn record_task_comment(
         &self,
-        Parameters(input): Parameters<RecordTaskResult>,
-    ) -> Result<Json<TaskResult>, String> {
-        self.database(move |store| store.record_task_result(input))
+        Parameters(input): Parameters<RecordTaskComment>,
+    ) -> Result<Json<TaskComment>, String> {
+        self.database(move |store| store.record_task_comment(input))
             .await
     }
 
     #[tool(
-        description = "Append feedback on a specific execution result using existing project_id, task_id, result_id and latest expected_revision. body is a nonblank Markdown explanation, at most 4000 characters. disposition defaults to comment; changes_requested explains why the result is unacceptable and blocks one_time done until a later success/no_change explicitly addresses it. Changes requested on a done task atomically reopen it to todo; other statuses and recurring active/paused remain unchanged. Feedback increments the task revision, survives task edits/new attempts, and appears with the original result in outstanding_feedback until addressed. Historical result feedback is retained. This records reported review, not authenticated human approval or another execution.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            open_world_hint = false
-        )
-    )]
-    async fn record_task_feedback(
-        &self,
-        Parameters(input): Parameters<RecordTaskFeedback>,
-    ) -> Result<Json<TaskFeedback>, String> {
-        self.database(move |store| store.record_task_feedback(input))
-            .await
-    }
-
-    #[tool(
-        description = "Read append-only execution history for an existing project_id and task_id, newest IDs first. page_size defaults to 20 and must be 1..100. Pass next_before_id as before_id to retrieve older entries; the cursor must identify an existing entry in the same task/project. Descending keyset membership stays stable when clients append; restart from the first page for new results. Entries include evidence, time, revision, output Source IDs, all feedback on that result and addressed_feedback_ids. Feedback annotations and addressing state reflect the current read snapshot; execution evidence is immutable. get_source expands complete source content.",
+        description = "Read task comments newest ID first using existing project_id and task_id. page_size defaults to 20 (1..100). Pass next_before_id as before_id for older entries; the cursor must identify a comment on this same task/project. Omit has_execution_result for all comments, use true for executions or false for ordinary comments. Cursor validation is independent of that filter. Later appends do not alter subsequent page membership. Comments include their targeted task_revision, full body, optional reply ID and optional execution result with output Source IDs. Replies remain flat; get_task_comment expands a target directly and get_source expands output content. Reads never mutate task state.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
-    async fn list_task_results(
+    async fn list_task_comments(
         &self,
-        Parameters(input): Parameters<ListTaskResults>,
-    ) -> Result<Json<TaskResultList>, String> {
-        self.database(move |store| store.list_task_results(input))
+        Parameters(input): Parameters<ListTaskComments>,
+    ) -> Result<Json<TaskCommentList>, String> {
+        self.database(move |store| store.list_task_comments(input))
+            .await
+    }
+
+    #[tool(
+        description = "Read one complete immutable comment using existing project_id, task_id and comment_id. The comment must belong to this task/project. Returns full Markdown body, targeted task_revision, recording time, optional reply_to_comment_id and optional execution result with output Source IDs. Reply ancestors are not expanded recursively; call this tool for an earlier target and get_source for output documents. A task revision identifies its version but historical brief snapshots are not retained.",
+        annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn get_task_comment(
+        &self,
+        Parameters(input): Parameters<GetTaskComment>,
+    ) -> Result<Json<TaskComment>, String> {
+        self.database(move |store| store.get_task_comment(input))
             .await
     }
 
@@ -209,7 +205,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Discover compact source descriptors without document bodies. Filter by explicitly linked task, inline/external representation, action_due, or name/description query. Task filtering includes context and output links but not unrelated always sources. Expand relevant sources with get_source. Manual actions are never automatically due.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Discover compact source descriptors without document bodies. Filter by task context links, inline/external representation, action_due, or name/description query. Task filtering covers explicit context links; execution output associations are available through task comments. Expand relevant sources with get_source. Manual actions are never automatically due.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_sources(

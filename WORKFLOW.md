@@ -4,10 +4,11 @@ Coauthor the task; preserve intent, constraints, approach and acceptance criteri
 
 ## Discover and execute authorized work
 
-- Call list_projects; resolve ambiguity. Use project_id for list_tasks(ready_to_start=true), then get_task_context. Scope is not a claim. Discover recurring work with kind=recurring,status=active; trigger_event is metadata, not a subscription.
-- Derive inspectable tasks without per-task approval; carry requirements, sources and dependencies. One coordinator writes records. Delegate bounded work to subagents when available. Give workers scope, files, outputs and checks; avoid overlap.
-- Review substantial outputs separately. Record findings, evidence and tested revisions. Use record_task_feedback to comment or request changes. Read outstanding_feedback before rework; task edits/new attempts do not clear it. A success/no_change may report addressed_feedback_ids with fix/check evidence; this is not human acceptance. Resolve failures; do not weaken criteria.
-- Save progress and output Sources. Mark one_time done only with evidence, satisfied criteria/dependencies and no outstanding change requests. Reuse recurring IDs; append executions with record_task_result and distinct outputs. Read history with list_task_results. Results never change lifecycle; pause explicitly. Checkpoint.
+- Call list_projects; resolve ambiguity. Use project_id for list_tasks(ready_to_start=true), then get_task_context. Scope is not a claim. Discover recurrence with kind=recurring,status=active; trigger_event is metadata, not a subscription.
+- Derive inspectable tasks with sources and dependencies. Subtasks have one same-kind root parent. Put shared goals/constraints/approach in the parent and specific work/criteria in the child; avoid repetition and read both briefs. Parentage does not create dependency gates.
+- One coordinator writes mutable records. Delegate bounded work with scope, files, outputs and checks; avoid overlap. Review substantial outputs separately; record findings, evidence and tested revisions. Resolve failures; do not weaken criteria.
+- Use record_task_comment for discussion or optional execution_result with success/no_change/failure and output Sources. Supply the task_revision actually read, including for delayed reports. Comments never advance task versions or change status. Read recent comments and list_task_comments history; use get_task_comment for replies. Change requirements/status explicitly with update_task under expected_revision.
+- Mark one_time done only with evidence, satisfied criteria and dependencies. Reuse recurring IDs; pause explicitly. Task edits advance revision; old comments keep their targets, without preserving old brief bodies. Checkpoint.
 
 ## Boundaries
 

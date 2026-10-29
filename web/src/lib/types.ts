@@ -45,6 +45,7 @@ export interface TaskSummary {
 export interface Task {
   id: number;
   project_id: string;
+  parent_task_id: number | null;
   kind: TaskKind;
   priority: TaskPriority;
   trigger_event: string | null;
@@ -143,42 +144,41 @@ export interface DecisionList {
 
 export type Outcome = 'success' | 'no_change' | 'failure';
 
-export interface TaskFeedback {
+export interface TaskComment {
   id: number;
   project_id: string;
   task_id: number;
-  result_id: number;
-  disposition: 'comment' | 'changes_requested';
+  task_revision: number;
   body: string;
+  reply_to_comment_id: number | null;
   recorded_at: string;
-  task_revision: number;
-  addressed_by_result_id: number | null;
+  execution_result: ExecutionResult | null;
 }
 
-export interface TaskResult {
-  id: number;
-  project_id: string;
-  task_id: number;
+export interface ExecutionResult {
   outcome: Outcome;
-  evidence: string;
   output_source_ids: number[];
-  recorded_at: string;
-  task_revision: number;
-  feedback: TaskFeedback[];
-  addressed_feedback_ids: number[];
 }
 
-export interface TaskResultList {
-  results: TaskResult[];
+export interface TaskCommentList {
+  comments: TaskComment[];
   next_before_id: number | null;
+}
+
+export interface RecordTaskComment {
+  task_revision: number;
+  body: string;
+  reply_to_comment_id?: number | null;
+  execution_result?: ExecutionResult | null;
 }
 
 export interface TaskContext {
   task: Task;
+  parent_task: Task | null;
   dependency_state: DependencyState;
   current_decisions: Decision[];
   sources: Source[];
-  latest_result: TaskResult | null;
-  latest_successful_result: TaskResult | null;
-  outstanding_feedback: { feedback: TaskFeedback; result: TaskResult }[];
+  recent_comments: TaskComment[];
+  latest_execution: TaskComment | null;
+  latest_successful_execution: TaskComment | null;
 }

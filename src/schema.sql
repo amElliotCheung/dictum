@@ -10,6 +10,7 @@ CREATE TABLE projects (
 CREATE TABLE tasks (
     id INTEGER PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
+    parent_task_id INTEGER,
     kind TEXT NOT NULL DEFAULT 'one_time' CHECK (kind IN ('one_time', 'recurring')),
     priority TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high')),
     trigger_event TEXT CHECK (trigger_event IS NULL OR (kind = 'recurring' AND length(trim(trigger_event)) > 0)),
@@ -23,7 +24,9 @@ CREATE TABLE tasks (
     revision INTEGER NOT NULL CHECK (revision >= 1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE (project_id, id)
+    UNIQUE (project_id, id),
+    FOREIGN KEY (project_id, parent_task_id) REFERENCES tasks(project_id, id),
+    CHECK (parent_task_id IS NULL OR parent_task_id != id)
 );
 
 CREATE TABLE sources (
@@ -77,59 +80,38 @@ CREATE TABLE task_dependencies (
     CHECK (task_id != depends_on_task_id)
 );
 
-CREATE TABLE task_results (
+CREATE TABLE task_comments (
     id INTEGER PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
     task_id INTEGER NOT NULL,
-    outcome TEXT NOT NULL CHECK (outcome IN ('success', 'no_change', 'failure')),
-    evidence TEXT NOT NULL CHECK (length(trim(evidence)) > 0 AND length(evidence) <= 4000),
-    recorded_at TEXT NOT NULL,
-    task_revision INTEGER NOT NULL CHECK (task_revision > 1),
-    UNIQUE (project_id, id),
-    UNIQUE (task_id, task_revision),
-    UNIQUE (project_id, task_id, id),
-    FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id)
-);
-
-CREATE TABLE task_result_sources (
-    project_id TEXT NOT NULL REFERENCES projects(id),
-    result_id INTEGER NOT NULL,
-    source_id INTEGER NOT NULL,
-    FOREIGN KEY (project_id, result_id) REFERENCES task_results(project_id, id),
-    FOREIGN KEY (project_id, source_id) REFERENCES sources(project_id, id),
-    PRIMARY KEY (result_id, source_id)
-);
-
-CREATE TABLE task_feedback (
-    id INTEGER PRIMARY KEY,
-    project_id TEXT NOT NULL,
-    task_id INTEGER NOT NULL,
-    result_id INTEGER NOT NULL,
-    disposition TEXT NOT NULL CHECK (disposition IN ('comment', 'changes_requested')),
+    task_revision INTEGER NOT NULL CHECK (task_revision >= 1),
     body TEXT NOT NULL CHECK (length(trim(body)) > 0 AND length(body) <= 4000),
+    reply_to_comment_id INTEGER,
+    outcome TEXT CHECK (outcome IS NULL OR outcome IN ('success', 'no_change', 'failure')),
     recorded_at TEXT NOT NULL,
-    task_revision INTEGER NOT NULL CHECK (task_revision > 1),
+    UNIQUE (project_id, id),
     UNIQUE (project_id, task_id, id),
-    UNIQUE (task_id, task_revision),
-    FOREIGN KEY (project_id, task_id, result_id) REFERENCES task_results(project_id, task_id, id)
+    FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id),
+    FOREIGN KEY (project_id, task_id, reply_to_comment_id) REFERENCES task_comments(project_id, task_id, id),
+    CHECK (reply_to_comment_id IS NULL OR reply_to_comment_id < id)
 );
 
-CREATE TABLE task_feedback_addresses (
-    project_id TEXT NOT NULL,
-    task_id INTEGER NOT NULL,
-    feedback_id INTEGER PRIMARY KEY,
-    result_id INTEGER NOT NULL,
-    FOREIGN KEY (project_id, task_id, feedback_id) REFERENCES task_feedback(project_id, task_id, id),
-    FOREIGN KEY (project_id, task_id, result_id) REFERENCES task_results(project_id, task_id, id)
+CREATE TABLE task_comment_sources (
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    comment_id INTEGER NOT NULL,
+    source_id INTEGER NOT NULL,
+    FOREIGN KEY (project_id, comment_id) REFERENCES task_comments(project_id, id),
+    FOREIGN KEY (project_id, source_id) REFERENCES sources(project_id, id),
+    PRIMARY KEY (comment_id, source_id)
 );
 
 CREATE INDEX tasks_status ON tasks(project_id, status);
 CREATE INDEX tasks_kind ON tasks(project_id, kind);
-CREATE INDEX task_results_task ON task_results(project_id, task_id, id);
-CREATE INDEX task_results_success ON task_results(project_id, task_id, id) WHERE outcome IN ('success', 'no_change');
-CREATE INDEX task_result_sources_source ON task_result_sources(source_id);
-CREATE INDEX task_feedback_result ON task_feedback(project_id, task_id, result_id, id);
-CREATE INDEX task_feedback_addresses_result ON task_feedback_addresses(project_id, task_id, result_id);
+CREATE INDEX tasks_parent ON tasks(project_id, parent_task_id);
+CREATE INDEX task_comments_task ON task_comments(project_id, task_id, id);
+CREATE INDEX task_comments_execution ON task_comments(project_id, task_id, id) WHERE outcome IS NOT NULL;
+CREATE INDEX task_comments_success ON task_comments(project_id, task_id, id) WHERE outcome IN ('success', 'no_change');
+CREATE INDEX task_comment_sources_source ON task_comment_sources(source_id);
 CREATE INDEX task_context_sources_source ON task_context_sources(source_id);
 CREATE INDEX task_dependencies_target ON task_dependencies(depends_on_task_id);
 

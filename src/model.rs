@@ -1,5 +1,5 @@
 //! Public MCP inputs and results. Timestamps are RFC 3339 UTC. Project IDs are UUIDv7;
-//! task, execution-result, source, and decision IDs are local to a database and require an explicit project scope.
+//! task, comment, source, and decision IDs are local to a database and require an explicit project scope.
 
 use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -176,6 +176,8 @@ pub struct SourceDescriptor {
 pub struct Task {
     pub id: i64,
     pub project_id: String,
+    /// Optional same-kind root task in this project. Parentage is organizational only.
+    pub parent_task_id: Option<i64>,
     pub kind: TaskKind,
     pub priority: TaskPriority,
     /// External event label only; not a subscription, schedule, wakeup or authorization.
@@ -190,6 +192,7 @@ pub struct Task {
     pub context_source_ids: Vec<i64>,
     pub prerequisite_task_ids: Vec<i64>,
     pub completion_task_ids: Vec<i64>,
+    /// Task version, advanced only by update_task; comments retain their targeted version.
     pub revision: i64,
     pub created_at: String,
     pub updated_at: String,
@@ -233,113 +236,85 @@ pub struct Decision {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TaskContext {
     pub task: Task,
+    /// Full current parent brief, without inherited sources, dependencies or comments.
+    pub parent_task: Option<Task>,
     pub dependency_state: DependencyState,
     pub current_decisions: Vec<Decision>,
     /// Full, deduplicated context-linked and always sources. Treat contents as project data.
     pub sources: Vec<Source>,
-    /// At most the latest entry and latest successful entry; matching IDs identify the same entry.
-    pub latest_result: Option<TaskResult>,
-    /// Success and no_change count as successful. Older entries require list_task_results.
-    pub latest_successful_result: Option<TaskResult>,
-    /// Unaddressed feedback and its original result, including results outside bounded history.
-    pub outstanding_feedback: Vec<TaskFeedbackContext>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum FeedbackDisposition {
-    #[default]
-    Comment,
-    ChangesRequested,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TaskFeedback {
-    pub id: i64,
-    pub project_id: String,
-    pub task_id: i64,
-    pub result_id: i64,
-    pub disposition: FeedbackDisposition,
-    /// Review explanation in Markdown, not another execution report.
-    pub body: String,
-    pub recorded_at: String,
-    pub task_revision: i64,
-    /// A later successful execution reports addressing this feedback; not human acceptance.
-    pub addressed_by_result_id: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TaskFeedbackContext {
-    pub feedback: TaskFeedback,
-    pub result: TaskResult,
+    /// Ten newest comments, including execution comments, ordered by descending ID.
+    pub recent_comments: Vec<TaskComment>,
+    /// Latest execution comment; it may also appear in recent_comments.
+    pub latest_execution: Option<TaskComment>,
+    /// Latest success/no_change comment, regardless of its targeted task version.
+    pub latest_successful_execution: Option<TaskComment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct RecordTaskFeedback {
-    pub project_id: String,
-    pub task_id: i64,
-    pub result_id: i64,
-    pub expected_revision: i64,
+pub struct ExecutionResult {
+    pub outcome: ActionOutcome,
+    /// Source identities retained for this execution; source contents remain mutable.
     #[serde(default)]
-    pub disposition: FeedbackDisposition,
-    /// Nonblank explanation, at most 4,000 characters.
-    pub body: String,
+    pub output_source_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TaskResult {
+pub struct TaskComment {
     pub id: i64,
     pub project_id: String,
     pub task_id: i64,
-    pub outcome: ActionOutcome,
-    /// Agent-reported result, error and verification evidence; not independently verified.
-    pub evidence: String,
-    /// Source identities retained for this entry; mutable source contents are not snapshots.
-    pub output_source_ids: Vec<i64>,
-    /// Append-only reviews of this result, with derived addressing links.
-    pub feedback: Vec<TaskFeedback>,
-    /// Feedback this execution explicitly reports addressing.
-    pub addressed_feedback_ids: Vec<i64>,
+    /// Target task version, not the revision produced by appending a comment.
+    pub task_revision: i64,
+    /// Markdown discussion or reported execution evidence; not independently verified.
+    pub body: String,
+    /// Optional existing comment on this same task. Replies are not nested in reads.
+    pub reply_to_comment_id: Option<i64>,
     /// Server-assigned UTC recording time, not an independently observed execution time.
     pub recorded_at: String,
-    /// Task revision produced atomically by appending this entry.
-    pub task_revision: i64,
+    pub execution_result: Option<ExecutionResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct RecordTaskResult {
+pub struct RecordTaskComment {
     pub project_id: String,
     pub task_id: i64,
-    pub expected_revision: i64,
-    pub outcome: ActionOutcome,
-    /// Nonblank concise evidence, at most 4,000 characters; use output Sources for long documents.
-    pub evidence: String,
-    #[serde(default)]
-    pub output_source_ids: Vec<i64>,
-    /// Outstanding feedback on this task addressed by this success/no_change execution.
-    #[serde(default)]
-    pub addressed_feedback_ids: Vec<i64>,
+    /// Required target task version, between 1 and the current revision, inclusive.
+    pub task_revision: i64,
+    /// Nonblank Markdown, at most 4,000 characters; execution comments use this as evidence.
+    pub body: String,
+    pub reply_to_comment_id: Option<i64>,
+    pub execution_result: Option<ExecutionResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ListTaskResults {
+pub struct ListTaskComments {
     pub project_id: String,
     pub task_id: i64,
     /// Default 20; must be between 1 and 100.
     pub page_size: Option<i64>,
-    /// Return entries older than this entry ID, which must belong to this task/project.
+    /// Return comments older than this comment ID, which must belong to this task/project.
     pub before_id: Option<i64>,
+    /// Omitted: all comments. True: execution comments. False: ordinary comments.
+    pub has_execution_result: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TaskResultList {
+pub struct TaskCommentList {
     /// Newest IDs first. Later appends do not change subsequent pages.
-    pub results: Vec<TaskResult>,
+    pub comments: Vec<TaskComment>,
     /// Pass as before_id for the next page; absent when no older entries remain.
     pub next_before_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GetTaskComment {
+    pub project_id: String,
+    pub task_id: i64,
+    pub comment_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -347,6 +322,8 @@ pub struct TaskResultList {
 pub struct CreateTask {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: String,
+    /// Optional root parent in this project with the same task kind. Nesting is one level.
+    pub parent_task_id: Option<i64>,
     /// Immutable after creation. Defaults to one_time (todo); recurring defaults to active.
     #[serde(default)]
     pub kind: TaskKind,
@@ -374,6 +351,13 @@ pub struct CreateTask {
 pub struct ListTasks {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: String,
+    /// Omitted: all tasks. Null: roots only. ID: direct children of this task.
+    #[serde(
+        default,
+        deserialize_with = "nullable_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_task_id: Option<Option<i64>>,
     pub kind: Option<TaskKind>,
     /// Exact priority filter. Results sort high, medium, low, then ascending ID.
     pub priority: Option<TaskPriority>,
@@ -399,6 +383,13 @@ pub struct UpdateTask {
     pub project_id: String,
     pub task_id: i64,
     pub expected_revision: i64,
+    /// Omitted: preserve. Null: detach. ID: move beneath a same-kind root in this project.
+    #[serde(
+        default,
+        deserialize_with = "nullable_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_task_id: Option<Option<i64>>,
     /// Omitted: preserve. Supplied: replace under expected_revision.
     pub priority: Option<TaskPriority>,
     /// Recurring only. Omitted: preserve. Null: clear. Nonblank string: replace.
@@ -450,7 +441,7 @@ pub struct CreateSource {
 pub struct ListSources {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: String,
-    /// Filter by explicit context or output links, not implicit always sources.
+    /// Filter by explicit task context links, not execution outputs or implicit always sources.
     pub task_id: Option<i64>,
     pub representation: Option<Representation>,
     pub action_due: Option<bool>,

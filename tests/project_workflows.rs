@@ -40,15 +40,10 @@ fn task_patch(task: &Task, mut patch: Value) -> UpdateTask {
 }
 
 fn complete(store: &Project, task: &Task) -> Task {
-    let result: dictum_mcp::model::TaskResult = store
+    let result: dictum_mcp::model::TaskComment = store
         .call(
-            "record_task_result",
-            json!({
-                "task_id": task.id,
-                "expected_revision": task.revision,
-                "outcome": "success",
-                "evidence": "Verified revision abc123: cargo test passed."
-            }),
+            "record_task_comment",
+            json!({"task_id": task.id, "task_revision": task.revision, "body": "Verified revision abc123: cargo test passed.", "execution_result": {"outcome": "success"}}),
         )
         .unwrap();
     let mut done_task = task.clone();
@@ -142,15 +137,9 @@ fn full_inline_context_is_deduplicated_and_outputs_are_not_automatic_inputs() {
     brief["context_source_ids"] = json!([shared.id, context.id]);
     let task = store.create_task(input(brief)).unwrap();
     store
-        .call::<dictum_mcp::model::TaskResult>(
-            "record_task_result",
-            json!({
-                "task_id": task.id,
-                "expected_revision": task.revision,
-                "outcome": "success",
-                "evidence": "Outputs are linked per execution result.",
-                "output_source_ids": [context.id, output.id]
-            }),
+        .call::<dictum_mcp::model::TaskComment>(
+            "record_task_comment",
+            json!({"task_id": task.id, "task_revision": task.revision, "body": "Outputs are linked per execution result.", "execution_result": {"outcome": "success", "output_source_ids": [context.id, output.id]}}),
         )
         .unwrap();
 
@@ -177,7 +166,14 @@ fn full_inline_context_is_deduplicated_and_outputs_are_not_automatic_inputs() {
         Some(full_content.as_str())
     );
     assert_eq!(
-        expanded.latest_result.as_ref().unwrap().output_source_ids,
+        expanded
+            .latest_execution
+            .as_ref()
+            .unwrap()
+            .execution_result
+            .as_ref()
+            .unwrap()
+            .output_source_ids,
         vec![context.id, output.id]
     );
 

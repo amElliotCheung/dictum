@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 const APPLICATION_ID: i64 = 0x4449_4354; // DICT
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -38,7 +38,7 @@ pub enum StoreError {
         actual: i64,
     },
     #[error(
-        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 12 only; preserve the existing file"
+        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 13 only; preserve the existing file"
     )]
     UnsupportedSchema { version: i64, application_id: i64 },
 }
@@ -204,10 +204,17 @@ impl Store {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         ensure_project(&transaction, &input.project_id)?;
+        validate_parent(
+            &transaction,
+            &input.project_id,
+            None,
+            input.kind,
+            input.parent_task_id,
+        )?;
         let now = timestamp(Utc::now());
         transaction.execute(
-            "INSERT INTO tasks (project_id, title, problem_or_goal, design, acceptance_criteria, alternatives_rejected, status, revision, created_at, updated_at, kind, trigger_event, priority) VALUES (?7, ?1, ?2, ?3, ?4, ?5, ?8, 1, ?6, ?6, ?9, ?10, ?11)",
-            params![input.title, input.problem_or_goal, input.design, encode(&input.acceptance_criteria)?, input.alternatives_rejected, now, input.project_id, status_name(status), kind_name(input.kind), input.trigger_event, priority_name(input.priority)],
+            "INSERT INTO tasks (project_id, title, problem_or_goal, design, acceptance_criteria, alternatives_rejected, status, revision, created_at, updated_at, kind, trigger_event, priority, parent_task_id) VALUES (?7, ?1, ?2, ?3, ?4, ?5, ?8, 1, ?6, ?6, ?9, ?10, ?11, ?12)",
+            params![input.title, input.problem_or_goal, input.design, encode(&input.acceptance_criteria)?, input.alternatives_rejected, now, input.project_id, status_name(status), kind_name(input.kind), input.trigger_event, priority_name(input.priority), input.parent_task_id],
         )?;
         let id = transaction.last_insert_rowid();
         replace_context_sources(
@@ -243,6 +250,9 @@ impl Store {
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         ensure_project(&transaction, &input.project_id)?;
+        if let Some(Some(parent_id)) = input.parent_task_id {
+            ensure_exists(&transaction, &input.project_id, "task", parent_id)?;
+        }
         let ids = {
             let mut statement = transaction.prepare(
                 "SELECT id FROM tasks WHERE project_id=?1 AND (?2 IS NULL OR priority=?2) ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END, id",
@@ -258,6 +268,12 @@ impl Store {
         let mut result = Vec::new();
         for id in ids {
             let task = task_by_id(&transaction, &input.project_id, id)?;
+            if input
+                .parent_task_id
+                .is_some_and(|parent_id| task.parent_task_id != parent_id)
+            {
+                continue;
+            }
             if input.kind.is_some_and(|kind| kind != task.kind)
                 || input
                     .trigger_event
@@ -328,25 +344,23 @@ impl Store {
             .map(|id| source_by_id(&transaction, project_id, id, now))
             .collect::<StoreResult<Vec<_>>>()?;
         let current_decisions = decisions(&transaction, project_id, false)?;
-        let latest_result = latest_task_result(&transaction, project_id, task_id, false)?;
-        let latest_successful_result = latest_task_result(&transaction, project_id, task_id, true)?;
-        let outstanding_feedback = task_feedback(&transaction, project_id, task_id, None)?
-            .into_iter()
-            .filter(|feedback| feedback.addressed_by_result_id.is_none())
-            .map(|feedback| {
-                let result =
-                    task_result_by_id(&transaction, project_id, task_id, feedback.result_id)?;
-                Ok(TaskFeedbackContext { feedback, result })
-            })
-            .collect::<StoreResult<Vec<_>>>()?;
+        let parent_task = task
+            .parent_task_id
+            .map(|id| task_by_id(&transaction, project_id, id))
+            .transpose()?;
+        let recent_comments = task_comments(&transaction, project_id, task_id, None, None, 10)?;
+        let latest_execution = latest_task_execution(&transaction, project_id, task_id, false)?;
+        let latest_successful_execution =
+            latest_task_execution(&transaction, project_id, task_id, true)?;
         let result = TaskContext {
             task,
+            parent_task,
             dependency_state,
             current_decisions,
             sources,
-            latest_result,
-            latest_successful_result,
-            outstanding_feedback,
+            recent_comments,
+            latest_execution,
+            latest_successful_execution,
         };
         transaction.commit()?;
         Ok(result)
@@ -358,6 +372,16 @@ impl Store {
         ensure_project(&transaction, &input.project_id)?;
         let mut task = task_by_id(&transaction, &input.project_id, input.task_id)?;
         check_revision("task", task.id, input.expected_revision, task.revision)?;
+        if let Some(parent_task_id) = input.parent_task_id {
+            validate_parent(
+                &transaction,
+                &input.project_id,
+                Some(task.id),
+                task.kind,
+                parent_task_id,
+            )?;
+            task.parent_task_id = parent_task_id;
+        }
         if let Some(priority) = input.priority {
             task.priority = priority;
         }
@@ -429,26 +453,14 @@ impl Store {
             ));
         }
         if task.status == TaskStatus::Done {
-            let outstanding_changes =
-                task_feedback(&transaction, &input.project_id, task.id, None)?
-                    .into_iter()
-                    .any(|feedback| {
-                        feedback.disposition == FeedbackDisposition::ChangesRequested
-                            && feedback.addressed_by_result_id.is_none()
-                    });
-            if outstanding_changes {
-                return invalid(
-                    "cannot finish task with outstanding changes_requested feedback; record a successful execution explicitly addressing it",
-                );
-            }
             let has_success: bool = transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM task_results WHERE project_id=?1 AND task_id=?2 AND outcome IN ('success', 'no_change'))",
+                "SELECT EXISTS(SELECT 1 FROM task_comments WHERE project_id=?1 AND task_id=?2 AND outcome IN ('success', 'no_change'))",
                 params![input.project_id, task.id],
                 |row| row.get(0),
             )?;
             if !has_success {
                 return invalid(
-                    "cannot finish task without a successful execution result; append success or no_change with record_task_result",
+                    "cannot finish task without a successful execution result; append success or no_change with record_task_comment",
                 );
             }
             if !state.unmet_prerequisite_task_ids.is_empty()
@@ -461,118 +473,77 @@ impl Store {
             }
         }
         transaction.execute(
-            "UPDATE tasks SET title=?1, problem_or_goal=?2, design=?3, acceptance_criteria=?4, alternatives_rejected=?5, status=?6, progress=?7, revision=revision+1, updated_at=?8, trigger_event=?11, priority=?12 WHERE id=?9 AND project_id=?10",
-            params![task.title, task.problem_or_goal, task.design, encode(&task.acceptance_criteria)?, task.alternatives_rejected, status_name(task.status), task.progress, timestamp(Utc::now()), task.id, input.project_id, task.trigger_event, priority_name(task.priority)],
+            "UPDATE tasks SET title=?1, problem_or_goal=?2, design=?3, acceptance_criteria=?4, alternatives_rejected=?5, status=?6, progress=?7, revision=revision+1, updated_at=?8, trigger_event=?11, priority=?12, parent_task_id=?13 WHERE id=?9 AND project_id=?10",
+            params![task.title, task.problem_or_goal, task.design, encode(&task.acceptance_criteria)?, task.alternatives_rejected, status_name(task.status), task.progress, timestamp(Utc::now()), task.id, input.project_id, task.trigger_event, priority_name(task.priority), task.parent_task_id],
         )?;
         let result = task_by_id(&transaction, &input.project_id, task.id)?;
         transaction.commit()?;
         Ok(result)
     }
 
-    pub fn record_task_result(&self, input: RecordTaskResult) -> StoreResult<TaskResult> {
-        required(&input.evidence, "evidence")?;
-        if input.evidence.chars().count() > 4_000 {
-            return invalid(
-                "evidence must not exceed 4,000 characters; use output Sources for documents",
-            );
-        }
-        let mut connection = self.connect()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        ensure_project(&transaction, &input.project_id)?;
-        let task = task_by_id(&transaction, &input.project_id, input.task_id)?;
-        check_revision("task", task.id, input.expected_revision, task.revision)?;
-        let addressed_ids: BTreeSet<_> = input.addressed_feedback_ids.into_iter().collect();
-        if input.outcome == ActionOutcome::Failure && !addressed_ids.is_empty() {
-            return invalid(
-                "failure results cannot address feedback; report a success or no_change execution",
-            );
-        }
-        for &feedback_id in &addressed_ids {
-            let feedback =
-                task_feedback_by_id(&transaction, &input.project_id, task.id, feedback_id)?;
-            if feedback.addressed_by_result_id.is_some() {
-                return invalid(format!("feedback {feedback_id} has already been addressed"));
-            }
-        }
-        for &id in &input.output_source_ids {
-            ensure_exists(&transaction, &input.project_id, "source", id)?;
-        }
-        if input.outcome != ActionOutcome::Failure {
-            let state = dependency_state(&transaction, &task)?;
-            if !state.unmet_prerequisite_task_ids.is_empty()
-                || !state.unmet_completion_task_ids.is_empty()
-            {
-                return invalid(format!(
-                    "cannot record successful result; unmet start dependencies: {:?}; unmet completion dependencies: {:?}",
-                    state.unmet_prerequisite_task_ids, state.unmet_completion_task_ids
-                ));
-            }
-        }
-        let now = timestamp(Utc::now());
-        transaction.execute(
-            "INSERT INTO task_results (project_id, task_id, outcome, evidence, recorded_at, task_revision) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![input.project_id, task.id, outcome_name(input.outcome), input.evidence, now, task.revision + 1],
-        )?;
-        let id = transaction.last_insert_rowid();
-        for feedback_id in addressed_ids {
-            transaction.execute(
-                "INSERT INTO task_feedback_addresses (project_id, task_id, feedback_id, result_id) VALUES (?1, ?2, ?3, ?4)",
-                params![input.project_id, task.id, feedback_id, id],
-            )?;
-        }
-        for source_id in input.output_source_ids.into_iter().collect::<BTreeSet<_>>() {
-            transaction.execute(
-                "INSERT INTO task_result_sources (project_id, result_id, source_id) VALUES (?1, ?2, ?3)",
-                params![input.project_id, id, source_id],
-            )?;
-        }
-        transaction.execute(
-            "UPDATE tasks SET revision=revision+1, updated_at=?1 WHERE id=?2 AND project_id=?3",
-            params![now, task.id, input.project_id],
-        )?;
-        let result = task_result_by_id(&transaction, &input.project_id, task.id, id)?;
-        transaction.commit()?;
-        Ok(result)
-    }
-
-    pub fn record_task_feedback(&self, input: RecordTaskFeedback) -> StoreResult<TaskFeedback> {
+    pub fn record_task_comment(&self, input: RecordTaskComment) -> StoreResult<TaskComment> {
         required(&input.body, "body")?;
         if input.body.chars().count() > 4_000 {
-            return invalid("feedback body must not exceed 4,000 characters");
+            return invalid(
+                "comment body must not exceed 4,000 characters; use output Sources for documents",
+            );
         }
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         ensure_project(&transaction, &input.project_id)?;
         let task = task_by_id(&transaction, &input.project_id, input.task_id)?;
-        check_revision("task", task.id, input.expected_revision, task.revision)?;
-        task_result_by_id(&transaction, &input.project_id, task.id, input.result_id)?;
-        let now = timestamp(Utc::now());
+        if input.task_revision < 1 || input.task_revision > task.revision {
+            return invalid(format!(
+                "task_revision must target an existing task version between 1 and {}",
+                task.revision
+            ));
+        }
+        if let Some(id) = input.reply_to_comment_id {
+            task_comment_by_id(&transaction, &input.project_id, task.id, id)?;
+        }
+        if let Some(result) = &input.execution_result {
+            for &id in &result.output_source_ids {
+                ensure_exists(&transaction, &input.project_id, "source", id)?;
+            }
+            if result.outcome != ActionOutcome::Failure {
+                let state = dependency_state(&transaction, &task)?;
+                if !state.unmet_prerequisite_task_ids.is_empty()
+                    || !state.unmet_completion_task_ids.is_empty()
+                {
+                    return invalid(format!(
+                        "cannot record successful execution; unmet start dependencies: {:?}; unmet completion dependencies: {:?}",
+                        state.unmet_prerequisite_task_ids, state.unmet_completion_task_ids
+                    ));
+                }
+            }
+        }
+        let outcome = input
+            .execution_result
+            .as_ref()
+            .map(|result| outcome_name(result.outcome));
         transaction.execute(
-            "INSERT INTO task_feedback (project_id, task_id, result_id, disposition, body, recorded_at, task_revision) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![input.project_id, task.id, input.result_id,
-                match input.disposition {
-                    FeedbackDisposition::Comment => "comment",
-                    FeedbackDisposition::ChangesRequested => "changes_requested",
-                }, input.body, now, task.revision + 1],
+            "INSERT INTO task_comments (project_id, task_id, task_revision, body, reply_to_comment_id, outcome, recorded_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![input.project_id, task.id, input.task_revision, input.body, input.reply_to_comment_id, outcome, timestamp(Utc::now())],
         )?;
         let id = transaction.last_insert_rowid();
-        let status = if input.disposition == FeedbackDisposition::ChangesRequested
-            && task.status == TaskStatus::Done
-        {
-            TaskStatus::Todo
-        } else {
-            task.status
-        };
-        transaction.execute(
-            "UPDATE tasks SET status=?1, revision=revision+1, updated_at=?2 WHERE id=?3 AND project_id=?4",
-            params![status_name(status), now, task.id, input.project_id],
-        )?;
-        let feedback = task_feedback_by_id(&transaction, &input.project_id, task.id, id)?;
+        if let Some(result) = input.execution_result {
+            for source_id in result
+                .output_source_ids
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+            {
+                transaction.execute(
+                    "INSERT INTO task_comment_sources (project_id, comment_id, source_id) VALUES (?1, ?2, ?3)",
+                    params![input.project_id, id, source_id],
+                )?;
+            }
+        }
+        let comment = task_comment_by_id(&transaction, &input.project_id, task.id, id)?;
         transaction.commit()?;
-        Ok(feedback)
+        Ok(comment)
     }
 
-    pub fn list_task_results(&self, input: ListTaskResults) -> StoreResult<TaskResultList> {
+    pub fn list_task_comments(&self, input: ListTaskComments) -> StoreResult<TaskCommentList> {
         let page_size = input.page_size.unwrap_or(20);
         if !(1..=100).contains(&page_size) {
             return invalid("page_size must be between 1 and 100");
@@ -583,38 +554,41 @@ impl Store {
         ensure_exists(&transaction, &input.project_id, "task", input.task_id)?;
         if let Some(id) = input.before_id {
             if id <= 0 {
-                return invalid("before_id must be a positive result ID belonging to this task");
+                return invalid("before_id must be a positive comment ID belonging to this task");
             }
-            task_result_by_id(&transaction, &input.project_id, input.task_id, id)?;
+            task_comment_by_id(&transaction, &input.project_id, input.task_id, id)?;
         }
-        let mut ids = {
-            let mut statement = transaction.prepare(
-                "SELECT id FROM task_results WHERE project_id=?1 AND task_id=?2 AND (?3 IS NULL OR id < ?3) ORDER BY id DESC LIMIT ?4"
-            )?;
-            statement
-                .query_map(
-                    params![
-                        input.project_id,
-                        input.task_id,
-                        input.before_id,
-                        page_size + 1
-                    ],
-                    |row| row.get::<_, i64>(0),
-                )?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        let has_more = ids.len() > page_size as usize;
-        ids.truncate(page_size as usize);
-        let next_before_id = has_more.then(|| *ids.last().expect("nonempty page"));
-        let results = ids
-            .into_iter()
-            .map(|id| task_result_by_id(&transaction, &input.project_id, input.task_id, id))
-            .collect::<StoreResult<Vec<_>>>()?;
+        let mut comments = task_comments(
+            &transaction,
+            &input.project_id,
+            input.task_id,
+            input.before_id,
+            input.has_execution_result,
+            page_size + 1,
+        )?;
+        let has_more = comments.len() > page_size as usize;
+        comments.truncate(page_size as usize);
+        let next_before_id = has_more.then(|| comments.last().expect("nonempty page").id);
         transaction.commit()?;
-        Ok(TaskResultList {
-            results,
+        Ok(TaskCommentList {
+            comments,
             next_before_id,
         })
+    }
+
+    pub fn get_task_comment(&self, input: GetTaskComment) -> StoreResult<TaskComment> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        ensure_project(&transaction, &input.project_id)?;
+        ensure_exists(&transaction, &input.project_id, "task", input.task_id)?;
+        let comment = task_comment_by_id(
+            &transaction,
+            &input.project_id,
+            input.task_id,
+            input.comment_id,
+        )?;
+        transaction.commit()?;
+        Ok(comment)
     }
 
     pub fn create_source(&self, input: CreateSource) -> StoreResult<Source> {
@@ -1023,6 +997,41 @@ fn ensure_exists(
     }
 }
 
+fn validate_parent(
+    connection: &Connection,
+    project_id: &str,
+    task_id: Option<i64>,
+    kind: TaskKind,
+    parent_task_id: Option<i64>,
+) -> StoreResult<()> {
+    let Some(parent_id) = parent_task_id else {
+        return Ok(());
+    };
+    if task_id == Some(parent_id) {
+        return invalid("task cannot be its own parent");
+    }
+    let parent = task_by_id(connection, project_id, parent_id)?;
+    if parent.kind != kind {
+        return invalid("parent and child tasks must have the same kind");
+    }
+    if parent.parent_task_id.is_some() {
+        return invalid("parent must be a root task; subtasks cannot have children");
+    }
+    if let Some(id) = task_id {
+        let has_children: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id=?1 AND parent_task_id=?2)",
+            params![project_id, id],
+            |row| row.get(0),
+        )?;
+        if has_children {
+            return invalid(
+                "a task with children cannot become a subtask; detach its children first",
+            );
+        }
+    }
+    Ok(())
+}
+
 fn replace_context_sources(
     connection: &Connection,
     project_id: &str,
@@ -1121,6 +1130,7 @@ fn task_by_id(connection: &Connection, project_id: &str, id: i64) -> StoreResult
             |row| {
                 Ok(Task {
                     project_id: row.get("project_id")?,
+                    parent_task_id: row.get("parent_task_id")?,
                     kind: enum_column(row, "kind")?,
                     priority: enum_column(row, "priority")?,
                     trigger_event: row.get("trigger_event")?,
@@ -1172,109 +1182,92 @@ fn dependency_state(connection: &Connection, task: &Task) -> StoreResult<Depende
     })
 }
 
-fn task_result_by_id(
+fn task_comment_by_id(
     connection: &Connection,
     project_id: &str,
     task_id: i64,
     id: i64,
-) -> StoreResult<TaskResult> {
-    let mut result = connection
+) -> StoreResult<TaskComment> {
+    let mut comment = connection
         .query_row(
-            "SELECT * FROM task_results WHERE id=?1 AND project_id=?2 AND task_id=?3",
+            "SELECT * FROM task_comments WHERE id=?1 AND project_id=?2 AND task_id=?3",
             params![id, project_id, task_id],
             |row| {
-                Ok(TaskResult {
+                let execution_result = if row.get::<_, Option<String>>("outcome")?.is_some() {
+                    Some(ExecutionResult {
+                        outcome: enum_column(row, "outcome")?,
+                        output_source_ids: vec![],
+                    })
+                } else {
+                    None
+                };
+                Ok(TaskComment {
                     id: row.get("id")?,
                     project_id: row.get("project_id")?,
                     task_id: row.get("task_id")?,
-                    outcome: enum_column(row, "outcome")?,
-                    evidence: row.get("evidence")?,
-                    output_source_ids: vec![],
-                    feedback: vec![],
-                    addressed_feedback_ids: vec![],
-                    recorded_at: row.get("recorded_at")?,
                     task_revision: row.get("task_revision")?,
+                    body: row.get("body")?,
+                    reply_to_comment_id: row.get("reply_to_comment_id")?,
+                    recorded_at: row.get("recorded_at")?,
+                    execution_result,
                 })
             },
         )
         .optional()?
         .ok_or(StoreError::NotFound {
-            entity: "task result",
+            entity: "task comment",
             id,
         })?;
-    let mut statement = connection.prepare("SELECT source_id FROM task_result_sources WHERE result_id=?1 AND project_id=?2 ORDER BY source_id")?;
-    result.output_source_ids = statement
-        .query_map(params![id, project_id], |row| row.get(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    result.feedback = task_feedback(connection, project_id, task_id, Some(id))?;
-    let mut statement = connection.prepare("SELECT feedback_id FROM task_feedback_addresses WHERE project_id=?1 AND task_id=?2 AND result_id=?3 ORDER BY feedback_id")?;
-    result.addressed_feedback_ids = statement
-        .query_map(params![project_id, task_id, id], |row| row.get(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(result)
+    if let Some(result) = &mut comment.execution_result {
+        let mut statement = connection.prepare(
+            "SELECT source_id FROM task_comment_sources WHERE comment_id=?1 AND project_id=?2 ORDER BY source_id",
+        )?;
+        result.output_source_ids = statement
+            .query_map(params![id, project_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+    }
+    Ok(comment)
 }
 
-fn task_feedback(
+fn task_comments(
     connection: &Connection,
     project_id: &str,
     task_id: i64,
-    result_id: Option<i64>,
-) -> StoreResult<Vec<TaskFeedback>> {
+    before_id: Option<i64>,
+    has_execution_result: Option<bool>,
+    limit: i64,
+) -> StoreResult<Vec<TaskComment>> {
     let mut statement = connection.prepare(
-        "SELECT f.*, a.result_id AS addressed_by_result_id FROM task_feedback f
-         LEFT JOIN task_feedback_addresses a ON a.feedback_id=f.id AND a.project_id=f.project_id AND a.task_id=f.task_id
-         WHERE f.project_id=?1 AND f.task_id=?2 AND (?3 IS NULL OR f.result_id=?3) ORDER BY f.id",
+        "SELECT id FROM task_comments WHERE project_id=?1 AND task_id=?2 AND (?3 IS NULL OR id < ?3) AND (?4 IS NULL OR (outcome IS NOT NULL)=?4) ORDER BY id DESC LIMIT ?5",
     )?;
-    Ok(statement
-        .query_map(params![project_id, task_id, result_id], map_task_feedback)?
-        .collect::<rusqlite::Result<Vec<_>>>()?)
+    let ids = statement
+        .query_map(
+            params![project_id, task_id, before_id, has_execution_result, limit],
+            |row| row.get::<_, i64>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ids.into_iter()
+        .map(|id| task_comment_by_id(connection, project_id, task_id, id))
+        .collect()
 }
 
-fn task_feedback_by_id(
-    connection: &Connection,
-    project_id: &str,
-    task_id: i64,
-    id: i64,
-) -> StoreResult<TaskFeedback> {
-    connection.query_row(
-        "SELECT f.*, a.result_id AS addressed_by_result_id FROM task_feedback f
-         LEFT JOIN task_feedback_addresses a ON a.feedback_id=f.id AND a.project_id=f.project_id AND a.task_id=f.task_id
-         WHERE f.project_id=?1 AND f.task_id=?2 AND f.id=?3",
-        params![project_id, task_id, id], map_task_feedback,
-    ).optional()?.ok_or(StoreError::NotFound { entity: "task feedback", id })
-}
-
-fn map_task_feedback(row: &Row<'_>) -> rusqlite::Result<TaskFeedback> {
-    Ok(TaskFeedback {
-        id: row.get("id")?,
-        project_id: row.get("project_id")?,
-        task_id: row.get("task_id")?,
-        result_id: row.get("result_id")?,
-        disposition: enum_column(row, "disposition")?,
-        body: row.get("body")?,
-        recorded_at: row.get("recorded_at")?,
-        task_revision: row.get("task_revision")?,
-        addressed_by_result_id: row.get("addressed_by_result_id")?,
-    })
-}
-
-fn latest_task_result(
+fn latest_task_execution(
     connection: &Connection,
     project_id: &str,
     task_id: i64,
     successful: bool,
-) -> StoreResult<Option<TaskResult>> {
+) -> StoreResult<Option<TaskComment>> {
     let sql = if successful {
-        "SELECT id FROM task_results WHERE project_id=?1 AND task_id=?2 AND outcome IN ('success', 'no_change') ORDER BY id DESC LIMIT 1"
+        "SELECT id FROM task_comments WHERE project_id=?1 AND task_id=?2 AND outcome IN ('success', 'no_change') ORDER BY id DESC LIMIT 1"
     } else {
-        "SELECT id FROM task_results WHERE project_id=?1 AND task_id=?2 ORDER BY id DESC LIMIT 1"
+        "SELECT id FROM task_comments WHERE project_id=?1 AND task_id=?2 AND outcome IS NOT NULL ORDER BY id DESC LIMIT 1"
     };
     let id = connection
         .query_row(sql, params![project_id, task_id], |row| {
             row.get::<_, i64>(0)
         })
         .optional()?;
-    id.map(|id| task_result_by_id(connection, project_id, task_id, id))
+    id.map(|id| task_comment_by_id(connection, project_id, task_id, id))
         .transpose()
 }
 
