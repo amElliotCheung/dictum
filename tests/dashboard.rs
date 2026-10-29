@@ -210,6 +210,65 @@ fn dashboard_database(directory: &TempDir) -> PathBuf {
 }
 
 #[test]
+fn dashboard_project_descriptions_reflect_mcp_edits_and_persist() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = dashboard_database(&directory);
+    let client = Project::open(&database).unwrap();
+    let project_id = client.project_id.clone();
+    let other = call(
+        &client,
+        "create_project",
+        json!({"name": "Test project", "description": "Another project with the same name"}),
+    );
+    let dashboard = Dashboard::start(&database, 0);
+    let before = dashboard.get("/api/projects").json();
+    let original = before["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|project| project["id"] == project_id)
+        .unwrap();
+    assert_eq!(original["revision"], 1);
+    assert_eq!(original["created_at"], original["updated_at"]);
+
+    let updated = call(
+        &client,
+        "update_project",
+        json!({
+            "project_id": project_id,
+            "expected_revision": original["revision"],
+            "description": "Updated through MCP while the dashboard is running.\nKeep the full description."
+        }),
+    );
+    assert_eq!(updated["revision"], 2);
+    let after = dashboard.get("/api/projects").json();
+    assert_eq!(after, call(&client, "list_projects", json!({})));
+    let projects = after["projects"].as_array().unwrap();
+    assert!(projects.iter().any(|project| project == &updated));
+    assert!(projects.iter().any(|project| project == &other));
+
+    for path in [
+        "/api/projects".to_string(),
+        format!("/api/projects/{project_id}"),
+    ] {
+        for method in ["POST", "PUT", "PATCH", "DELETE"] {
+            let response = dashboard.request(method, &path, None, &[]);
+            assert_eq!(response.status, 405, "accepted {method} {path}");
+            assert_eq!(response.header("allow"), Some("GET, HEAD"));
+        }
+    }
+    assert_eq!(dashboard.get("/api/projects").json(), after);
+    assert_eq!(call(&client, "list_projects", json!({})), after);
+
+    drop(dashboard);
+    drop(client);
+    let restarted_client = Project::open(&database).unwrap();
+    let restarted_dashboard = Dashboard::start(&database, 0);
+    assert_eq!(restarted_dashboard.get("/api/projects").json(), after);
+    assert_eq!(call(&restarted_client, "list_projects", json!({})), after);
+}
+
+#[test]
 fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
     let directory = tempfile::tempdir().unwrap();
     let database = dashboard_database(&directory);

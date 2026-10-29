@@ -44,7 +44,7 @@ impl DictumServer {
 #[tool_router]
 impl DictumServer {
     #[tool(
-        description = "Create a project with a name, description, server-assigned UUIDv7 ID, and UTC creation time. Names need not be unique. Create only when explicitly intended; discovery with no match does not authorize automatic creation. A project is a scope for records, not authorization to execute work or a work claim.",
+        description = "Create a project with a name, description, server-assigned UUIDv7 ID, revision 1, and UTC creation/update times. Names need not be unique. Create only when explicitly intended; discovery with no match does not authorize automatic creation. A project is a scope for records, not authorization to execute work or a work claim.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -60,7 +60,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Discover projects by optional name/description query. Returns IDs, names, descriptions, and creation times. Resolve ambiguity or no match with the human; never implicitly choose or create a project. Once resolved, pass its project_id to list_tasks with ready_to_start=true, then get_task_context for the chosen task. Project selection is scope, not execution authorization or a work claim.",
+        description = "Discover projects by optional name/description query. Returns IDs, names, descriptions, revisions, and UTC creation/update times. Use the latest revision as expected_revision for update_project. Resolve ambiguity or no match with the human; never implicitly choose or create a project. Once resolved, pass its project_id to list_tasks with ready_to_start=true, then get_task_context for the chosen task. Project selection is scope, not execution authorization or a work claim.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_projects(
@@ -73,6 +73,22 @@ impl DictumServer {
             })
         })
         .await
+    }
+
+    #[tool(
+        description = "Replace an existing project's description using project_id and the latest expected_revision from list_projects. Description is required and nonblank; null and unknown fields are rejected. Each accepted update, including identical text, increments revision and sets server UTC updated_at. Preserves ID, name, created_at and all related records. Stale revisions fail without mutation; reread and reassess before retrying. Project scope is not execution authorization or a work claim.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn update_project(
+        &self,
+        Parameters(input): Parameters<UpdateProject>,
+    ) -> Result<Json<Project>, String> {
+        self.database(move |store| store.update_project(input))
+            .await
     }
 
     #[tool(

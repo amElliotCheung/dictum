@@ -101,9 +101,31 @@ human. Execution evidence and output Source links are appended with
 `record_task_result`. A one-time task can be marked `done` only after all
 dependency gates are satisfied, at least one successful result exists, and no
 outstanding change requests remain.
-Mutable task and source updates require the latest `expected_revision`. See
-[AGENTS.md](AGENTS.md) for all sixteen tools and their contracts, and
+Mutable project, task and source updates require the latest `expected_revision`. See
+[AGENTS.md](AGENTS.md) for all seventeen tools and their contracts, and
 [WORKFLOW.md](WORKFLOW.md) for the embedded agent workflow.
+
+## Update a project description
+
+Call `list_projects` to identify the project and read its latest `revision`, then
+call `update_project` with that revision and the required nonblank replacement:
+
+```json
+{
+  "project_id": "PROJECT_ID",
+  "expected_revision": 1,
+  "description": "The project's current purpose and scope."
+}
+```
+
+The tool returns the updated project, increments `revision`, and sets server UTC
+`updated_at`. New projects start at revision 1 with matching `created_at` and
+`updated_at`. Each accepted update increments revision, including identical text.
+The project ID, name, creation time and related records are preserved. Null or
+blank descriptions and unknown fields are rejected. On a revision conflict,
+reread with `list_projects` and reassess the edit before retrying. The read-only
+dashboard displays the new description on its next project refresh (every 30
+seconds).
 
 ## Record an accepted decision
 
@@ -196,9 +218,9 @@ npm ci
 npm run build
 ```
 
-Only the current schema (v11) is supported. Startup rejects older databases
+Only the current schema (v12) is supported. Startup rejects older databases
 without modifying them; preserve the file and use a fresh path such as
-`.dictum/dictum-v11.sqlite3`. Re-create needed records through MCP rather than
+`.dictum/dictum-v12.sqlite3`. Re-create needed records through MCP rather than
 migrating the older database.
 
 ## License

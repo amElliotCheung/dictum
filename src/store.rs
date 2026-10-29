@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 const APPLICATION_ID: i64 = 0x4449_4354; // DICT
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -33,12 +33,12 @@ pub enum StoreError {
     )]
     RevisionConflict {
         entity: &'static str,
-        id: i64,
+        id: String,
         expected: i64,
         actual: i64,
     },
     #[error(
-        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 11 only; preserve the existing file"
+        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 12 only; preserve the existing file"
     )]
     UnsupportedSchema { version: i64, application_id: i64 },
 }
@@ -112,19 +112,24 @@ impl Store {
         required(&input.description, "description")?;
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = timestamp(Utc::now());
         let project = Project {
             id: new_project_id(&transaction)?,
             name: input.name,
             description: input.description,
-            created_at: timestamp(Utc::now()),
+            revision: 1,
+            created_at: now.clone(),
+            updated_at: now,
         };
         transaction.execute(
-            "INSERT INTO projects (id, name, description, created_at) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO projects (id, name, description, revision, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 project.id,
                 project.name,
                 project.description,
-                project.created_at
+                project.revision,
+                project.created_at,
+                project.updated_at
             ],
         )?;
         transaction.commit()?;
@@ -136,14 +141,7 @@ impl Store {
         let mut statement = connection.prepare("SELECT * FROM projects ORDER BY created_at, id")?;
         let query = input.query.as_deref().map(str::to_lowercase);
         let projects = statement
-            .query_map([], |row| {
-                Ok(Project {
-                    id: row.get("id")?,
-                    name: row.get("name")?,
-                    description: row.get("description")?,
-                    created_at: row.get("created_at")?,
-                })
-            })?
+            .query_map([], map_project)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(projects
             .into_iter()
@@ -154,6 +152,41 @@ impl Store {
                 })
             })
             .collect())
+    }
+
+    pub fn update_project(&self, input: UpdateProject) -> StoreResult<Project> {
+        required(&input.project_id, "project_id")?;
+        required(&input.description, "description")?;
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut project = transaction
+            .query_row(
+                "SELECT * FROM projects WHERE id=?1",
+                [&input.project_id],
+                map_project,
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::ProjectNotFound(input.project_id.clone()))?;
+        check_revision(
+            "project",
+            &project.id,
+            input.expected_revision,
+            project.revision,
+        )?;
+        project.description = input.description;
+        project.revision += 1;
+        project.updated_at = timestamp(Utc::now());
+        transaction.execute(
+            "UPDATE projects SET description=?2, revision=?3, updated_at=?4 WHERE id=?1",
+            params![
+                project.id,
+                project.description,
+                project.revision,
+                project.updated_at
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(project)
     }
 
     pub fn create_task(&self, input: CreateTask) -> StoreResult<Task> {
@@ -917,11 +950,16 @@ fn validate_source(
     Ok(())
 }
 
-fn check_revision(entity: &'static str, id: i64, expected: i64, actual: i64) -> StoreResult<()> {
+fn check_revision(
+    entity: &'static str,
+    id: impl ToString,
+    expected: i64,
+    actual: i64,
+) -> StoreResult<()> {
     if expected != actual {
         Err(StoreError::RevisionConflict {
             entity,
-            id,
+            id: id.to_string(),
             expected,
             actual,
         })
@@ -942,6 +980,17 @@ fn ensure_project(connection: &Connection, project_id: &str) -> StoreResult<()> 
     } else {
         Err(StoreError::ProjectNotFound(project_id.into()))
     }
+}
+
+fn map_project(row: &Row<'_>) -> rusqlite::Result<Project> {
+    Ok(Project {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        description: row.get("description")?,
+        revision: row.get("revision")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
 }
 
 /// Prefer a real SQLite built-in when available; never register an emulation/extension.

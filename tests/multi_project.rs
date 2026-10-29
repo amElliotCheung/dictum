@@ -1,9 +1,12 @@
 //! Explicit project scope and isolation through the actual MCP transport.
 mod support;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Barrier},
+};
 use support::Project;
 
 fn call(client: &Project, name: &str, input: Value) -> Value {
@@ -134,6 +137,231 @@ fn project_discovery_is_explicit_uuidv7_and_persistent() {
 }
 
 #[test]
+fn project_description_edits_preserve_identity_context_and_restart_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("shared.sqlite3");
+    let client = Project::open(&database).unwrap();
+    let original = call(
+        &client,
+        "create_project",
+        json!({"name": "Same name", "description": "Original compiler purpose"}),
+    );
+    let other = call(
+        &client,
+        "create_project",
+        json!({"name": "Same name", "description": "Independent release purpose"}),
+    );
+    assert_eq!(original["revision"], 1);
+    assert_eq!(original["updated_at"], original["created_at"]);
+    let scope = original["id"].as_str().unwrap();
+    let source = scoped(
+        &client,
+        scope,
+        "create_source",
+        json!({"name": "Requirements", "description": "Project context", "content": "Keep these records", "context_policy": "always"}),
+    );
+    let dependency = scoped(&client, scope, "create_task", brief());
+    let mut task_input = brief();
+    task_input["context_source_ids"] = json!([source["id"]]);
+    task_input["prerequisite_task_ids"] = json!([dependency["id"]]);
+    let task = scoped(&client, scope, "create_task", task_input);
+    let result = scoped(
+        &client,
+        scope,
+        "record_task_result",
+        json!({"task_id": task["id"], "expected_revision": task["revision"], "outcome": "failure", "evidence": "Fixture prerequisite remains unmet", "output_source_ids": [source["id"]]}),
+    );
+    scoped(
+        &client,
+        scope,
+        "record_task_feedback",
+        json!({"task_id": task["id"], "result_id": result["id"], "expected_revision": result["task_revision"], "body": "Preserve this feedback"}),
+    );
+    scoped(
+        &client,
+        scope,
+        "record_decision",
+        json!({"statement": "Preserve project history", "rationale": "Description edits retain context"}),
+    );
+    let context = scoped(
+        &client,
+        scope,
+        "get_task_context",
+        json!({"task_id": task["id"]}),
+    );
+    let before = Utc::now();
+    let description = "# Revised purpose\n\n支持协作 and preserve exact text.  ";
+    let updated = call(
+        &client,
+        "update_project",
+        json!({"project_id": scope, "expected_revision": original["revision"], "description": description}),
+    );
+    let after = Utc::now();
+    assert_eq!(updated["description"], description);
+    assert_eq!(updated["revision"], 2);
+    for field in ["id", "name", "created_at"] {
+        assert_eq!(updated[field], original[field]);
+    }
+    let edited_at = DateTime::parse_from_rfc3339(updated["updated_at"].as_str().unwrap()).unwrap();
+    assert_eq!(edited_at.offset().local_minus_utc(), 0);
+    assert!(edited_at >= before && edited_at <= after);
+    assert_eq!(
+        scoped(
+            &client,
+            scope,
+            "get_task_context",
+            json!({"task_id": task["id"]})
+        ),
+        context
+    );
+    assert_eq!(
+        scoped(
+            &client,
+            scope,
+            "get_source",
+            json!({"source_id": source["id"]})
+        ),
+        source
+    );
+    assert_eq!(
+        call(
+            &client,
+            "list_projects",
+            json!({"query": "ORIGINAL COMPILER"})
+        )["projects"],
+        json!([])
+    );
+    assert_eq!(
+        call(
+            &client,
+            "list_projects",
+            json!({"query": "REVISED PURPOSE"})
+        )["projects"],
+        json!([updated])
+    );
+    let same_text = call(
+        &client,
+        "update_project",
+        json!({"project_id": scope, "expected_revision": updated["revision"], "description": description}),
+    );
+    assert_eq!(same_text["revision"], 3);
+    assert_eq!(same_text["description"], description);
+    assert_eq!(same_text["created_at"], original["created_at"]);
+    let listed = call(&client, "list_projects", json!({}));
+    assert!(listed["projects"].as_array().unwrap().contains(&other));
+    assert!(listed["projects"].as_array().unwrap().contains(&same_text));
+    drop(client);
+    let restarted = Project::open(&database).unwrap();
+    assert_eq!(call(&restarted, "list_projects", json!({})), listed);
+    assert_eq!(
+        scoped(
+            &restarted,
+            scope,
+            "get_task_context",
+            json!({"task_id": task["id"]})
+        ),
+        context
+    );
+}
+
+#[test]
+fn invalid_project_edits_do_not_mutate_durable_records() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("shared.sqlite3");
+    let client = Project::open(&database).unwrap();
+    let scope = client.project_id.clone();
+    let valid =
+        json!({"project_id": scope, "expected_revision": 1, "description": "Updated purpose"});
+    for field in ["project_id", "expected_revision", "description"] {
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        rejected_without_mutation(&client, &database, "update_project", missing);
+        let mut null = valid.clone();
+        null[field] = Value::Null;
+        rejected_without_mutation(&client, &database, "update_project", null);
+    }
+    for description in [json!(""), json!(" \t\n"), json!(14), json!(["purpose"])] {
+        let mut input = valid.clone();
+        input["description"] = description;
+        rejected_without_mutation(&client, &database, "update_project", input);
+    }
+    for revision in [json!(0), json!(-1), json!(2), json!("1"), json!(1.5)] {
+        let mut input = valid.clone();
+        input["expected_revision"] = revision;
+        rejected_without_mutation(&client, &database, "update_project", input);
+    }
+    for field in ["id", "name", "created_at", "updated_at", "revision"] {
+        let mut input = valid.clone();
+        input[field] = json!("Replacement");
+        rejected_without_mutation(&client, &database, "update_project", input);
+    }
+    let updated = call(&client, "update_project", valid.clone());
+    assert_eq!(updated["revision"], 2);
+    rejected_without_mutation(&client, &database, "update_project", valid);
+}
+
+#[test]
+fn simultaneous_project_edits_allow_one_winner_and_require_conflict_reread() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("shared.sqlite3");
+    let client = Project::open(&database).unwrap();
+    let scope = client.project_id.clone();
+    let barrier = Arc::new(Barrier::new(2));
+    let writers: Vec<_> = (0..2)
+        .map(|index| {
+            let database = database.clone();
+            let scope = scope.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let client = Project::open(database).unwrap();
+                barrier.wait();
+                client.raw_call::<Value>(
+                    "update_project",
+                    json!({"project_id": scope, "expected_revision": 1, "description": format!("Writer {index}")}),
+                )
+            })
+        })
+        .collect();
+    let writes: Vec<_> = writers
+        .into_iter()
+        .map(|writer| writer.join().unwrap())
+        .collect();
+    assert_eq!(writes.iter().filter(|result| result.is_ok()).count(), 1);
+    let conflict = writes
+        .iter()
+        .find_map(|result| result.as_ref().err())
+        .unwrap()
+        .to_string();
+    assert!(conflict.contains(&scope), "unexpected conflict: {conflict}");
+    assert!(
+        conflict.contains("revision conflict"),
+        "unexpected conflict: {conflict}"
+    );
+    assert!(
+        conflict.contains("reread"),
+        "unexpected conflict: {conflict}"
+    );
+    let winner = writes.into_iter().find_map(Result::ok).unwrap();
+    assert_eq!(winner["revision"], 2);
+    assert_eq!(
+        call(&client, "list_projects", json!({}))["projects"],
+        json!([winner])
+    );
+    let retry = call(
+        &client,
+        "update_project",
+        json!({"project_id": scope, "expected_revision": winner["revision"], "description": "Reconciled after rereading"}),
+    );
+    assert_eq!(retry["revision"], 3);
+    drop(client);
+    let restarted = Project::open(&database).unwrap();
+    assert_eq!(
+        call(&restarted, "list_projects", json!({}))["projects"],
+        json!([retry])
+    );
+}
+
+#[test]
 fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("shared.sqlite3");
@@ -147,6 +375,10 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
     );
     let task = scoped(&client, &scope, "create_task", brief());
     let requests = [
+        (
+            "update_project",
+            json!({"expected_revision": 1, "description": "Should never be saved"}),
+        ),
         ("create_task", brief()),
         ("list_tasks", json!({})),
         ("get_task_context", json!({"task_id": task["id"]})),

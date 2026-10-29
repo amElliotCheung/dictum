@@ -19,13 +19,26 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// Read the latest revision with list_projects before updating the description.
+    pub revision: i64,
     pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateProject {
     pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateProject {
+    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
+    pub project_id: String,
+    pub expected_revision: i64,
+    /// Required nonblank replacement description. Each accepted update increments revision.
     pub description: String,
 }
 

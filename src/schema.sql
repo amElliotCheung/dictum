@@ -2,7 +2,9 @@ CREATE TABLE projects (
     id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36 AND substr(id, 15, 1) = '7' AND substr(id, 20, 1) IN ('8','9','a','b')),
     name TEXT NOT NULL CHECK (length(trim(name)) > 0),
     description TEXT NOT NULL CHECK (length(trim(description)) > 0),
-    created_at TEXT NOT NULL
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 CREATE TABLE tasks (

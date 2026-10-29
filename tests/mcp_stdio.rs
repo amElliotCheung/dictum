@@ -121,6 +121,7 @@ async fn workflow(discover: bool) -> Result<()> {
             "record_source_action",
             "record_task_feedback",
             "record_task_result",
+            "update_project",
             "update_source",
             "update_task",
         ]
@@ -150,6 +151,40 @@ async fn workflow(discover: bool) -> Result<()> {
                 "string"
             );
         }
+    }
+    let project_update = tools
+        .iter()
+        .find(|tool| tool.name == "update_project")
+        .unwrap();
+    let project_schema = &project_update.input_schema;
+    let required = project_schema["required"].as_array().unwrap();
+    for field in ["project_id", "expected_revision", "description"] {
+        assert!(required.contains(&json!(field)));
+    }
+    assert_eq!(project_schema["additionalProperties"], false);
+    assert_eq!(
+        project_schema["properties"]["description"]["type"],
+        "string"
+    );
+    assert_eq!(
+        project_schema["properties"]["expected_revision"]["type"],
+        "integer"
+    );
+    let project_output = serde_json::to_value(&project_update.output_schema).unwrap();
+    for field in [
+        "id",
+        "name",
+        "description",
+        "revision",
+        "created_at",
+        "updated_at",
+    ] {
+        assert!(
+            project_output["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(field))
+        );
     }
     let decision_tool = tools
         .iter()
@@ -320,7 +355,7 @@ async fn workflow(discover: bool) -> Result<()> {
     let project_id = project["id"].as_str().unwrap().to_owned();
     let connection = rusqlite::Connection::open(&database)?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
     let tables = connection
         .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")?
         .query_map([], |row| row.get::<_, String>(0))?

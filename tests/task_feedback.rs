@@ -806,7 +806,7 @@ fn schema_v5_is_rejected_without_changing_its_data_schema_or_file() {
     let error = String::from_utf8(output.stderr).unwrap();
     assert!(error.contains("version 5"), "unexpected error: {error}");
     assert!(
-        error.contains("schema version 11"),
+        error.contains("schema version 12"),
         "unexpected error: {error}"
     );
     assert_eq!(std::fs::read(&database).unwrap(), before);
@@ -828,7 +828,7 @@ fn schema_v5_is_rejected_without_changing_its_data_schema_or_file() {
 
 #[test]
 fn recent_unsupported_versions_are_rejected_without_changing_existing_records() {
-    for version in [8, 9, 10] {
+    for version in [8, 9, 10, 11] {
         let directory = tempfile::tempdir().unwrap();
         let database = directory
             .path()
@@ -880,7 +880,7 @@ fn recent_unsupported_versions_are_rejected_without_changing_existing_records() 
                 "unexpected error: {error}"
             );
             assert!(
-                error.contains("schema version 11"),
+                error.contains("schema version 12"),
                 "unexpected error: {error}"
             );
             assert_eq!(std::fs::read(&database).unwrap(), before);
