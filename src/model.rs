@@ -282,7 +282,9 @@ pub struct RecordTaskComment {
     pub task_id: i64,
     /// Required target task version, between 1 and the current revision, inclusive.
     pub task_revision: i64,
-    /// Nonblank Markdown, at most 4,000 characters; execution comments use this as evidence.
+    /// Useful to later agents; prefer 1-3 short sentences/bullets with new findings or evidence.
+    /// For executions, identify work/checks, tested implementation, outcome and limitations.
+    /// Omit narration and duplication. Nonblank Markdown, max 4,000 characters, not a target.
     pub body: String,
     pub reply_to_comment_id: Option<i64>,
     pub execution_result: Option<ExecutionResult>,
@@ -293,7 +295,7 @@ pub struct RecordTaskComment {
 pub struct ListTaskComments {
     pub project_id: String,
     pub task_id: i64,
-    /// Default 20; must be between 1 and 100.
+    /// Prefer small pages (e.g. 5) for a concrete question; default 20, range 1..100.
     pub page_size: Option<i64>,
     /// Return comments older than this comment ID, which must belong to this task/project.
     pub before_id: Option<i64>,

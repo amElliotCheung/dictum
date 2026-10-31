@@ -85,7 +85,9 @@ tool arguments, not shell commands. Substitute the IDs returned by earlier calls
    This returns the full task brief, linked context sources, project sources with
    `context_policy: "always"`, current decisions, and dependency state. Inline
    sources are returned in full. Use `get_source` with `project_id` and `source_id`
-   to read an individual source.
+   to read an individual source. Keep always-included sources small and link only
+   context needed for the task. `list_sources` returns descriptors; listing a
+   source does not load its content into task context.
 
 Tasks accept `priority: "low"`, `"medium"`, or `"high"`; omitting it at creation
 defaults to `"medium"` for both one-time and recurring tasks. `update_task` can
@@ -127,6 +129,20 @@ blank descriptions and unknown fields are rejected. On a revision conflict,
 reread with `list_projects` and reassess the edit before retrying. The
 dashboard displays the new description on its next project refresh (every 30
 seconds).
+
+## Keep environment facts available
+
+Use a concise inline Source with `context_policy: "always"` for environment facts
+needed across tasks, such as the production AWS account, region, and DynamoDB
+table names. Include the environment scope and exact resource identifiers, plus
+a verification reference or date where useful. Update the Source when reality
+changes. Facts describe current state; decisions record accepted choices and
+their rationale. An accepted decision alone does not establish that its intended
+state has been deployed.
+
+Keep the project description focused on purpose and scope. Every task-context
+read includes always Sources in full, so reserve them for essential facts and
+keep longer supporting material in separate Sources fetched when relevant.
 
 ## Record an accepted decision
 
@@ -180,7 +196,7 @@ Call `record_task_comment` with the task version you actually read:
   "project_id": "PROJECT_ID",
   "task_id": 1,
   "task_revision": 1,
-  "body": "Implemented the greeting; the mobile browser check passed.",
+  "body": "Implemented the greeting in commit abc1234; desktop and mobile browser checks passed.",
   "execution_result": {
     "outcome": "success",
     "output_source_ids": []
@@ -195,6 +211,17 @@ Success/no-change requires satisfied start and completion dependencies. A failur
 can report unmet gates. Output IDs must belong to the same project; source
 contents remain mutable rather than becoming snapshots.
 
+Write for the next agent: preserve useful findings, corrections, blockers, next
+steps, and execution evidence, normally in 1–3 short sentences or bullets. Skip
+routine narration, duplicate information, and polling that adds no useful
+information. An execution report identifies what was done or checked, the
+implementation or artifact tested, and its outcome; include remaining limitations
+when relevant. `task_revision` identifies the task brief, not a code revision.
+Fresh verification can justify a `no_change` report even when no files changed.
+Always satisfy explicit reporting requirements and the evidence required for
+completion. Use output Sources for longer durable artifacts when needed; a
+concise note does not need its own Source.
+
 Every comment permanently retains its target `task_revision`, including when a
 new report targets an older version. Targets must be between 1 and the current
 revision. Bodies are nonblank Markdown, at most 4,000 characters. Optional
@@ -203,11 +230,17 @@ versions. There are no author fields, review dispositions, or resolution links.
 Rework is discussion plus an explicit task update, without automatic reopening.
 
 Task context includes ten recent comments, `latest_execution`, and
-`latest_successful_execution`; matching IDs identify the same entry. Use
-`list_task_comments` for newest-first history (default 20, maximum 100 per page),
+`latest_successful_execution`; matching IDs identify the same entry. Start with
+this bounded context, then fetch older history only to resolve a specific gap.
+Use `list_task_comments` with a small page such as `page_size: 5` (default 20,
+maximum 100 per page) for newest-first history,
 `next_before_id` as `before_id` to continue, and optional `has_execution_result` to
-filter. `get_task_comment` expands a particular `comment_id`. Comments never
-require `expected_revision`; their `task_revision` identifies what they discuss.
+filter. Stop when the needed context is found; avoid routine full-history scans.
+`get_task_comment` expands a particular `comment_id`, and `get_source` expands
+only the outputs needed for the task. Check new comments independently of task
+revision changes, using `list_task_comments` rather than reloading full task
+context solely to poll comments. Comments never require `expected_revision`;
+their `task_revision` identifies what they discuss.
 
 Versions identify task records, not retained historical brief bodies or frozen
 parent/source context. Historical success still satisfies the execution-evidence
