@@ -143,7 +143,7 @@ fn full_inline_context_is_deduplicated_and_outputs_are_not_automatic_inputs() {
         )
         .unwrap();
 
-    let expanded = store.get_task_context(task.id).unwrap();
+    let expanded = store.get_context(task.id).unwrap();
     let mut source_ids: Vec<_> = expanded.sources.iter().map(|source| source.id).collect();
     source_ids.sort_unstable();
     let mut expected = vec![shared.id, context.id, implicit.id];
@@ -196,7 +196,7 @@ fn full_inline_context_is_deduplicated_and_outputs_are_not_automatic_inputs() {
     let second = store.create_task(input(second_brief)).unwrap();
     assert!(
         store
-            .get_task_context(second.id)
+            .get_context(second.id)
             .unwrap()
             .sources
             .iter()
@@ -218,7 +218,7 @@ fn dependency_kinds_gate_start_and_completion_independently() {
     brief["prerequisite_task_ids"] = json!([prerequisite.id]);
     brief["completion_task_ids"] = json!([verification.id]);
     let implementation = store.create_task(input(brief)).unwrap();
-    let context = store.get_task_context(implementation.id).unwrap();
+    let context = store.get_context(implementation.id).unwrap();
     assert!(!context.dependency_state.ready_to_start);
     assert_eq!(
         context.dependency_state.unmet_prerequisite_task_ids,
@@ -240,7 +240,7 @@ fn dependency_kinds_gate_start_and_completion_independently() {
 
     assert!(
         store
-            .get_task_context(implementation.id)
+            .get_context(implementation.id)
             .unwrap()
             .dependency_state
             .ready_to_start
@@ -258,11 +258,7 @@ fn dependency_kinds_gate_start_and_completion_independently() {
     );
     complete(&store, &verification);
     assert_eq!(
-        store
-            .get_task_context(implementation.id)
-            .unwrap()
-            .task
-            .status,
+        store.get_context(implementation.id).unwrap().task.status,
         TaskStatus::InProgress
     );
     assert!(
@@ -274,7 +270,7 @@ fn dependency_kinds_gate_start_and_completion_independently() {
     assert_eq!(implementation.status, TaskStatus::Done);
     assert!(
         !store
-            .get_task_context(implementation.id)
+            .get_context(implementation.id)
             .unwrap()
             .dependency_state
             .ready_to_start
@@ -315,7 +311,7 @@ fn mixed_dependency_cycles_and_invalid_links_roll_back_the_entire_write() {
             ))
             .is_err()
     );
-    let unchanged = store.get_task_context(first.id).unwrap().task;
+    let unchanged = store.get_context(first.id).unwrap().task;
     assert_eq!(unchanged.title, first.title);
     assert_eq!(unchanged.revision, first.revision);
     assert!(unchanged.completion_task_ids.is_empty());
@@ -408,7 +404,7 @@ fn source_actions_preserve_one_successful_snapshot_across_no_change_and_failure(
     let mut brief = task_input("Read channel context");
     brief["context_source_ids"] = json!([initial.id]);
     let reader = store.create_task(input(brief)).unwrap();
-    let context = store.get_task_context(reader.id).unwrap();
+    let context = store.get_context(reader.id).unwrap();
     assert_eq!(context.sources[0].revision, initial.revision);
     assert!(context.sources[0].snapshot.is_none());
     assert!(context.sources[0].latest_attempt.is_none());
@@ -745,7 +741,7 @@ fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
     assert_eq!(retained.created_at, first.created_at);
     assert!(!retained.is_current);
     let task = task(&store, "Use current decisions");
-    let context = store.get_task_context(task.id).unwrap();
+    let context = store.get_context(task.id).unwrap();
     assert_eq!(context.current_decisions.len(), 1);
     assert_eq!(context.current_decisions[0].id, second.id);
     assert_eq!(
@@ -775,7 +771,7 @@ fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
             .alternatives_rejected,
         second.alternatives_rejected
     );
-    let current_context = store.get_task_context(task.id).unwrap();
+    let current_context = store.get_context(task.id).unwrap();
     assert_eq!(current_context.current_decisions[0].id, third.id);
     assert!(
         current_context.current_decisions[0]
@@ -791,7 +787,7 @@ fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
         serde_json::to_value(&persisted).unwrap(),
         serde_json::to_value(&history).unwrap()
     );
-    let context = restarted.get_task_context(task.id).unwrap();
+    let context = restarted.get_context(task.id).unwrap();
     assert_eq!(context.current_decisions[0].id, third.id);
     assert!(context.current_decisions[0].alternatives_rejected.is_none());
 }
@@ -823,7 +819,7 @@ fn mutable_records_persist_and_revisions_coordinate_separate_processes() {
     drop(first_store);
     drop(second_store);
     let reopened = Project::open(directory.path().join("project.sqlite3")).unwrap();
-    let context = reopened.get_task_context(task.id).unwrap();
+    let context = reopened.get_context(task.id).unwrap();
     assert_eq!(context.task.progress, changed.progress);
     assert_eq!(context.sources.len(), 1);
     assert_eq!(context.sources[0].snapshot, source.snapshot);
@@ -867,7 +863,7 @@ fn concurrent_task_writers_have_exactly_one_revision_winner() {
         .find_map(|result| result.as_ref().err())
         .unwrap();
     assert!(loser.to_string().contains("revision conflict"));
-    let persisted = store.get_task_context(original.id).unwrap().task;
+    let persisted = store.get_context(original.id).unwrap().task;
     assert_eq!(persisted.revision, original.revision + 1);
     assert_eq!(persisted.title, winner.title);
     assert_eq!(persisted.progress, winner.progress);
@@ -949,7 +945,7 @@ fn task_priorities_sort_filter_and_survive_revision_checked_updates_and_restart(
     }
     drop(connection);
     assert_eq!(
-        store.get_task_context(default.id).unwrap().task.priority,
+        store.get_context(default.id).unwrap().task.priority,
         TaskPriority::Medium
     );
     let make = |title: &str, priority: &str| {
@@ -1007,20 +1003,20 @@ fn task_priorities_sort_filter_and_survive_revision_checked_updates_and_restart(
     store
         .update_task(task_patch(&default, json!({"priority": "low"})))
         .unwrap();
-    let default = store.get_task_context(default.id).unwrap().task;
+    let default = store.get_context(default.id).unwrap().task;
     assert_eq!(default.priority, TaskPriority::Low);
     let stale = store.update_task(input(json!({"task_id": default.id, "expected_revision": default.revision - 1, "priority": "high", "title": "Must not overwrite"})));
     assert!(stale.is_err());
     assert_eq!(
-        store.get_task_context(default.id).unwrap().task.priority,
+        store.get_context(default.id).unwrap().task.priority,
         TaskPriority::Low
     );
     assert_eq!(
-        store.get_task_context(default.id).unwrap().task.title,
+        store.get_context(default.id).unwrap().task.title,
         default.title
     );
     assert_eq!(
-        store.get_task_context(low.id).unwrap().task.priority,
+        store.get_context(low.id).unwrap().task.priority,
         TaskPriority::High
     );
 
@@ -1041,10 +1037,10 @@ fn task_priorities_sort_filter_and_survive_revision_checked_updates_and_restart(
         );
     }
     for priority in [json!("urgent"), json!("HIGH"), json!(""), json!(3)] {
-        let before = store.get_task_context(high.id).unwrap();
+        let before = store.get_context(high.id).unwrap();
         assert!(store.call::<Value>("update_task", json!({"task_id": high.id, "expected_revision": high.revision, "priority": priority, "title": "A valid edit must roll back", "progress": "Not applied"})).is_err());
         assert_eq!(
-            serde_json::to_value(store.get_task_context(high.id).unwrap()).unwrap(),
+            serde_json::to_value(store.get_context(high.id).unwrap()).unwrap(),
             serde_json::to_value(before).unwrap()
         );
         assert!(
@@ -1061,7 +1057,7 @@ fn task_priorities_sort_filter_and_survive_revision_checked_updates_and_restart(
         serde_json::to_value(expected).unwrap()
     );
     assert_eq!(
-        restarted.get_task_context(low.id).unwrap().task.priority,
+        restarted.get_context(low.id).unwrap().task.priority,
         TaskPriority::High
     );
 }

@@ -325,13 +325,23 @@ impl Store {
         Ok(result)
     }
 
-    pub fn get_task_context(&self, project_id: &str, task_id: i64) -> StoreResult<TaskContext> {
+    pub fn get_context(&self, project_id: &str, task_id: Option<i64>) -> StoreResult<Context> {
         let mut connection = self.connect()?;
         // All components belong to the same read snapshot across concurrent writers.
         let transaction = connection.transaction()?;
         ensure_project(&transaction, project_id)?;
-        let task = task_by_id(&transaction, project_id, task_id)?;
-        let dependency_state = dependency_state(&transaction, &task)?;
+        let project = transaction.query_row(
+            "SELECT * FROM projects WHERE id=?1",
+            [project_id],
+            map_project,
+        )?;
+        let task = task_id
+            .map(|id| task_by_id(&transaction, project_id, id))
+            .transpose()?;
+        let dependency_state = task
+            .as_ref()
+            .map(|task| dependency_state(&transaction, task))
+            .transpose()?;
         let now = Utc::now();
         let source_ids = {
             let mut statement = transaction.prepare("SELECT id FROM sources WHERE project_id=?2 AND (context_policy = 'always' OR id IN (SELECT source_id FROM task_context_sources WHERE task_id = ?1 AND project_id=?2)) ORDER BY id")?;
@@ -345,14 +355,22 @@ impl Store {
             .collect::<StoreResult<Vec<_>>>()?;
         let current_decisions = decisions(&transaction, project_id, false)?;
         let parent_task = task
-            .parent_task_id
+            .as_ref()
+            .and_then(|task| task.parent_task_id)
             .map(|id| task_by_id(&transaction, project_id, id))
             .transpose()?;
-        let recent_comments = task_comments(&transaction, project_id, task_id, None, None, 10)?;
-        let latest_execution = latest_task_execution(&transaction, project_id, task_id, false)?;
-        let latest_successful_execution =
-            latest_task_execution(&transaction, project_id, task_id, true)?;
-        let result = TaskContext {
+        let (recent_comments, latest_execution, latest_successful_execution) =
+            if let Some(task_id) = task_id {
+                (
+                    task_comments(&transaction, project_id, task_id, None, None, 10)?,
+                    latest_task_execution(&transaction, project_id, task_id, false)?,
+                    latest_task_execution(&transaction, project_id, task_id, true)?,
+                )
+            } else {
+                (Vec::new(), None, None)
+            };
+        let result = Context {
+            project,
             task,
             parent_task,
             dependency_state,
@@ -617,10 +635,20 @@ impl Store {
         Ok(result)
     }
 
-    pub fn list_sources(&self, input: ListSources) -> StoreResult<Vec<SourceDescriptor>> {
+    pub fn list_sources(&self, input: ListSources) -> StoreResult<SourceList> {
+        let page_size = input.page_size.unwrap_or(20);
+        if !(1..=100).contains(&page_size) {
+            return invalid("page_size must be between 1 and 100");
+        }
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         ensure_project(&transaction, &input.project_id)?;
+        if let Some(id) = input.before_id {
+            if id <= 0 {
+                return invalid("before_id must be a positive source ID belonging to this project");
+            }
+            ensure_exists(&transaction, &input.project_id, "source", id)?;
+        }
         let linked = if let Some(task_id) = input.task_id {
             ensure_exists(&transaction, &input.project_id, "task", task_id)?;
             let mut statement = transaction.prepare(
@@ -636,40 +664,53 @@ impl Store {
         } else {
             None
         };
-        let ids = all_ids(
-            &transaction,
-            "SELECT id FROM sources WHERE project_id=?1 ORDER BY id",
-            &input.project_id,
-        )?;
         let now = Utc::now();
         let query = input.query.as_deref().map(str::to_lowercase);
         let mut result = Vec::new();
-        for id in ids {
-            if linked.as_ref().is_some_and(|ids| !ids.contains(&id)) {
-                continue;
+        {
+            let mut statement = transaction.prepare(
+                "SELECT id FROM sources WHERE project_id=?1 AND (?2 IS NULL OR id<?2) ORDER BY id DESC",
+            )?;
+            let ids = statement.query_map(params![input.project_id, input.before_id], |row| {
+                row.get::<_, i64>(0)
+            })?;
+            for id in ids {
+                let id = id?;
+                if linked.as_ref().is_some_and(|ids| !ids.contains(&id)) {
+                    continue;
+                }
+                let source = source_by_id(&transaction, &input.project_id, id, now)?;
+                let item = descriptor(&source);
+                if input
+                    .representation
+                    .is_some_and(|representation| representation != item.representation)
+                    || input.action_due.is_some_and(|due| due != item.action_due)
+                    || query.as_ref().is_some_and(|query| {
+                        ![
+                            source.name.as_str(),
+                            source.description.as_str(),
+                            source.locator.as_deref().unwrap_or_default(),
+                        ]
+                        .iter()
+                        .any(|value| value.to_lowercase().contains(query))
+                    })
+                {
+                    continue;
+                }
+                result.push(item);
+                if result.len() > page_size as usize {
+                    break;
+                }
             }
-            let source = source_by_id(&transaction, &input.project_id, id, now)?;
-            let item = descriptor(&source);
-            if input
-                .representation
-                .is_some_and(|representation| representation != item.representation)
-                || input.action_due.is_some_and(|due| due != item.action_due)
-                || query.as_ref().is_some_and(|query| {
-                    ![
-                        source.name.as_str(),
-                        source.description.as_str(),
-                        source.locator.as_deref().unwrap_or_default(),
-                    ]
-                    .iter()
-                    .any(|value| value.to_lowercase().contains(query))
-                })
-            {
-                continue;
-            }
-            result.push(item);
         }
+        let has_more = result.len() > page_size as usize;
+        result.truncate(page_size as usize);
+        let next_before_id = has_more.then(|| result.last().expect("nonempty page").id);
         transaction.commit()?;
-        Ok(result)
+        Ok(SourceList {
+            sources: result,
+            next_before_id,
+        })
     }
 
     pub fn get_source(&self, project_id: &str, source_id: i64) -> StoreResult<Source> {
@@ -835,10 +876,44 @@ impl Store {
         Ok(result)
     }
 
-    pub fn list_decisions(&self, input: ListDecisions) -> StoreResult<Vec<Decision>> {
-        let connection = self.connect()?;
-        ensure_project(&connection, &input.project_id)?;
-        decisions(&connection, &input.project_id, input.include_superseded)
+    pub fn list_decisions(&self, input: ListDecisions) -> StoreResult<DecisionList> {
+        let page_size = input.page_size.unwrap_or(20);
+        if !(1..=100).contains(&page_size) {
+            return invalid("page_size must be between 1 and 100");
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        ensure_project(&transaction, &input.project_id)?;
+        if let Some(id) = input.before_id {
+            if id <= 0 {
+                return invalid(
+                    "before_id must be a positive decision ID belonging to this project",
+                );
+            }
+            ensure_exists(&transaction, &input.project_id, "decision", id)?;
+        }
+        let mut result = {
+            let mut statement = transaction.prepare("SELECT d.id, d.project_id, d.statement, d.rationale, d.alternatives_rejected, d.supersedes_id, d.created_at, NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id) AS is_current FROM decisions d WHERE d.project_id=?1 AND (?2 IS NULL OR d.id<?2) AND (?3 OR NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id)) ORDER BY d.id DESC LIMIT ?4")?;
+            statement
+                .query_map(
+                    params![
+                        input.project_id,
+                        input.before_id,
+                        input.include_superseded,
+                        page_size + 1,
+                    ],
+                    map_decision,
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let has_more = result.len() > page_size as usize;
+        result.truncate(page_size as usize);
+        let next_before_id = has_more.then(|| result.last().expect("nonempty page").id);
+        transaction.commit()?;
+        Ok(DecisionList {
+            decisions: result,
+            next_before_id,
+        })
     }
 }
 
@@ -1112,13 +1187,6 @@ fn linked_ids(
     let mut statement = connection.prepare(sql)?;
     Ok(statement
         .query_map(params![task_id, kind, project_id], |row| row.get(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?)
-}
-
-fn all_ids(connection: &Connection, sql: &str, project_id: &str) -> StoreResult<Vec<i64>> {
-    let mut statement = connection.prepare(sql)?;
-    Ok(statement
-        .query_map([project_id], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 

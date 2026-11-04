@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { api, queryKeys } from '../lib/api';
 import { formatDate } from '../lib/format';
@@ -17,19 +17,21 @@ export function ProjectSections({ projectId }: { projectId: string }) {
 }
 
 function DecisionsSection({ projectId }: { projectId: string }) {
-  const query = useQuery({
+  const query = useInfiniteQuery({
     queryKey: queryKeys.decisions(projectId),
-    queryFn: () => api.decisions(projectId),
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam }) => api.decisions(projectId, pageParam),
+    getNextPageParam: (page) => page.next_before_id ?? undefined,
     refetchInterval: 5_000,
   });
-  const decisions = query.data?.decisions ?? [];
+  const decisions = [...new Map(query.data?.pages.flatMap((page) => page.decisions).map((decision) => [decision.id, decision]) ?? []).values()];
 
   return (
     <ProjectSection
       id="decisions"
       title="Decisions"
       hint="Current accepted choices for this project. Superseded choices remain in history and are not shown here."
-      count={query.data ? `${decisions.length} current` : null}
+      count={query.data ? `${decisions.length} current${query.hasNextPage ? ' loaded' : ''}` : null}
     >
       {query.isError && query.data ? (
         <StaleNotice
@@ -60,24 +62,31 @@ function DecisionsSection({ projectId }: { projectId: string }) {
           ))}
         </div>
       )}
+      {query.hasNextPage ? (
+        <Button variant="outline" size="sm" className="mt-3" onClick={() => { void query.fetchNextPage(); }} disabled={query.isFetching}>
+          {query.isFetchingNextPage ? 'Loading…' : 'Load more decisions'}
+        </Button>
+      ) : null}
     </ProjectSection>
   );
 }
 
 function SourcesSection({ projectId }: { projectId: string }) {
-  const query = useQuery({
+  const query = useInfiniteQuery({
     queryKey: queryKeys.projectSources(projectId),
-    queryFn: () => api.sources(projectId),
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam }) => api.sources(projectId, pageParam),
+    getNextPageParam: (page) => page.next_before_id ?? undefined,
     refetchInterval: 5_000,
   });
-  const sources = query.data?.sources ?? [];
+  const sources = [...new Map(query.data?.pages.flatMap((page) => page.sources).map((source) => [source.id, source]) ?? []).values()];
 
   return (
     <ProjectSection
       id="sources"
       title="Sources"
       hint="Every source in this project, including sources not linked to a task. Expand one to read inline Markdown or external metadata; locators are never fetched automatically."
-      count={query.data ? `${sources.length} total` : null}
+      count={query.data ? `${sources.length} ${query.hasNextPage ? 'loaded' : 'total'}` : null}
     >
       {query.isError && query.data ? (
         <StaleNotice
@@ -115,6 +124,11 @@ function SourcesSection({ projectId }: { projectId: string }) {
           ))}
         </div>
       )}
+      {query.hasNextPage ? (
+        <Button variant="outline" size="sm" className="mt-3" onClick={() => { void query.fetchNextPage(); }} disabled={query.isFetching}>
+          {query.isFetchingNextPage ? 'Loading…' : 'Load more sources'}
+        </Button>
+      ) : null}
     </ProjectSection>
   );
 }

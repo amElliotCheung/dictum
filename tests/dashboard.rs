@@ -797,7 +797,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     assert_eq!(external["action"]["trigger"]["every_minutes"], 1440);
 
     // Repeat reads, then compare MCP state before and after.
-    let context_before = call(&client, "get_task_context", json!({"task_id": task["id"]}));
+    let context_before = call(&client, "get_context", json!({"task_id": task["id"]}));
     let source_before = call(
         &client,
         "get_source",
@@ -829,7 +829,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
             200
         );
     }
-    let context_after = call(&client, "get_task_context", json!({"task_id": task["id"]}));
+    let context_after = call(&client, "get_context", json!({"task_id": task["id"]}));
     let source_after = call(
         &client,
         "get_source",
@@ -1038,7 +1038,7 @@ Please inspect restart persistence before changing the brief."}),
     assert_eq!(
         call(
             &restarted_client,
-            "get_task_context",
+            "get_context",
             json!({"task_id": task["id"]})
         ),
         bounded
@@ -1296,6 +1296,247 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
             .len(),
         2
     );
+}
+
+#[test]
+fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = dashboard_database(&directory);
+    let client = Project::open(&database).unwrap();
+    let project_id = client.project_id.clone();
+    let mut sources = Vec::new();
+    let mut decisions = Vec::new();
+    for index in 0..23 {
+        sources.push(call(
+            &client,
+            "create_source",
+            json!({
+                "name": format!("Reference {index}"),
+                "description": "A paginated project reference",
+                "content": format!("Full source contents {index}"),
+                "context_policy": if index == 0 { "always" } else { "when_relevant" }
+            }),
+        ));
+        decisions.push(call(
+            &client,
+            "record_decision",
+            json!({
+                "statement": format!("Accepted choice {index}"),
+                "rationale": format!("Complete rationale {index}"),
+                "alternatives_rejected": format!("Alternative {index}")
+            }),
+        ));
+    }
+    let parent = create_task(&client, &project_id, "Parent", "one_time", json!({}));
+    let task = create_task(
+        &client,
+        &project_id,
+        "Selected task",
+        "one_time",
+        json!({
+            "parent_task_id": parent["id"],
+            "context_source_ids": [sources[22]["id"]]
+        }),
+    );
+    let execution = call(
+        &client,
+        "record_task_comment",
+        json!({
+            "task_id": task["id"],
+            "task_revision": task["revision"],
+            "body": "Verified the selected task fixture; all stated checks passed.",
+            "execution_result": {"outcome": "success"}
+        }),
+    );
+    let foreign_project = call(
+        &client,
+        "create_project",
+        json!({"name": "Other project", "description": "Cursor scope fixture"}),
+    );
+    let foreign_source = call(
+        &client,
+        "create_source",
+        json!({
+            "project_id": foreign_project["id"],
+            "name": "Private reference", "description": "Other project's reference",
+            "content": "Must not appear", "context_policy": "always"
+        }),
+    );
+    let foreign_decision = call(
+        &client,
+        "record_decision",
+        json!({
+            "project_id": foreign_project["id"],
+            "statement": "Private choice", "rationale": "Must not appear"
+        }),
+    );
+    let dashboard = Dashboard::start(&database, 0);
+    let project_context_path = format!("/api/projects/{project_id}/context");
+    let task_context_path = format!("/api/projects/{project_id}/tasks/{}", task["id"]);
+    let project_context = call(&client, "get_context", json!({}));
+    assert_eq!(dashboard.get(&project_context_path).json(), project_context);
+    assert_eq!(project_context["project"]["id"], project_id);
+    for field in [
+        "task",
+        "parent_task",
+        "dependency_state",
+        "latest_execution",
+        "latest_successful_execution",
+    ] {
+        assert!(project_context[field].is_null(), "{field}");
+    }
+    assert_eq!(project_context["recent_comments"], json!([]));
+    assert_eq!(project_context["sources"], json!([sources[0]]));
+    assert_eq!(project_context["current_decisions"], json!(decisions));
+    let task_context = call(&client, "get_context", json!({"task_id": task["id"]}));
+    assert_eq!(dashboard.get(&task_context_path).json(), task_context);
+    assert_eq!(task_context["task"], task);
+    assert_eq!(task_context["parent_task"], parent);
+    assert!(task_context["dependency_state"].is_object());
+    assert_eq!(task_context["sources"], json!([sources[0], sources[22]]));
+    assert_eq!(task_context["latest_execution"], execution);
+    assert_eq!(task_context["current_decisions"], json!(decisions));
+    assert_eq!(
+        dashboard
+            .get("/api/projects/00000000-0000-7000-8000-000000000000/context")
+            .status,
+        404
+    );
+    assert_eq!(
+        dashboard
+            .request("POST", &project_context_path, None, &[])
+            .status,
+        405
+    );
+
+    let mut continuation_pages = Vec::new();
+    for (collection, list_tool, records, foreign_id) in [
+        ("sources", "list_sources", &sources, &foreign_source["id"]),
+        (
+            "decisions",
+            "list_decisions",
+            &decisions,
+            &foreign_decision["id"],
+        ),
+    ] {
+        let path = format!("/api/projects/{project_id}/{collection}");
+        let first = dashboard.get(&path);
+        assert_eq!(first.status, 200);
+        let first = first.json();
+        assert_eq!(first, call(&client, list_tool, json!({})));
+        let first_entries = first[collection].as_array().unwrap();
+        assert_eq!(first_entries.len(), 20);
+        assert_eq!(first_entries[0]["id"], records[22]["id"]);
+        assert_eq!(first_entries[19]["id"], records[3]["id"]);
+        let cursor = first["next_before_id"].as_i64().unwrap();
+        assert_eq!(cursor, records[3]["id"].as_i64().unwrap());
+        let continuation_path = format!("{path}?page_size=20&before_id={cursor}");
+        let second = dashboard.get(&continuation_path).json();
+        assert_eq!(
+            second,
+            call(
+                &client,
+                list_tool,
+                json!({"page_size": 20, "before_id": cursor})
+            )
+        );
+        let second_ids: Vec<_> = second[collection]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|record| record["id"].clone())
+            .collect();
+        assert_eq!(
+            second_ids,
+            vec![
+                records[2]["id"].clone(),
+                records[1]["id"].clone(),
+                records[0]["id"].clone()
+            ]
+        );
+        assert!(second["next_before_id"].is_null());
+        continuation_pages.push((continuation_path, second));
+
+        // An exact-sized page has no continuation; the maximum accepted size works too.
+        for page_size in [23, 100] {
+            let page = dashboard.get(&format!("{path}?page_size={page_size}"));
+            assert_eq!(page.status, 200);
+            let page = page.json();
+            assert_eq!(page[collection].as_array().unwrap().len(), 23);
+            assert!(page["next_before_id"].is_null());
+        }
+        let one = dashboard.get(&format!("{path}?page_size=1")).json();
+        assert_eq!(one[collection].as_array().unwrap().len(), 1);
+        assert_eq!(one["next_before_id"], records[22]["id"]);
+        for query in [
+            "page_size=0",
+            "page_size=-1",
+            "page_size=101",
+            "page_size=invalid",
+            "page_size=1&page_size=2",
+            "before_id=0",
+            "before_id=-1",
+            "before_id=invalid",
+            "before_id=1&before_id=2",
+        ] {
+            assert_eq!(
+                dashboard.get(&format!("{path}?{query}")).status,
+                400,
+                "{collection}: {query}"
+            );
+        }
+        for cursor in [foreign_id.clone(), json!(i64::MAX)] {
+            assert_eq!(
+                dashboard.get(&format!("{path}?before_id={cursor}")).status,
+                404
+            );
+        }
+    }
+    // Reading and rejected queries leave project/task records and full context untouched.
+    assert_eq!(call(&client, "get_context", json!({})), project_context);
+    assert_eq!(
+        call(&client, "get_context", json!({"task_id": task["id"]})),
+        task_context
+    );
+
+    // New rows appear in a fresh first page without shifting an existing older page.
+    let appended_source = call(
+        &client,
+        "create_source",
+        json!({"name": "New reference", "description": "Appended while browsing", "content": "New body"}),
+    );
+    let appended_decision = call(
+        &client,
+        "record_decision",
+        json!({"statement": "New choice", "rationale": "Appended while browsing"}),
+    );
+    for (collection, appended) in [
+        ("sources", appended_source),
+        ("decisions", appended_decision),
+    ] {
+        assert_eq!(
+            dashboard
+                .get(&format!("/api/projects/{project_id}/{collection}"))
+                .json()[collection][0]["id"],
+            appended["id"]
+        );
+    }
+    for (path, expected) in &continuation_pages {
+        assert_eq!(&dashboard.get(path).json(), expected);
+    }
+    let final_project_context = call(&client, "get_context", json!({}));
+    let final_task_context = call(&client, "get_context", json!({"task_id": task["id"]}));
+    drop(dashboard);
+    drop(client);
+    let restarted = Dashboard::start(&database, 0);
+    assert_eq!(
+        restarted.get(&project_context_path).json(),
+        final_project_context
+    );
+    assert_eq!(restarted.get(&task_context_path).json(), final_task_context);
+    for (path, expected) in continuation_pages {
+        assert_eq!(restarted.get(&path).json(), expected);
+    }
 }
 
 #[test]

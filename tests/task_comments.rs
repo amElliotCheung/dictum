@@ -26,7 +26,7 @@ fn task(client: &Project, title: &str, kind: &str) -> Value {
 }
 
 fn context(client: &Project, task: &Value) -> Value {
-    call(client, "get_task_context", json!({"task_id": task["id"]}))
+    call(client, "get_context", json!({"task_id": task["id"]}))
 }
 
 fn comment(

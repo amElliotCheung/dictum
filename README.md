@@ -76,14 +76,14 @@ tool arguments, not shell commands. Substitute the IDs returned by earlier calls
    }
    ```
 
-4. Call `get_task_context`, replacing `1` with the returned task ID:
+4. Call `get_context`, replacing `1` with the returned task ID:
 
    ```json
    {"project_id": "PROJECT_ID", "task_id": 1}
    ```
 
-   This returns the full task brief, linked context sources, project sources with
-   `context_policy: "always"`, current decisions, and dependency state. Inline
+   This returns the full project, task brief, linked context sources, project
+   sources with `context_policy: "always"`, current decisions, and dependency state. Inline
    sources are returned in full. Use `get_source` with `project_id` and `source_id`
    to read an individual source. Keep always-included sources small and link only
    context needed for the task. `list_sources` returns descriptors; listing a
@@ -107,6 +107,49 @@ directly with `update_task` when work changes.
 Mutable project, task and source updates require the latest `expected_revision`. See
 [AGENTS.md](AGENTS.md) for all seventeen tools and their contracts, and
 [WORKFLOW.md](WORKFLOW.md) for the embedded agent workflow.
+
+## Read project or task context
+
+Call `get_context` with only `project_id` to orient yourself before selecting or
+creating a task:
+
+```json
+{"project_id": "PROJECT_ID"}
+```
+
+The result contains the full `project`, all `always` Sources, and all current
+decisions in ascending ID order with their full statement, rationale, and alternatives. `task`,
+`parent_task`, and `dependency_state` are null; `recent_comments` is empty and
+both `latest_execution` and `latest_successful_execution` are null.
+
+Add `task_id` to include the full task and parent brief, dependency state,
+deduplicated task-linked plus always Sources, and bounded comments and execution
+evidence. Both modes read one consistent database snapshot. Inline Sources remain
+full and untruncated; context decisions are complete and unpaginated. Use
+`get_context` in place of the former `get_task_context` tool.
+
+## Browse sources and decisions
+
+`list_sources` returns compact descriptors and `list_decisions` returns full
+decision records. Both accept `page_size` (default 20, range 1–100) and optional
+`before_id`, and return newest IDs first with `next_before_id` for an older page:
+
+```json
+{"project_id": "PROJECT_ID", "page_size": 5}
+```
+
+Pass a non-null `next_before_id` as `before_id` on the next call, retaining the
+same filters. `before_id` must be a positive ID of an existing Source or decision,
+respectively, in the same project. Cursor validation is independent of filters;
+the cursor record need not match them. `next_before_id` is null when no older
+matching record remains, even if the page is full.
+
+Source filters remain `task_id`, `representation`, `action_due`, and `query`;
+task filtering covers explicit context links. Decision listings default to
+current choices; `include_superseded: true` includes their history. Later appends
+have higher IDs and do not appear on older pages. Edits, action freshness, and
+decision supersession can change data or filter membership between requests.
+Project discovery through `list_projects` remains unpaginated.
 
 ## Update a project description
 
@@ -140,7 +183,7 @@ changes. Facts describe current state; decisions record accepted choices and
 their rationale. An accepted decision alone does not establish that its intended
 state has been deployed.
 
-Keep the project description focused on purpose and scope. Every task-context
+Keep the project description focused on purpose and scope. Every context
 read includes always Sources in full, so reserve them for essential facts and
 keep longer supporting material in separate Sources fetched when relevant.
 
@@ -161,7 +204,7 @@ Call `record_decision` with the accepted statement and rationale. Optional
 Omitting `alternatives_rejected` or supplying null stores null; empty text is
 allowed. Decisions are immutable. Record a replacement with `supersedes_id` when
 an accepted choice changes; each decision retains its own alternatives.
-`list_decisions` and the current decisions in `get_task_context` return this field.
+`list_decisions` and the current decisions in `get_context` return this field.
 The dashboard shows an **Alternatives rejected** section when the field is
 non-null, in both project and task-context decision cards.
 
@@ -174,7 +217,7 @@ subtasks must explicitly set `kind: "recurring"`; the default remains `one_time`
 
 Put shared goals, constraints, and approach in the parent, and specific work and
 acceptance criteria in the child. The two briefs complement each other without
-repeating shared content. `get_task_context` returns the subtask and its complete
+repeating shared content. `get_context` with a subtask ID returns it and its complete
 `parent_task` together, without recursively expanding parent sources or history.
 
 In `update_task`, an omitted parent preserves it, null detaches it, and an ID
@@ -258,7 +301,9 @@ DICTUM_DATABASE=/absolute/path/to/shared/dictum.sqlite3 \
 Open <http://127.0.0.1:3000>, select a project, and switch between the One-time
 and Recurring task tabs. Choose a task to see its brief, dependencies, and
 versioned conversation. Expand a subtask row to load its details; collapsed
-children do not fetch full context. Project decisions and all project sources appear below the task board; expand a source to read inline Markdown or external metadata.
+children do not fetch full context. Project decisions and sources appear below
+the task board, newest first, with **Load more** for older pages. Expand a source
+to read inline Markdown or external metadata.
 The dashboard polls task records and comments independently. Post comments,
 replies, and optional execution reports from task details; each entry displays its
 target version and whether that version is current. Drafts retain the viewed
@@ -268,6 +313,11 @@ and prints the URL to stderr. Comment POSTs require an allowed Host and Origin,
 JSON within the 64 KiB request limit, and a per-dashboard request token. The
 browser obtains that token from `/api/request-token`; it changes on restart.
 Other writes are rejected.
+
+HTTP clients can read project-only context at `GET /api/projects/:id/context`
+and task context at `GET /api/projects/:id/tasks/:task_id`. The project
+`/decisions` and `/sources` routes accept `page_size` and `before_id` query
+parameters and return `next_before_id`, following the MCP pagination contract.
 
 The committed frontend bundle is embedded in the binary. Normal builds and use
 need no Node.js, frontend server, external fonts, or remote services.

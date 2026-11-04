@@ -60,7 +60,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Discover projects by optional name/description query. Returns IDs, names, descriptions, revisions, and UTC creation/update times. Use the latest revision as expected_revision for update_project. Resolve ambiguity or no match with the human; never implicitly choose or create a project. Once resolved, pass its project_id to list_tasks with ready_to_start=true, then get_task_context for the chosen task. Project selection is scope, not execution authorization or a work claim.",
+        description = "Discover projects by optional name/description query. Returns IDs, names, descriptions, revisions, and UTC creation/update times. Use the latest revision as expected_revision for update_project. Resolve ambiguity or no match with the human; never implicitly choose or create a project. Once resolved, pass its project_id to list_tasks with ready_to_start=true, then get_context for the chosen task. Project selection is scope, not execution authorization or a work claim.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_projects(
@@ -92,7 +92,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Create a task in an existing project_id with its brief and context links atomically. Optional parent_task_id attaches it beneath a same-kind root in this project; subtasks cannot have children. Put shared goals, constraints and overall approach in the parent; write child-specific work, design and acceptance criteria in the subtask. Avoid duplicating shared text and read both briefs together through get_task_context. Parentage is organizational: lifecycle, priority, context sources and dependencies stay explicit on each task. Priority defaults to medium. Immutable kind defaults to one_time (todo); recurring defaults to active and reuses one task across executions. Optional nonblank trigger_event is recurring-only external-event metadata, not a schedule or authorization. Dependencies must target one_time tasks. Creation starts task revision 1 and does not execute work.",
+        description = "Create a task in an existing project_id with its brief and context links atomically. Optional parent_task_id attaches it beneath a same-kind root in this project; subtasks cannot have children. Put shared goals, constraints and overall approach in the parent; write child-specific work, design and acceptance criteria in the subtask. Avoid duplicating shared text and read both briefs together through get_context. Parentage is organizational: lifecycle, priority, context sources and dependencies stay explicit on each task. Priority defaults to medium. Immutable kind defaults to one_time (todo); recurring defaults to active and reuses one task across executions. Optional nonblank trigger_event is recurring-only external-event metadata, not a schedule or authorization. Dependencies must target one_time tasks. Creation starts task revision 1 and does not execute work.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -107,7 +107,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id. Discover compact task summaries by kind, exact priority, status, readiness, exact trigger_event label, or text query. Omit parent_task_id for all tasks, pass null for roots, or an existing task ID for its direct children; these filters combine with the others. Summaries retain their compact shape; get_task_context exposes parentage. Results sort high, medium, low priority, then ascending ID. ready_to_start means one_time todo with all explicit before-start dependencies done; parentage and completion gates do not block starting. Recurring tasks are never ready_to_start: discover with kind=recurring,status=active. Active is eligibility metadata, not a schedule or authorization.",
+        description = "Requires an existing project_id. Discover compact task summaries by kind, exact priority, status, readiness, exact trigger_event label, or text query. Omit parent_task_id for all tasks, pass null for roots, or an existing task ID for its direct children; these filters combine with the others. Summaries retain their compact shape; get_context exposes parentage. Results sort high, medium, low priority, then ascending ID. ready_to_start means one_time todo with all explicit before-start dependencies done; parentage and completion gates do not block starting. Recurring tasks are never ready_to_start: discover with kind=recurring,status=active. Active is eligibility metadata, not a schedule or authorization.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_tasks(
@@ -123,14 +123,14 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Load the full task brief, parent_task when present, progress, dependency state, current decisions and deduplicated task-linked plus always sources in an existing project_id. Read parent and child briefs together; parent sources, dependencies and comments are not inherited. Inline documents are full and untruncated, so keep always sources short and context links relevant. Start with this bounded comment context; fetch older history or output documents only to resolve a concrete need. recent_comments holds the ten newest comments; latest_execution and latest_successful_execution (success/no_change) may repeat the same IDs: treat each as one entry. Compare task_revision with task.revision; historical brief snapshots are not retained and historical evidence may not apply to current work. Use small list_task_comments pages or get_task_comment for older entries/replies, and get_source for outputs. For comment polling use list_task_comments, not repeated full context loads; comments change without task revisions. Reading never records work or advances freshness.",
+        description = "Read one consistent project context using an existing project_id. Returns the full project, all current decisions and always sources. Optional task_id adds its full brief, parent_task, progress, dependency state, explicit context sources and bounded comment history. Without a task, task/parent/dependency_state and latest execution fields are null and recent_comments is empty. Read parent and child briefs together; parent sources, dependencies and comments are not inherited. Inline sources are full and untruncated; keep always sources short and task links relevant. recent_comments holds the ten newest comments; latest_execution and latest_successful_execution may repeat their IDs. Historical task briefs are not retained; compare comment task_revision with the current task and assess whether evidence applies. Fetch older comments/replies or output Sources only as needed with list_task_comments, get_task_comment or get_source. Poll comments independently of task revisions. Reading never records work or advances freshness.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
-    async fn get_task_context(
+    async fn get_context(
         &self,
-        Parameters(input): Parameters<GetTaskContext>,
-    ) -> Result<Json<TaskContext>, String> {
-        self.database(move |store| store.get_task_context(&input.project_id, input.task_id))
+        Parameters(input): Parameters<GetContext>,
+    ) -> Result<Json<Context>, String> {
+        self.database(move |store| store.get_context(&input.project_id, input.task_id))
             .await
     }
 
@@ -205,19 +205,14 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Discover compact source descriptors without document bodies. Filter by task context links, inline/external representation, action_due, or name/description query. Task filtering covers explicit context links; execution output associations are available through task comments. Expand relevant sources with get_source. Manual actions are never automatically due.",
+        description = "Discover source descriptors newest ID first within an existing project_id, without document bodies. page_size defaults to 20 (1..100); pass next_before_id as before_id for older pages. The cursor must identify a source in this project regardless of filters. Filter by explicit task context links, representation, action_due or query; outputs are associated with task comments. Filters apply before the page limit. Later appends do not enter older ID pages; source edits or time-dependent due state can change filter membership. Expand needed content with get_source. Manual actions are never automatically due.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_sources(
         &self,
         Parameters(input): Parameters<ListSources>,
     ) -> Result<Json<SourceList>, String> {
-        self.database(move |store| {
-            Ok(SourceList {
-                sources: store.list_sources(input)?,
-            })
-        })
-        .await
+        self.database(move |store| store.list_sources(input)).await
     }
 
     #[tool(
@@ -280,19 +275,15 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Read accepted project decisions, including each decision's nullable alternatives_rejected Markdown. By default returns only current decisions; include_superseded also returns retained history with current flags, supersedes links and each predecessor's original alternatives_rejected value.",
+        description = "Read full accepted decisions newest ID first in an existing project_id. page_size defaults to 20 (1..100); pass next_before_id as before_id for older pages. The cursor must identify a decision in this project, even if excluded by the current/history filter. Current decisions are the default; include_superseded also returns history with supersession links and each record's rationale and nullable alternatives_rejected. Filtering applies before the page limit. Later appends do not enter older ID pages, but supersession can change current membership. get_context always includes all current decisions, independently of pagination.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_decisions(
         &self,
         Parameters(input): Parameters<ListDecisions>,
     ) -> Result<Json<DecisionList>, String> {
-        self.database(move |store| {
-            Ok(DecisionList {
-                decisions: store.list_decisions(input)?,
-            })
-        })
-        .await
+        self.database(move |store| store.list_decisions(input))
+            .await
     }
 }
 

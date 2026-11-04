@@ -110,9 +110,9 @@ async fn workflow(discover: bool) -> Result<()> {
             "create_project",
             "create_source",
             "create_task",
+            "get_context",
             "get_source",
             "get_task_comment",
-            "get_task_context",
             "list_decisions",
             "list_projects",
             "list_sources",
@@ -152,6 +152,17 @@ async fn workflow(discover: bool) -> Result<()> {
             );
         }
     }
+    let context_tool = tools
+        .iter()
+        .find(|tool| tool.name == "get_context")
+        .unwrap();
+    let context_required = context_tool.input_schema["required"].as_array().unwrap();
+    assert_eq!(context_required, &vec![json!("project_id")]);
+    assert!(
+        context_tool.input_schema["properties"]
+            .get("task_id")
+            .is_some()
+    );
     let project_update = tools
         .iter()
         .find(|tool| tool.name == "update_project")
@@ -546,7 +557,7 @@ async fn workflow(discover: bool) -> Result<()> {
     let context = scoped_call(
         &client,
         &project_id,
-        "get_task_context",
+        "get_context",
         json!({"task_id": task["id"]}),
     )
     .await?;
@@ -644,7 +655,7 @@ async fn workflow(discover: bool) -> Result<()> {
     let persisted = scoped_call(
         &restarted,
         &project_id,
-        "get_task_context",
+        "get_context",
         json!({"task_id": task["id"]}),
     )
     .await?;

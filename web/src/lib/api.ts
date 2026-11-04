@@ -1,4 +1,5 @@
 import type {
+  Context,
   DecisionList,
   ProjectList,
   RecordTaskComment,
@@ -63,11 +64,18 @@ export const api = {
       : `?parent_task_id=${parentTaskId === null ? 'null' : parentTaskId}`;
     return getJson<TaskList>(`${projectPath(projectId)}/tasks${query}`);
   },
-  decisions(projectId: string): Promise<DecisionList> {
-    return getJson<DecisionList>(`${projectPath(projectId)}/decisions`);
+  decisions(projectId: string, beforeId?: number): Promise<DecisionList> {
+    const params = new URLSearchParams({ page_size: '20' });
+    if (beforeId !== undefined) params.set('before_id', String(beforeId));
+    return getJson<DecisionList>(`${projectPath(projectId)}/decisions?${params.toString()}`);
   },
-  sources(projectId: string): Promise<SourceList> {
-    return getJson<SourceList>(`${projectPath(projectId)}/sources`);
+  sources(projectId: string, beforeId?: number): Promise<SourceList> {
+    const params = new URLSearchParams({ page_size: '20' });
+    if (beforeId !== undefined) params.set('before_id', String(beforeId));
+    return getJson<SourceList>(`${projectPath(projectId)}/sources?${params.toString()}`);
+  },
+  projectContext(projectId: string): Promise<Context> {
+    return getJson<Context>(`${projectPath(projectId)}/context`);
   },
   context(projectId: string, taskId: number): Promise<TaskContext> {
     return getJson<TaskContext>(

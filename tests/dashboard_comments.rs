@@ -181,7 +181,7 @@ fn dashboard_comments_keep_versions_outputs_replies_and_history_across_restart()
     assert!(note["execution_result"].is_null());
     assert_eq!(
         client
-            .get_task_context(parent["id"].as_i64().unwrap())
+            .get_context(parent["id"].as_i64().unwrap())
             .unwrap()
             .task
             .revision,
@@ -424,9 +424,7 @@ fn dashboard_comment_writes_reject_invalid_scopes_origins_tokens_and_bodies_atom
         400
     );
     assert_eq!(dashboard.get(&path).1["comments"], json!([]));
-    let current = client
-        .get_task_context(target["id"].as_i64().unwrap())
-        .unwrap();
+    let current = client.get_context(target["id"].as_i64().unwrap()).unwrap();
     assert_eq!(current.task.revision, 1);
     assert_eq!(
         current.task.updated_at,

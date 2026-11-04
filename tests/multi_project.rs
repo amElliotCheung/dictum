@@ -183,10 +183,10 @@ fn project_description_edits_preserve_identity_context_and_restart_state() {
         "record_decision",
         json!({"statement": "Preserve project history", "rationale": "Description edits retain context"}),
     );
-    let context = scoped(
+    let mut context = scoped(
         &client,
         scope,
-        "get_task_context",
+        "get_context",
         json!({"task_id": task["id"]}),
     );
     let before = Utc::now();
@@ -205,11 +205,12 @@ fn project_description_edits_preserve_identity_context_and_restart_state() {
     let edited_at = DateTime::parse_from_rfc3339(updated["updated_at"].as_str().unwrap()).unwrap();
     assert_eq!(edited_at.offset().local_minus_utc(), 0);
     assert!(edited_at >= before && edited_at <= after);
+    context["project"] = updated.clone();
     assert_eq!(
         scoped(
             &client,
             scope,
-            "get_task_context",
+            "get_context",
             json!({"task_id": task["id"]})
         ),
         context
@@ -250,6 +251,7 @@ fn project_description_edits_preserve_identity_context_and_restart_state() {
     let listed = call(&client, "list_projects", json!({}));
     assert!(listed["projects"].as_array().unwrap().contains(&other));
     assert!(listed["projects"].as_array().unwrap().contains(&same_text));
+    context["project"] = same_text;
     drop(client);
     let restarted = Project::open(&database).unwrap();
     assert_eq!(call(&restarted, "list_projects", json!({})), listed);
@@ -257,7 +259,7 @@ fn project_description_edits_preserve_identity_context_and_restart_state() {
         scoped(
             &restarted,
             scope,
-            "get_task_context",
+            "get_context",
             json!({"task_id": task["id"]})
         ),
         context
@@ -381,7 +383,7 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
         ),
         ("create_task", brief()),
         ("list_tasks", json!({})),
-        ("get_task_context", json!({"task_id": task["id"]})),
+        ("get_context", json!({"task_id": task["id"]})),
         ("list_task_comments", json!({"task_id": task["id"]})),
         (
             "get_task_comment",
@@ -431,7 +433,7 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
         }
     }
     for (name, mut input) in [
-        ("get_task_context", json!({"task_id": 999_999})),
+        ("get_context", json!({"task_id": 999_999})),
         ("list_task_comments", json!({"task_id": 999_999})),
         (
             "record_task_comment",
@@ -517,7 +519,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
         (&b, a_task, a_external, a_decision),
     ] {
         for (name, mut input) in [
-            ("get_task_context", json!({"task_id": foreign_task["id"]})),
+            ("get_context", json!({"task_id": foreign_task["id"]})),
             ("list_task_comments", json!({"task_id": foreign_task["id"]})),
             (
                 "record_task_comment",
@@ -569,7 +571,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
         let context = scoped(
             &second,
             scope,
-            "get_task_context",
+            "get_context",
             json!({"task_id": task["id"]}),
         );
         assert_eq!(context["task"]["project_id"], *scope);
@@ -707,7 +709,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
         scoped(
             &second,
             &a,
-            "get_task_context",
+            "get_context",
             json!({"task_id": a_dependency["id"]})
         )["task"]["project_id"],
         a
@@ -736,7 +738,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
         scoped(
             &restarted,
             &b,
-            "get_task_context",
+            "get_context",
             json!({"task_id": b_task["id"]})
         )["task"],
         *b_task

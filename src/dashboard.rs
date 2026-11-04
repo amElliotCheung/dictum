@@ -206,27 +206,39 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
         }
         ["api", "projects", project_id, "decisions"] => {
             let project_id = (*project_id).to_string();
+            let (page_size, before_id) = match pagination(query_string) {
+                Ok(page) => page,
+                Err(response) => return response,
+            };
             api_response(store, move |store| {
-                Ok(DecisionList {
-                    decisions: store.list_decisions(ListDecisions {
-                        project_id,
-                        include_superseded: false,
-                    })?,
+                store.list_decisions(ListDecisions {
+                    project_id,
+                    page_size,
+                    before_id,
+                    ..ListDecisions::default()
                 })
             })
             .await
         }
         ["api", "projects", project_id, "sources"] => {
             let project_id = (*project_id).to_string();
+            let (page_size, before_id) = match pagination(query_string) {
+                Ok(page) => page,
+                Err(response) => return response,
+            };
             api_response(store, move |store| {
-                Ok(SourceList {
-                    sources: store.list_sources(ListSources {
-                        project_id,
-                        ..ListSources::default()
-                    })?,
+                store.list_sources(ListSources {
+                    project_id,
+                    page_size,
+                    before_id,
+                    ..ListSources::default()
                 })
             })
             .await
+        }
+        ["api", "projects", project_id, "context"] => {
+            let project_id = (*project_id).to_string();
+            api_response(store, move |store| store.get_context(&project_id, None)).await
         }
         ["api", "projects", project_id, "tasks", task_id] => {
             let project_id = (*project_id).to_string();
@@ -235,7 +247,7 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
                 Err(response) => return response,
             };
             api_response(store, move |store| {
-                store.get_task_context(&project_id, task_id)
+                store.get_context(&project_id, Some(task_id))
             })
             .await
         }
@@ -641,6 +653,13 @@ fn parse_id(name: &str, value: &str) -> Result<i64, Response> {
             &format!("{name} must be a positive integer"),
         )),
     }
+}
+
+fn pagination(query: &str) -> Result<(Option<i64>, Option<i64>), Response> {
+    Ok((
+        parse_query_i64(query, "page_size")?,
+        parse_query_i64(query, "before_id")?,
+    ))
 }
 
 fn parse_query_i64(query: &str, name: &str) -> Result<Option<i64>, Response> {

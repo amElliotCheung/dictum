@@ -13,8 +13,22 @@ use rmcp::{
     service::RunningService,
     transport::TokioChildProcess,
 };
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
+
+/// Task-selected response: the real MCP call must return non-null task and gates.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SelectedTaskContext {
+    pub project: dictum_mcp::model::Project,
+    pub task: Task,
+    pub parent_task: Option<Task>,
+    pub dependency_state: DependencyState,
+    pub current_decisions: Vec<Decision>,
+    pub sources: Vec<Source>,
+    pub recent_comments: Vec<TaskComment>,
+    pub latest_execution: Option<TaskComment>,
+    pub latest_successful_execution: Option<TaskComment>,
+}
 
 pub struct Project {
     runtime: tokio::runtime::Runtime,
@@ -108,8 +122,8 @@ impl Project {
     pub fn update_task(&self, input: UpdateTask) -> Result<Task> {
         self.call("update_task", input)
     }
-    pub fn get_task_context(&self, task_id: i64) -> Result<TaskContext> {
-        self.call("get_task_context", json!({"task_id": task_id}))
+    pub fn get_context(&self, task_id: i64) -> Result<SelectedTaskContext> {
+        self.call("get_context", json!({"task_id": task_id}))
     }
     pub fn list_tasks(&self, input: ListTasks) -> Result<Vec<TaskSummary>> {
         Ok(self.call::<TaskList>("list_tasks", input)?.tasks)

@@ -125,6 +125,7 @@ export interface SourceDescriptor {
 
 export interface SourceList {
   sources: SourceDescriptor[];
+  next_before_id: number | null;
 }
 
 export interface Decision {
@@ -140,6 +141,7 @@ export interface Decision {
 
 export interface DecisionList {
   decisions: Decision[];
+  next_before_id: number | null;
 }
 
 export type Outcome = 'success' | 'no_change' | 'failure';
@@ -172,13 +174,19 @@ export interface RecordTaskComment {
   execution_result?: ExecutionResult | null;
 }
 
-export interface TaskContext {
-  task: Task;
+export interface Context {
+  project: Project;
+  task: Task | null;
   parent_task: Task | null;
-  dependency_state: DependencyState;
+  dependency_state: DependencyState | null;
   current_decisions: Decision[];
   sources: Source[];
   recent_comments: TaskComment[];
   latest_execution: TaskComment | null;
   latest_successful_execution: TaskComment | null;
+}
+
+export interface TaskContext extends Context {
+  task: Task;
+  dependency_state: DependencyState;
 }

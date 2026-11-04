@@ -90,12 +90,15 @@ function CommentComposer({ task, textareaRef }: { task: Task; textareaRef: RefOb
   const key = draftKey(task.project_id, task.id);
   const draft = useCommentDraft(key);
   const queryClient = useQueryClient();
-  const sourcesQuery = useQuery({
+  const sourcesQuery = useInfiniteQuery({
     queryKey: queryKeys.projectSources(task.project_id),
-    queryFn: () => api.sources(task.project_id),
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam }) => api.sources(task.project_id, pageParam),
+    getNextPageParam: (page) => page.next_before_id ?? undefined,
     enabled: draft.outcome !== '',
     refetchInterval: draft.outcome !== '' ? 5_000 : false,
   });
+  const sources = [...new Map(sourcesQuery.data?.pages.flatMap((page) => page.sources).map((source) => [source.id, source]) ?? []).values()];
   const edit = (change: Partial<CommentDraft>) => {
     updateDraft(key, { ...change, taskRevision: draft.taskRevision ?? task.revision, error: null, notice: null });
   };
@@ -183,14 +186,19 @@ function CommentComposer({ task, textareaRef }: { task: Task; textareaRef: RefOb
           ) : null}
           {sourcesQuery.isPending ? <p className="mt-1 text-xs text-muted-foreground">Loading sources…</p> : null}
           <div className="mt-1 max-h-40 space-y-2 overflow-y-auto">
-            {(sourcesQuery.data?.sources ?? []).map((source) => (
+            {sources.map((source) => (
               <label key={source.id} className="flex items-start gap-2 text-xs">
                 <input type="checkbox" checked={draft.outputSourceIds.includes(source.id)} onChange={(event) => edit({ outputSourceIds: event.target.checked ? [...draft.outputSourceIds, source.id] : draft.outputSourceIds.filter((id) => id !== source.id) })} className="mt-0.5" />
                 <span>#{source.id} · {source.name}</span>
               </label>
             ))}
           </div>
-          {!sourcesQuery.isPending && sourcesQuery.data?.sources.length === 0 ? <p className="mt-1 text-xs text-muted-foreground">No project sources available.</p> : null}
+          {!sourcesQuery.isPending && sources.length === 0 ? <p className="mt-1 text-xs text-muted-foreground">No project sources available.</p> : null}
+          {sourcesQuery.hasNextPage ? (
+            <Button variant="outline" size="sm" className="mt-2" disabled={sourcesQuery.isFetching} onClick={() => { void sourcesQuery.fetchNextPage(); }}>
+              {sourcesQuery.isFetchingNextPage ? 'Loading…' : 'Load more output sources'}
+            </Button>
+          ) : null}
           {draft.outputSourceIds.length ? <p className="mt-2 text-xs text-muted-foreground">Selected: {draft.outputSourceIds.map((id) => `#${id}`).join(', ')}</p> : null}
         </fieldset>
       ) : null}
