@@ -133,6 +133,22 @@ async fn workflow(discover: bool) -> Result<()> {
             tool.name
         );
         let required = tool.input_schema.get("required").and_then(Value::as_array);
+        if matches!(
+            tool.name.as_ref(),
+            "create_task" | "create_source" | "record_decision"
+        ) {
+            assert!(
+                required.unwrap().contains(&json!("topics")),
+                "missing required topics: {}",
+                tool.name
+            );
+        }
+        if matches!(
+            tool.name.as_ref(),
+            "list_tasks" | "list_sources" | "list_decisions"
+        ) {
+            assert!(tool.input_schema["properties"].get("topic").is_some());
+        }
         if matches!(tool.name.as_ref(), "create_project" | "list_projects") {
             assert!(
                 !tool.input_schema["properties"]
@@ -389,7 +405,7 @@ async fn workflow(discover: bool) -> Result<()> {
     let project_id = project["id"].as_str().unwrap().to_owned();
     let connection = rusqlite::Connection::open(&database)?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(version, 13);
+    assert_eq!(version, 14);
     let tables = connection
         .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")?
         .query_map([], |row| row.get::<_, String>(0))?
@@ -397,14 +413,18 @@ async fn workflow(discover: bool) -> Result<()> {
     assert_eq!(
         tables,
         [
+            "decision_topics",
             "decisions",
             "projects",
+            "source_topics",
             "sources",
             "task_comment_sources",
             "task_comments",
             "task_context_sources",
             "task_dependencies",
+            "task_topics",
             "tasks",
+            "topics",
         ]
     );
     let result_columns = connection
@@ -448,13 +468,13 @@ async fn workflow(discover: bool) -> Result<()> {
         &client,
         &project_id,
         "create_source",
-        json!({
+        json!({"topics": ["Project workflow"],
             "name": "Working conventions", "description": "Read for every task",
             "content": full_content, "context_policy": "always"
         }),
     )
     .await?;
-    let external = scoped_call(&client, &project_id, "create_source", json!({
+    let external = scoped_call(&client, &project_id, "create_source", json!({"topics": ["Project workflow"],
         "name": "Team channel", "description": "Recent project decisions and blockers",
         "locator": "slack://workspace/project-channel",
         "action": {"instruction": "Read project-relevant messages since checkpoint", "trigger": {"kind": "interval", "every_minutes": 1440}}
@@ -465,7 +485,7 @@ async fn workflow(discover: bool) -> Result<()> {
         &client,
         &project_id,
         "record_decision",
-        json!({
+        json!({"topics": ["Project workflow"],
             "statement": "Explicit project IDs scope durable records",
             "rationale": "Share one local database safely",
             "alternatives_rejected": "- **Implicit selection**: concurrent clients could use the wrong project."
@@ -492,7 +512,7 @@ async fn workflow(discover: bool) -> Result<()> {
         .enumerate()
     {
         let expected = alternatives.clone().unwrap_or(Value::Null);
-        let mut input = json!({
+        let mut input = json!({"topics": ["Project workflow"],
             "statement": format!("Default variant {index}"),
             "rationale": "Do not invent rejected alternatives."
         });
@@ -518,7 +538,7 @@ async fn workflow(discover: bool) -> Result<()> {
         &client,
         &project_id,
         "create_task",
-        json!({
+        json!({"topics": ["Project workflow"],
             "title": "Verify implementation", "problem_or_goal": "Prove the feature works",
             "design": "Implement and run the end-to-end scenario against the final change",
             "acceptance_criteria": ["Record code revision, command, and outcome"]
@@ -529,7 +549,7 @@ async fn workflow(discover: bool) -> Result<()> {
         &client,
         &project_id,
         "create_task",
-        json!({
+        json!({"topics": ["Project workflow"],
             "title": "Implement feature", "problem_or_goal": "Build a working feature",
             "design": "Use conventions and channel context; write a result document",
             "acceptance_criteria": ["Behavior matches the design", "Verification task done"],
@@ -625,7 +645,7 @@ async fn workflow(discover: bool) -> Result<()> {
     assert_eq!(descriptors["sources"].as_array().unwrap().len(), 1);
     assert!(descriptors["sources"][0].get("content").is_none());
 
-    let output = scoped_call(&client, &project_id, "create_source", json!({
+    let output = scoped_call(&client, &project_id, "create_source", json!({"topics": ["Project workflow"],
         "name": "Verification report", "description": "Result and evidence for implemented feature", "content": "Revision demo-123; command cargo test; all passed."
     })).await?;
     let verification_result = scoped_call(&client, &project_id, "record_task_comment", json!({"task_id": verification["id"], "task_revision": verification["revision"], "body": "Tested demo-123 with cargo test; all passed (test fixture evidence)", "execution_result": {"outcome": "success", "output_source_ids": [output["id"]]}})).await?;

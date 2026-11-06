@@ -15,6 +15,7 @@ import { Input } from './components/ui/input';
 interface Selection {
   projectId: string | null;
   taskId: number | null;
+  topic: string | null;
 }
 
 function readSelection(): Selection {
@@ -31,6 +32,7 @@ function readSelection(): Selection {
     projectId:
       rawProject !== null && rawProject.length > 0 ? rawProject : null,
     taskId,
+    topic: params.get('topic') || null,
   };
 }
 
@@ -48,7 +50,12 @@ function useSelection() {
       projectId: string | null,
       taskId: number | null,
       replace = false,
+      topic?: string | null,
     ) => {
+      const current = readSelection();
+      const nextTopic = topic === undefined && projectId === current.projectId
+        ? current.topic
+        : topic ?? null;
       const url = new URL(window.location.href);
       if (projectId) {
         url.searchParams.set('project', projectId);
@@ -60,12 +67,17 @@ function useSelection() {
       } else {
         url.searchParams.delete('task');
       }
+      if (nextTopic) {
+        url.searchParams.set('topic', nextTopic);
+      } else {
+        url.searchParams.delete('topic');
+      }
       if (replace) {
         window.history.replaceState({}, '', url);
       } else {
         window.history.pushState({}, '', url);
       }
-      setSelection({ projectId, taskId });
+      setSelection({ projectId, taskId, topic: nextTopic });
     },
     [],
   );
@@ -75,7 +87,7 @@ function useSelection() {
 
 export default function App() {
   const { selection, navigate } = useSelection();
-  const { projectId, taskId } = selection;
+  const { projectId, taskId, topic } = selection;
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [activeKind, setActiveKind] = useState<TaskKind>('one_time');
@@ -88,12 +100,12 @@ export default function App() {
   });
 
   const tasksQuery = useQuery({
-    queryKey: queryKeys.tasks(projectId),
+    queryKey: queryKeys.tasks(projectId, topic),
     queryFn: () => {
       if (!projectId) {
         throw new Error('A project must be selected');
       }
-      return api.tasks(projectId);
+      return api.tasks(projectId, undefined, topic);
     },
     enabled: projectId !== null,
     refetchInterval: 5_000,
@@ -202,7 +214,7 @@ export default function App() {
               navigate(event.target.value || null, null)
             }
             disabled={projects.length === 0}
-            className="h-9 min-w-0 max-w-full rounded-md border border-input bg-card px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-[20rem]"
+            className="h-9 min-w-0 max-w-full rounded-md border border-input bg-card px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 sm:max-w-[17rem]"
           >
             <option value="">Choose project…</option>
             {projects.map((candidate) => (
@@ -211,6 +223,26 @@ export default function App() {
               </option>
             ))}
           </select>
+
+          {projectId ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <label htmlFor="topic-select" className="text-sm text-muted-foreground">Topic</label>
+              <select
+                id="topic-select"
+                value={topic ?? ''}
+                onChange={(event) => navigate(projectId, null, false, event.target.value || null)}
+                className="h-9 min-w-0 max-w-56 rounded-md border border-input bg-card px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="">All topics</option>
+                {topic && !project?.topics.some((candidate) => candidate.name === topic) ? (
+                  <option value={topic}>{topic}</option>
+                ) : null}
+                {project?.topics.map((candidate) => (
+                  <option key={candidate.id} value={candidate.name}>{candidate.name}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
 
           {projectId ? (
             <div className="relative">
@@ -227,7 +259,7 @@ export default function App() {
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Search title or ID"
-                className="w-52 pl-8"
+                className="w-44 pl-8"
               />
             </div>
           ) : null}
@@ -323,7 +355,7 @@ export default function App() {
               onSelectTask={openTask}
               onClearSearch={() => setSearch('')}
             />
-            <ProjectSections projectId={projectId} />
+            <ProjectSections projectId={projectId} topic={topic} />
           </div>
         )}
       </main>

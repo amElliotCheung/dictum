@@ -382,6 +382,9 @@ function TaskCard({
       <span className="mt-2 block text-sm font-medium leading-5">
         {task.title}
       </span>
+      <span className="mt-2 flex flex-wrap gap-1" aria-label="Topics">
+        {task.topics.map((topic) => <Badge key={topic.id} variant="secondary">{topic.name}</Badge>)}
+      </span>
       {task.progress ? (
         <span className="mt-1 line-clamp-2 block text-xs text-muted-foreground">
           {task.progress}

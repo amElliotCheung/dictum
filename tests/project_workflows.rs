@@ -21,7 +21,7 @@ fn input<T: DeserializeOwned>(mut value: Value) -> T {
 }
 
 fn task_input(title: &str) -> Value {
-    json!({
+    json!({"topics": ["Project workflow"],
         "title": title,
         "problem_or_goal": "A new agent needs a durable execution brief.",
         "design": "Read the linked context, implement the change, and record verification.",
@@ -55,7 +55,7 @@ fn complete(store: &Project, task: &Task) -> Task {
 
 fn inline(store: &Project, name: &str, content: &str, policy: &str) -> Source {
     store
-        .create_source(input(json!({
+        .create_source(input(json!({"topics": ["Project workflow"],
             "name": name,
             "description": "Project context and when to use it.",
             "content": content,
@@ -66,7 +66,7 @@ fn inline(store: &Project, name: &str, content: &str, policy: &str) -> Source {
 
 fn external(store: &Project, name: &str) -> Source {
     store
-        .create_source(input(json!({
+        .create_source(input(json!({"topics": ["Project workflow"],
             "name": name,
             "description": "Daily discussion of project requirements.",
             "locator": "slack://workspace/channel",
@@ -567,7 +567,7 @@ fn source_definition_changes_invalidate_state_but_metadata_edits_do_not() {
     let (_directory, store) = database();
     let source = external(&store, "Editable source");
     let source = success(&store, &source, 5);
-    let metadata = store.update_source(source_patch(&source, json!({
+    let metadata = store.update_source(source_patch(&source, json!({"topics": ["Project workflow"],
         "name": "Renamed source", "description": "A clearer explanation.", "context_policy": "always"
     }))).unwrap();
     assert_eq!(metadata.snapshot, source.snapshot);
@@ -618,8 +618,8 @@ fn source_definition_changes_invalidate_state_but_metadata_edits_do_not() {
 fn source_representation_switches_are_atomic_and_inline_edits_invalidate_actions() {
     let (_directory, store) = database();
     for definition in [
-        json!({"name": "Neither", "description": "Invalid"}),
-        json!({"name": "Both", "description": "Invalid", "content": "Text", "locator": "https://example.test/doc"}),
+        json!({"topics": ["Project workflow"], "name": "Neither", "description": "Invalid"}),
+        json!({"topics": ["Project workflow"], "name": "Both", "description": "Invalid", "content": "Text", "locator": "https://example.test/doc"}),
     ] {
         assert!(store.create_source(input(definition)).is_err());
     }
@@ -659,7 +659,7 @@ fn source_representation_switches_are_atomic_and_inline_edits_invalidate_actions
 #[test]
 fn manual_actions_are_unscheduled_and_interval_freshness_is_computed() {
     let (_directory, store) = database();
-    let manual = store.create_source(input(json!({
+    let manual = store.create_source(input(json!({"topics": ["Project workflow"],
         "name": "Manual reference", "description": "Inspect only when needed.", "locator": "https://example.test/doc",
         "action": {"instruction": "Inspect the current document.", "trigger": {"kind": "manual"}}
     }))).unwrap();
@@ -683,7 +683,7 @@ fn manual_actions_are_unscheduled_and_interval_freshness_is_computed() {
         vec![overdue.id]
     );
     for minutes in [0, -1, i64::MAX] {
-        assert!(store.create_source(input(json!({
+        assert!(store.create_source(input(json!({"topics": ["Project workflow"],
             "name": "Invalid interval", "description": "Must be positive.", "locator": "https://example.test/doc",
             "action": {"instruction": "Review document.", "trigger": {"kind": "interval", "every_minutes": minutes}}
         }))).is_err());
@@ -695,7 +695,7 @@ fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
     let (directory, store) = database();
     let before = Utc::now() - Duration::seconds(1);
     let first = store
-        .record_decision(input(json!({
+        .record_decision(input(json!({"topics": ["Project workflow"],
             "statement": "One project per SQLite database/server process.",
             "rationale": "Keep the local MVP simple.",
             "alternatives_rejected": "- Shared process: defer until project scoping exists."
@@ -711,7 +711,7 @@ fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
         Some("- Shared process: defer until project scoping exists.")
     );
     let second = store
-        .record_decision(input(json!({
+        .record_decision(input(json!({"topics": ["Project workflow"],
             "statement": "Keep one project per database, shared by local server processes.",
             "rationale": "Allow multiple local agents to share durable state.",
             "alternatives_rejected": "- Isolated databases: agents would lose shared context.",
@@ -726,8 +726,8 @@ fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
         second.alternatives_rejected
     );
     assert_ne!(first.alternatives_rejected, second.alternatives_rejected);
-    assert!(store.record_decision(input(json!({"statement": "Another replacement", "rationale": "Invalid branch.", "supersedes_id": first.id}))).is_err());
-    assert!(store.record_decision(input(json!({"statement": "Missing predecessor", "rationale": "Invalid reference.", "supersedes_id": 999_999}))).is_err());
+    assert!(store.record_decision(input(json!({"topics": ["Project workflow"], "statement": "Another replacement", "rationale": "Invalid branch.", "supersedes_id": first.id}))).is_err());
+    assert!(store.record_decision(input(json!({"topics": ["Project workflow"], "statement": "Missing predecessor", "rationale": "Invalid reference.", "supersedes_id": 999_999}))).is_err());
     let history = store
         .list_decisions(input(json!({"include_superseded": true})))
         .unwrap();
@@ -749,7 +749,7 @@ fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
         second.alternatives_rejected
     );
     let third = store
-        .record_decision(input(json!({
+        .record_decision(input(json!({"topics": ["Project workflow"],
             "statement": "Use the established scoped shared database.",
             "rationale": "No further alternatives were considered.",
             "supersedes_id": second.id

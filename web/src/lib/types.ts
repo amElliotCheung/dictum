@@ -1,4 +1,11 @@
+export interface Topic {
+  id: number;
+  project_id: string;
+  name: string;
+}
+
 export interface Project {
+  topics: Topic[];
   id: string;
   name: string;
   description: string;
@@ -29,6 +36,7 @@ export interface DependencyState {
 }
 
 export interface TaskSummary {
+  topics: Topic[];
   id: number;
   project_id: string;
   kind: TaskKind;
@@ -43,6 +51,7 @@ export interface TaskSummary {
 }
 
 export interface Task {
+  topics: Topic[];
   id: number;
   project_id: string;
   parent_task_id: number | null;
@@ -93,6 +102,7 @@ export interface SourceAttempt {
 }
 
 export interface Source {
+  topics: Topic[];
   id: number;
   project_id: string;
   name: string;
@@ -111,6 +121,7 @@ export interface Source {
 }
 
 export interface SourceDescriptor {
+  topics: Topic[];
   id: number;
   project_id: string;
   name: string;
@@ -129,6 +140,7 @@ export interface SourceList {
 }
 
 export interface Decision {
+  topics: Topic[];
   id: number;
   project_id: string;
   statement: string;

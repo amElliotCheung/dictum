@@ -10,7 +10,7 @@ fn call(client: &Project, name: &str, input: Value) -> Value {
 }
 
 fn brief(title: &str, kind: &str, parent: Option<i64>) -> Value {
-    json!({"title": title, "kind": kind, "parent_task_id": parent,
+    json!({"topics": ["Project workflow"], "title": title, "kind": kind, "parent_task_id": parent,
         "problem_or_goal": format!("Deliver {title}."), "design": "Keep each brief independently executable.",
         "acceptance_criteria": ["The selected task is independently verified."]})
 }
@@ -46,7 +46,7 @@ fn subtask_context_has_the_full_current_parent_without_inheriting_its_records() 
     let source = call(
         &client,
         "create_source",
-        json!({"name": "Parent only", "description": "Explicit parent context", "content": "Parent source contents"}),
+        json!({"topics": ["Project workflow"], "name": "Parent only", "description": "Explicit parent context", "content": "Parent source contents"}),
     );
     let mut input = brief("Root brief", "one_time", None);
     input["context_source_ids"] = json!([source["id"]]);

@@ -184,6 +184,10 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
         }
         ["api", "projects", project_id, "tasks"] => {
             let project_id = (*project_id).to_string();
+            let topic = match query_value(query_string, "topic") {
+                Ok(topic) => topic,
+                Err(()) => return Response::error(400, "invalid topic query"),
+            };
             let parent_task_id = match query_value(query_string, "parent_task_id") {
                 Ok(None) => None,
                 Ok(Some(value)) if value == "null" => Some(None),
@@ -197,6 +201,7 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
                 Ok(TaskList {
                     tasks: store.list_tasks(ListTasks {
                         project_id,
+                        topic,
                         parent_task_id,
                         ..ListTasks::default()
                     })?,
@@ -206,6 +211,10 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
         }
         ["api", "projects", project_id, "decisions"] => {
             let project_id = (*project_id).to_string();
+            let topic = match query_value(query_string, "topic") {
+                Ok(topic) => topic,
+                Err(()) => return Response::error(400, "invalid topic query"),
+            };
             let (page_size, before_id) = match pagination(query_string) {
                 Ok(page) => page,
                 Err(response) => return response,
@@ -213,6 +222,7 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
             api_response(store, move |store| {
                 store.list_decisions(ListDecisions {
                     project_id,
+                    topic,
                     page_size,
                     before_id,
                     ..ListDecisions::default()
@@ -222,6 +232,10 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
         }
         ["api", "projects", project_id, "sources"] => {
             let project_id = (*project_id).to_string();
+            let topic = match query_value(query_string, "topic") {
+                Ok(topic) => topic,
+                Err(()) => return Response::error(400, "invalid topic query"),
+            };
             let (page_size, before_id) = match pagination(query_string) {
                 Ok(page) => page,
                 Err(response) => return response,
@@ -229,6 +243,7 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
             api_response(store, move |store| {
                 store.list_sources(ListSources {
                     project_id,
+                    topic,
                     page_size,
                     before_id,
                     ..ListSources::default()

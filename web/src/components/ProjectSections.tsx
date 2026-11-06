@@ -7,20 +7,20 @@ import { Button } from './ui/button';
 import { DecisionCard } from './DecisionCard';
 import { SourceCard } from './SourceCard';
 
-export function ProjectSections({ projectId }: { projectId: string }) {
+export function ProjectSections({ projectId, topic }: { projectId: string; topic: string | null }) {
   return (
     <div className="space-y-8">
-      <DecisionsSection projectId={projectId} />
-      <SourcesSection projectId={projectId} />
+      <DecisionsSection projectId={projectId} topic={topic} />
+      <SourcesSection projectId={projectId} topic={topic} />
     </div>
   );
 }
 
-function DecisionsSection({ projectId }: { projectId: string }) {
+function DecisionsSection({ projectId, topic }: { projectId: string; topic: string | null }) {
   const query = useInfiniteQuery({
-    queryKey: queryKeys.decisions(projectId),
+    queryKey: queryKeys.decisions(projectId, topic),
     initialPageParam: undefined as number | undefined,
-    queryFn: ({ pageParam }) => api.decisions(projectId, pageParam),
+    queryFn: ({ pageParam }) => api.decisions(projectId, pageParam, topic),
     getNextPageParam: (page) => page.next_before_id ?? undefined,
     refetchInterval: 5_000,
   });
@@ -30,7 +30,7 @@ function DecisionsSection({ projectId }: { projectId: string }) {
     <ProjectSection
       id="decisions"
       title="Decisions"
-      hint="Current accepted choices for this project. Superseded choices remain in history and are not shown here."
+      hint={topic ? `Current accepted choices for “${topic}”.` : "Current accepted choices for this project. Superseded choices remain in history and are not shown here."}
       count={query.data ? `${decisions.length} current${query.hasNextPage ? ' loaded' : ''}` : null}
     >
       {query.isError && query.data ? (
@@ -54,7 +54,7 @@ function DecisionsSection({ projectId }: { projectId: string }) {
           }}
         />
       ) : decisions.length === 0 ? (
-        <SectionEmpty message="No current decisions for this project." />
+        <SectionEmpty message={topic ? `No current decisions for “${topic}”.` : "No current decisions for this project."} />
       ) : (
         <div className="space-y-2">
           {decisions.map((decision) => (
@@ -71,11 +71,11 @@ function DecisionsSection({ projectId }: { projectId: string }) {
   );
 }
 
-function SourcesSection({ projectId }: { projectId: string }) {
+function SourcesSection({ projectId, topic }: { projectId: string; topic: string | null }) {
   const query = useInfiniteQuery({
-    queryKey: queryKeys.projectSources(projectId),
+    queryKey: queryKeys.projectSources(projectId, topic),
     initialPageParam: undefined as number | undefined,
-    queryFn: ({ pageParam }) => api.sources(projectId, pageParam),
+    queryFn: ({ pageParam }) => api.sources(projectId, pageParam, topic),
     getNextPageParam: (page) => page.next_before_id ?? undefined,
     refetchInterval: 5_000,
   });
@@ -85,7 +85,7 @@ function SourcesSection({ projectId }: { projectId: string }) {
     <ProjectSection
       id="sources"
       title="Sources"
-      hint="Every source in this project, including sources not linked to a task. Expand one to read inline Markdown or external metadata; locators are never fetched automatically."
+      hint={topic ? `Sources for “${topic}”, including sources not linked to a task.` : "Every source in this project, including sources not linked to a task. Expand one to read inline Markdown or external metadata; locators are never fetched automatically."}
       count={query.data ? `${sources.length} ${query.hasNextPage ? 'loaded' : 'total'}` : null}
     >
       {query.isError && query.data ? (
@@ -109,7 +109,7 @@ function SourcesSection({ projectId }: { projectId: string }) {
           }}
         />
       ) : sources.length === 0 ? (
-        <SectionEmpty message="No sources in this project." />
+        <SectionEmpty message={topic ? `No sources for “${topic}”.` : "No sources in this project."} />
       ) : (
         <div className="grid gap-2 lg:grid-cols-2">
           {sources.map((source) => (
@@ -120,6 +120,7 @@ function SourcesSection({ projectId }: { projectId: string }) {
               label={`${source.name} · #${source.id}`}
               description={source.description}
               meta={sourceMeta(source)}
+              topics={source.topics}
             />
           ))}
         </div>

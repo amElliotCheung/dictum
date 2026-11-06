@@ -123,7 +123,7 @@ fn call(client: &Project, tool: &str, input: Value) -> Value {
 }
 
 fn task(client: &Project, extra: Value) -> Value {
-    let mut input = json!({
+    let mut input = json!({"topics": ["Project workflow"],
         "title": "Comment target",
         "problem_or_goal": "Keep discussion attached to the version actually read.",
         "design": "Append immutable comments through the real dashboard.",
@@ -146,7 +146,7 @@ fn dashboard_comments_keep_versions_outputs_replies_and_history_across_restart()
     let output = call(
         &client,
         "create_source",
-        json!({
+        json!({"topics": ["Project workflow"],
             "name": "Browser proof", "description": "Evidence produced by this execution", "content": "# Passed"
         }),
     );
@@ -311,7 +311,7 @@ fn dashboard_comment_writes_reject_invalid_scopes_origins_tokens_and_bodies_atom
     let foreign_source = call(
         &client,
         "create_source",
-        json!({
+        json!({"topics": ["Project workflow"],
             "project_id": foreign["id"], "name": "Foreign", "description": "Not an output here", "content": "Private"
         }),
     );

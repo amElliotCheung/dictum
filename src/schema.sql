@@ -29,6 +29,15 @@ CREATE TABLE tasks (
     CHECK (parent_task_id IS NULL OR parent_task_id != id)
 );
 
+CREATE TABLE topics (
+    id INTEGER PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+    name_key TEXT NOT NULL CHECK (length(trim(name_key)) > 0),
+    UNIQUE (project_id, id),
+    UNIQUE (project_id, name_key)
+);
+
 CREATE TABLE sources (
     id INTEGER PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id),
@@ -68,6 +77,37 @@ CREATE TABLE task_context_sources (
     FOREIGN KEY (project_id, source_id) REFERENCES sources(project_id, id),
     PRIMARY KEY (task_id, source_id)
 );
+
+CREATE TABLE task_topics (
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    task_id INTEGER NOT NULL,
+    topic_id INTEGER NOT NULL,
+    FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id),
+    FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id),
+    PRIMARY KEY (task_id, topic_id)
+);
+
+CREATE TABLE source_topics (
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    source_id INTEGER NOT NULL,
+    topic_id INTEGER NOT NULL,
+    FOREIGN KEY (project_id, source_id) REFERENCES sources(project_id, id),
+    FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id),
+    PRIMARY KEY (source_id, topic_id)
+);
+
+CREATE TABLE decision_topics (
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    decision_id INTEGER NOT NULL,
+    topic_id INTEGER NOT NULL,
+    FOREIGN KEY (project_id, decision_id) REFERENCES decisions(project_id, id),
+    FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id),
+    PRIMARY KEY (decision_id, topic_id)
+);
+
+CREATE INDEX task_topics_topic ON task_topics(project_id, topic_id, task_id);
+CREATE INDEX source_topics_topic ON source_topics(project_id, topic_id, source_id);
+CREATE INDEX decision_topics_topic ON decision_topics(project_id, topic_id, decision_id);
 
 CREATE TABLE task_dependencies (
     project_id TEXT NOT NULL REFERENCES projects(id),

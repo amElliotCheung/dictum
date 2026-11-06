@@ -1,5 +1,5 @@
 //! Public MCP inputs and results. Timestamps are RFC 3339 UTC. Project IDs are UUIDv7;
-//! task, comment, source, and decision IDs are local to a database and require an explicit project scope.
+//! topic, task, comment, source, and decision IDs are local to a database and require an explicit project scope.
 
 use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -13,12 +13,31 @@ where
     Option::<T>::deserialize(deserializer).map(Some)
 }
 
+/// An omitted array preserves membership; an explicit null is invalid.
+fn non_null_patch<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Topic {
+    pub id: i64,
+    pub project_id: String,
+    /// Specific project-local name. Case and whitespace variants identify the same topic.
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Project {
     /// Server-assigned UUIDv7. Names need not be unique; use this ID for scoped tools.
     pub id: String,
     pub name: String,
     pub description: String,
+    /// Compact directory, ordered by topic ID. Membership does not advance project revision.
+    pub topics: Vec<Topic>,
     /// Read the latest revision with list_projects before updating the description.
     pub revision: i64,
     pub created_at: String,
@@ -140,6 +159,7 @@ pub struct SourceAttempt {
 pub struct Source {
     pub id: i64,
     pub project_id: String,
+    pub topics: Vec<Topic>,
     pub name: String,
     pub description: String,
     /// Inline Markdown, returned in full; exactly one of content and locator is present.
@@ -162,6 +182,7 @@ pub struct Source {
 pub struct SourceDescriptor {
     pub id: i64,
     pub project_id: String,
+    pub topics: Vec<Topic>,
     pub name: String,
     pub description: String,
     pub representation: Representation,
@@ -176,6 +197,7 @@ pub struct SourceDescriptor {
 pub struct Task {
     pub id: i64,
     pub project_id: String,
+    pub topics: Vec<Topic>,
     /// Optional same-kind root task in this project. Parentage is organizational only.
     pub parent_task_id: Option<i64>,
     pub kind: TaskKind,
@@ -210,6 +232,7 @@ pub struct DependencyState {
 pub struct TaskSummary {
     pub id: i64,
     pub project_id: String,
+    pub topics: Vec<Topic>,
     pub kind: TaskKind,
     pub priority: TaskPriority,
     pub trigger_event: Option<String>,
@@ -225,6 +248,8 @@ pub struct TaskSummary {
 pub struct Decision {
     pub id: i64,
     pub project_id: String,
+    /// Classification retained with this immutable decision, including after supersession.
+    pub topics: Vec<Topic>,
     pub statement: String,
     pub rationale: String,
     pub alternatives_rejected: Option<String>,
@@ -328,6 +353,9 @@ pub struct GetTaskComment {
 pub struct CreateTask {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: String,
+    /// Nonempty specific topic names. Reuse the project directory; missing names are created atomically.
+    #[schemars(length(min = 1))]
+    pub topics: Vec<String>,
     /// Optional root parent in this project with the same task kind. Nesting is one level.
     pub parent_task_id: Option<i64>,
     /// Immutable after creation. Defaults to one_time (todo); recurring defaults to active.
@@ -357,6 +385,8 @@ pub struct CreateTask {
 pub struct ListTasks {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: String,
+    /// Exact project-local topic name, ignoring case and whitespace. Unknown names match nothing.
+    pub topic: Option<String>,
     /// Omitted: all tasks. Null: roots only. ID: direct children of this task.
     #[serde(
         default,
@@ -390,6 +420,14 @@ pub struct UpdateTask {
     pub project_id: String,
     pub task_id: i64,
     pub expected_revision: i64,
+    /// Omitted: preserve. Nonempty array: replace; null and empty arrays are invalid.
+    #[serde(
+        default,
+        deserialize_with = "non_null_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "Vec<String>", length(min = 1))]
+    pub topics: Option<Vec<String>>,
     /// Omitted: preserve. Null: detach. ID: move beneath a same-kind root in this project.
     #[serde(
         default,
@@ -434,6 +472,9 @@ pub struct UpdateTask {
 pub struct CreateSource {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: String,
+    /// Nonempty specific topic names; reuse or create within this project atomically.
+    #[schemars(length(min = 1))]
+    pub topics: Vec<String>,
     pub name: String,
     pub description: String,
     pub content: Option<String>,
@@ -448,6 +489,8 @@ pub struct CreateSource {
 pub struct ListSources {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: String,
+    /// Exact project-local topic name, ignoring case and whitespace. Combines with other filters.
+    pub topic: Option<String>,
     /// Filter by explicit task context links, not execution outputs or implicit always sources.
     pub task_id: Option<i64>,
     pub representation: Option<Representation>,
@@ -474,6 +517,14 @@ pub struct UpdateSource {
     pub project_id: String,
     pub source_id: i64,
     pub expected_revision: i64,
+    /// Omitted: preserve. Nonempty array: replace; null and empty arrays are invalid.
+    #[serde(
+        default,
+        deserialize_with = "non_null_patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "Vec<String>", length(min = 1))]
+    pub topics: Option<Vec<String>>,
     pub name: Option<String>,
     pub description: Option<String>,
     /// Omitted: preserve. Null: clear. Change content and locator together to switch representation.
@@ -540,6 +591,9 @@ pub struct RecordSourceAction {
 pub struct RecordDecision {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: String,
+    /// Required nonempty specific topic names, including for replacements. Retained immutably.
+    #[schemars(length(min = 1))]
+    pub topics: Vec<String>,
     pub statement: String,
     pub rationale: String,
     /// Optional Markdown retained on this immutable decision; omitted or null stores null.
@@ -552,6 +606,8 @@ pub struct RecordDecision {
 pub struct ListDecisions {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: String,
+    /// Exact project-local topic name, ignoring case and whitespace. Combines with history/pagination.
+    pub topic: Option<String>,
     #[serde(default)]
     pub include_superseded: bool,
     /// Default 20; must be between 1 and 100.

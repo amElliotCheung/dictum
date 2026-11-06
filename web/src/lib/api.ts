@@ -58,20 +58,23 @@ export const api = {
   projects(): Promise<ProjectList> {
     return getJson<ProjectList>('/api/projects');
   },
-  tasks(projectId: string, parentTaskId?: number | null): Promise<TaskList> {
-    const query = parentTaskId === undefined
-      ? ''
-      : `?parent_task_id=${parentTaskId === null ? 'null' : parentTaskId}`;
+  tasks(projectId: string, parentTaskId?: number | null, topic?: string | null): Promise<TaskList> {
+    const params = new URLSearchParams();
+    if (parentTaskId !== undefined) params.set('parent_task_id', parentTaskId === null ? 'null' : String(parentTaskId));
+    if (topic) params.set('topic', topic);
+    const query = params.size > 0 ? `?${params.toString()}` : '';
     return getJson<TaskList>(`${projectPath(projectId)}/tasks${query}`);
   },
-  decisions(projectId: string, beforeId?: number): Promise<DecisionList> {
+  decisions(projectId: string, beforeId?: number, topic?: string | null): Promise<DecisionList> {
     const params = new URLSearchParams({ page_size: '20' });
     if (beforeId !== undefined) params.set('before_id', String(beforeId));
+    if (topic) params.set('topic', topic);
     return getJson<DecisionList>(`${projectPath(projectId)}/decisions?${params.toString()}`);
   },
-  sources(projectId: string, beforeId?: number): Promise<SourceList> {
+  sources(projectId: string, beforeId?: number, topic?: string | null): Promise<SourceList> {
     const params = new URLSearchParams({ page_size: '20' });
     if (beforeId !== undefined) params.set('before_id', String(beforeId));
+    if (topic) params.set('topic', topic);
     return getJson<SourceList>(`${projectPath(projectId)}/sources?${params.toString()}`);
   },
   projectContext(projectId: string): Promise<Context> {
@@ -117,8 +120,8 @@ export const api = {
 
 export const queryKeys = {
   projects: ['projects'] as const,
-  tasks: (projectId: string | null) =>
-    ['projects', projectId, 'tasks'] as const,
+  tasks: (projectId: string | null, topic?: string | null) =>
+    ['projects', projectId, 'tasks', 'list', topic ?? null] as const,
   context: (projectId: string, taskId: number) =>
     ['projects', projectId, 'tasks', taskId, 'context'] as const,
   children: (projectId: string, taskId: number) =>
@@ -127,10 +130,10 @@ export const queryKeys = {
     ['projects', projectId, 'tasks', taskId, 'comments'] as const,
   comment: (projectId: string, taskId: number, commentId: number) =>
     ['projects', projectId, 'tasks', taskId, 'comment', commentId] as const,
-  decisions: (projectId: string) =>
-    ['projects', projectId, 'decisions'] as const,
-  projectSources: (projectId: string) =>
-    ['projects', projectId, 'project-sources'] as const,
+  decisions: (projectId: string, topic?: string | null) =>
+    ['projects', projectId, 'decisions', topic ?? null] as const,
+  projectSources: (projectId: string, topic?: string | null) =>
+    ['projects', projectId, 'project-sources', topic ?? null] as const,
   source: (projectId: string, sourceId: number) =>
     ['projects', projectId, 'sources', sourceId] as const,
 };

@@ -17,7 +17,7 @@ fn task(client: &Project, title: &str, kind: &str) -> Value {
     call(
         client,
         "create_task",
-        json!({
+        json!({"topics": ["Project workflow"],
             "title": title, "kind": kind, "problem_or_goal": "Retain task discussion and evidence.",
             "design": "Append version-targeted comments without changing the task.",
             "acceptance_criteria": ["A new process can retrieve the complete discussion."]
@@ -232,7 +232,7 @@ fn invalid_comments_versions_replies_outputs_and_legacy_fields_are_atomic() {
     let foreign_task = call(
         &client,
         "create_task",
-        json!({
+        json!({"topics": ["Project workflow"],
             "project_id": foreign_project["id"], "title": "Foreign discussion", "problem_or_goal": "Preserve scope isolation.",
             "design": "Replies must stay on one task.", "acceptance_criteria": ["Foreign replies are rejected."]
         }),
@@ -247,12 +247,12 @@ fn invalid_comments_versions_replies_outputs_and_legacy_fields_are_atomic() {
     let foreign_source = call(
         &client,
         "create_source",
-        json!({"project_id": foreign_project["id"], "name": "Foreign", "description": "Not this task's output", "content": "Evidence"}),
+        json!({"topics": ["Project workflow"], "project_id": foreign_project["id"], "name": "Foreign", "description": "Not this task's output", "content": "Evidence"}),
     );
     let source = call(
         &client,
         "create_source",
-        json!({"name": "Valid", "description": "Valid execution output", "content": "Evidence"}),
+        json!({"topics": ["Project workflow"], "name": "Valid", "description": "Valid execution output", "content": "Evidence"}),
     );
     let valid = json!({"task_id": first["id"], "task_revision": first["revision"], "body": "A complete comment."});
     for field in ["task_id", "task_revision", "body"] {
@@ -581,7 +581,7 @@ fn schema_v5_is_rejected_without_changing_its_data_schema_or_file() {
     let error = String::from_utf8(output.stderr).unwrap();
     assert!(error.contains("version 5"), "unexpected error: {error}");
     assert!(
-        error.contains("schema version 13"),
+        error.contains("schema version 14"),
         "unexpected error: {error}"
     );
     assert_eq!(std::fs::read(&database).unwrap(), before);
@@ -603,7 +603,7 @@ fn schema_v5_is_rejected_without_changing_its_data_schema_or_file() {
 
 #[test]
 fn recent_unsupported_versions_are_rejected_without_changing_existing_records() {
-    for version in [8, 9, 10, 11, 12] {
+    for version in [8, 9, 10, 11, 12, 13] {
         let directory = tempfile::tempdir().unwrap();
         let database = directory
             .path()
@@ -655,7 +655,7 @@ fn recent_unsupported_versions_are_rejected_without_changing_existing_records() 
                 "unexpected error: {error}"
             );
             assert!(
-                error.contains("schema version 13"),
+                error.contains("schema version 14"),
                 "unexpected error: {error}"
             );
             assert_eq!(std::fs::read(&database).unwrap(), before);

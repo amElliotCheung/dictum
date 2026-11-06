@@ -10,7 +10,7 @@ fn call(client: &Project, name: &str, input: Value) -> Value {
 }
 
 fn source(client: &Project, name: &str, extra: Value) -> Value {
-    let mut input = json!({
+    let mut input = json!({"topics": ["Project workflow"],
         "name": name, "description": format!("Context for {name}"),
         "content": format!("# {name}\n\nPreserve the complete source content.")
     });
@@ -22,7 +22,7 @@ fn source(client: &Project, name: &str, extra: Value) -> Value {
 }
 
 fn task(client: &Project, title: &str, extra: Value) -> Value {
-    let mut input = json!({
+    let mut input = json!({"topics": ["Project workflow"],
         "title": title, "problem_or_goal": "Read complete, explicitly scoped context.",
         "design": "Discover bounded pages and expand the current project or task.",
         "acceptance_criteria": ["Reads preserve durable records and project isolation."]
@@ -35,7 +35,7 @@ fn task(client: &Project, title: &str, extra: Value) -> Value {
 }
 
 fn decision(client: &Project, statement: &str, extra: Value) -> Value {
-    let mut input = json!({
+    let mut input = json!({"topics": ["Project workflow"],
         "statement": statement,
         "rationale": "## Rationale\n\nRetain the complete accepted choice, including Unicode: 项目。",
         "alternatives_rejected": "## Rejected\n\nDo not truncate accepted records."
@@ -99,8 +99,21 @@ fn source_and_decision_pages_have_exact_bounds_and_survive_restart() {
     let mut sources = Vec::new();
     let mut decisions = Vec::new();
     for index in 0..101 {
-        sources.push(source(&client, &format!("Source {index}"), json!({})));
-        decisions.push(decision(&client, &format!("Choice {index}"), json!({})));
+        let topics = if index % 2 == 0 {
+            json!(["Project workflow", "User authentication"])
+        } else {
+            json!(["Project workflow", "Dashboard comment security"])
+        };
+        sources.push(source(
+            &client,
+            &format!("Source {index}"),
+            json!({"topics": topics}),
+        ));
+        decisions.push(decision(
+            &client,
+            &format!("Choice {index}"),
+            json!({"topics": topics}),
+        ));
     }
     sources.reverse();
     decisions.reverse();
@@ -162,12 +175,53 @@ fn source_and_decision_pages_have_exact_bounds_and_survive_restart() {
             assert!(descriptor.get("content").is_none());
         }
         saved_pages.push((tool, default_page));
+
+        // Topic membership combines with pagination before limiting the result.
+        let matching: Vec<_> = records
+            .iter()
+            .step_by(2)
+            .map(|record| record["id"].as_i64().unwrap())
+            .collect();
+        let filtered = call(
+            &client,
+            tool,
+            json!({"topic": "  USER  authentication  ", "page_size": 20}),
+        );
+        assert_eq!(ids(&filtered, field), matching[..20]);
+        assert_eq!(filtered["next_before_id"], matching[19]);
+        let filtered_tail = call(
+            &client,
+            tool,
+            json!({"topic": "User authentication", "page_size": 100, "before_id": matching[19]}),
+        );
+        assert_eq!(ids(&filtered_tail, field), matching[20..]);
+        assert!(filtered_tail["next_before_id"].is_null());
+        assert_eq!(
+            call(&client, tool, json!({"topic": "Missing topic"}))[field],
+            json!([])
+        );
     }
     assert_eq!(snapshot(&database), before);
     drop(client);
     let restarted = Project::open(&database).unwrap();
     for (tool, expected) in saved_pages {
         assert_eq!(call(&restarted, tool, json!({})), expected);
+        let field = if tool == "list_sources" {
+            "sources"
+        } else {
+            "decisions"
+        };
+        assert_eq!(
+            call(
+                &restarted,
+                tool,
+                json!({"topic": "User authentication", "page_size": 100})
+            )[field]
+                .as_array()
+                .unwrap()
+                .len(),
+            51
+        );
     }
     assert_eq!(snapshot(&database), before);
 }
@@ -177,19 +231,32 @@ fn source_filters_apply_before_pagination_and_new_appends_preserve_older_pages()
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("source-filters.sqlite3");
     let client = Project::open(&database).unwrap();
-    let oldest = source(&client, "Keep oldest", json!({}));
+    let oldest = source(
+        &client,
+        "Keep oldest",
+        json!({"topics": ["User authentication"]}),
+    );
     let irrelevant = source(&client, "Other", json!({"context_policy": "always"}));
-    let middle = source(&client, "Keep middle", json!({}));
+    let middle = source(
+        &client,
+        "Keep middle",
+        json!({"topics": ["User authentication"]}),
+    );
     let cursor = source(
         &client,
         "External cursor",
         json!({"content": null, "locator": "https://example.com/reference"}),
     );
-    let newest = source(&client, "Keep newest", json!({}));
+    let newest = source(
+        &client,
+        "Keep newest",
+        json!({"topics": ["User authentication"]}),
+    );
     let due = source(
         &client,
         "Keep due",
         json!({
+            "topics": ["User authentication"],
             "action": {"instruction": "Inspect current release notes.", "trigger": {"kind": "interval", "every_minutes": 30}}
         }),
     );
@@ -198,7 +265,7 @@ fn source_filters_apply_before_pagination_and_new_appends_preserve_older_pages()
         "Linked sources",
         json!({"context_source_ids": [oldest["id"], middle["id"], newest["id"], due["id"]]}),
     );
-    let filter = json!({"query": "KEEP", "representation": "inline", "task_id": linked_task["id"], "action_due": false, "page_size": 2});
+    let filter = json!({"topic": "User authentication", "query": "KEEP", "representation": "inline", "task_id": linked_task["id"], "action_due": false, "page_size": 2});
     let first = call(&client, "list_sources", filter.clone());
     assert_eq!(
         ids(&first, "sources"),
@@ -209,7 +276,11 @@ fn source_filters_apply_before_pagination_and_new_appends_preserve_older_pages()
     );
     assert_eq!(first["next_before_id"], middle["id"]);
     let writer = Project::open(&database).unwrap();
-    let appended = source(&writer, "Keep appended", json!({}));
+    let appended = source(
+        &writer,
+        "Keep appended",
+        json!({"topics": ["User authentication"]}),
+    );
     call(
         &writer,
         "update_task",
@@ -267,12 +338,16 @@ fn decision_pages_filter_superseded_records_and_keep_cursors_valid() {
     let database = directory.path().join("decision-filters.sqlite3");
     let client = Project::open(&database).unwrap();
     let oldest = decision(&client, "Keep oldest", json!({}));
-    let superseded = decision(&client, "Original choice", json!({}));
+    let superseded = decision(
+        &client,
+        "Original choice",
+        json!({"topics": ["User authentication"]}),
+    );
     let middle = decision(&client, "Independent choice", json!({}));
     let replacement = decision(
         &client,
         "Replacement choice",
-        json!({"supersedes_id": superseded["id"]}),
+        json!({"supersedes_id": superseded["id"], "topics": ["Dashboard comment security"]}),
     );
     let first = call(&client, "list_decisions", json!({"page_size": 2}));
     assert_eq!(first["decisions"], json!([replacement, middle]));
@@ -307,6 +382,30 @@ fn decision_pages_filter_superseded_records_and_keep_cursors_valid() {
     let mut historical = superseded;
     historical["is_current"] = json!(false);
     historical["current_decision_id"] = replacement["id"].clone();
+    assert_eq!(
+        call(
+            &client,
+            "list_decisions",
+            json!({"topic": "User authentication"})
+        )["decisions"],
+        json!([])
+    );
+    assert_eq!(
+        call(
+            &client,
+            "list_decisions",
+            json!({"topic": "User authentication", "include_superseded": true})
+        )["decisions"],
+        json!([historical])
+    );
+    assert_eq!(
+        call(
+            &client,
+            "list_decisions",
+            json!({"topic": "Dashboard comment security"})
+        )["decisions"],
+        json!([replacement])
+    );
     assert_eq!(history["decisions"], json!([historical, oldest]));
     assert!(history["next_before_id"].is_null());
 }
@@ -316,9 +415,17 @@ fn invalid_pages_cursors_and_context_scopes_do_not_mutate_records() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("isolation.sqlite3");
     let client = Project::open(&database).unwrap();
-    let local_source = source(&client, "Local", json!({}));
-    let local_decision = decision(&client, "Local", json!({}));
-    let local_task = task(&client, "Local", json!({}));
+    let local_source = source(
+        &client,
+        "Local",
+        json!({"topics": ["  User \t authentication  ", "Dashboard comment security", "user authentication"]}),
+    );
+    let local_decision = decision(&client, "Local", json!({"topics": ["USER authentication"]}));
+    let local_task = task(&client, "Local", json!({"topics": ["user authentication"]}));
+    assert_eq!(local_source["topics"].as_array().unwrap().len(), 2);
+    assert_eq!(local_source["topics"][0]["name"], "User authentication");
+    assert_eq!(local_decision["topics"][0], local_source["topics"][0]);
+    assert_eq!(local_task["topics"][0], local_source["topics"][0]);
     let other_project = call(
         &client,
         "create_project",
@@ -327,7 +434,7 @@ fn invalid_pages_cursors_and_context_scopes_do_not_mutate_records() {
     let foreign_source = source(
         &client,
         "Foreign",
-        json!({"project_id": other_project["id"]}),
+        json!({"project_id": other_project["id"], "topics": ["User authentication"]}),
     );
     let foreign_decision = decision(
         &client,
@@ -339,7 +446,80 @@ fn invalid_pages_cursors_and_context_scopes_do_not_mutate_records() {
         "Foreign",
         json!({"project_id": other_project["id"]}),
     );
+    assert_ne!(
+        foreign_source["topics"][0]["id"],
+        local_source["topics"][0]["id"]
+    );
+    assert_eq!(
+        foreign_source["topics"][0]["project_id"],
+        other_project["id"]
+    );
     let before = snapshot(&database);
+    for (tool, mut input) in [
+        (
+            "create_task",
+            json!({"project_id": client.project_id, "title": "Invalid classification", "problem_or_goal": "Reject missing topics", "design": "Validate atomically", "acceptance_criteria": ["No rows persist"]}),
+        ),
+        (
+            "create_source",
+            json!({"project_id": client.project_id, "name": "Invalid classification", "description": "Reject missing topics", "content": "No rows persist"}),
+        ),
+        (
+            "record_decision",
+            json!({"project_id": client.project_id, "statement": "Invalid classification", "rationale": "Reject missing topics"}),
+        ),
+    ] {
+        rejected(&client, tool, input.clone());
+        for topics in [
+            json!([]),
+            json!(null),
+            json!([""]),
+            json!(["New topic must roll back", "  "]),
+            json!([1]),
+        ] {
+            input["topics"] = topics;
+            rejected(&client, tool, input.clone());
+            assert_eq!(snapshot(&database), before);
+        }
+    }
+    for (tool, record, id_field) in [
+        ("update_task", &local_task, "task_id"),
+        ("update_source", &local_source, "source_id"),
+    ] {
+        for topics in [
+            json!([]),
+            json!(null),
+            json!(["New topic must roll back", "  "]),
+        ] {
+            let mut input = json!({"project_id": client.project_id, "expected_revision": record["revision"], "topics": topics});
+            input[id_field] = record["id"].clone();
+            rejected(&client, tool, input);
+            assert_eq!(snapshot(&database), before);
+        }
+    }
+    for tool in ["list_tasks", "list_sources", "list_decisions"] {
+        rejected(
+            &client,
+            tool,
+            json!({"project_id": client.project_id, "topic": " \t "}),
+        );
+        let field = match tool {
+            "list_tasks" => "tasks",
+            "list_sources" => "sources",
+            _ => "decisions",
+        };
+        assert_eq!(
+            call(&client, tool, json!({"topic": "Unknown topic"}))[field],
+            json!([])
+        );
+        assert_eq!(
+            call(&client, tool, json!({"topic": "  user AUTHENTICATION "}))[field]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
     for (tool, foreign_id) in [
         ("list_sources", &foreign_source["id"]),
         ("list_decisions", &foreign_decision["id"]),
@@ -395,13 +575,63 @@ fn invalid_pages_cursors_and_context_scopes_do_not_mutate_records() {
         "get_context",
         json!({"project_id": other_project["id"]}),
     );
-    assert_eq!(foreign_context["project"], other_project);
+    assert_eq!(foreign_context["project"]["id"], other_project["id"]);
+    assert_eq!(
+        foreign_context["project"]["revision"],
+        other_project["revision"]
+    );
+    assert_eq!(
+        foreign_context["project"]["topics"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     assert_eq!(
         foreign_context["current_decisions"],
         json!([foreign_decision])
     );
     assert_eq!(foreign_context["sources"], json!([]));
     assert_eq!(snapshot(&database), before);
+
+    let reclassified = call(
+        &client,
+        "update_task",
+        json!({"task_id": local_task["id"], "expected_revision": local_task["revision"], "topics": ["Dashboard comment security"]}),
+    );
+    assert_eq!(reclassified["revision"], 2);
+    assert_eq!(reclassified["topics"], json!([local_source["topics"][1]]));
+    assert_eq!(
+        call(
+            &client,
+            "list_tasks",
+            json!({"topic": "User authentication"})
+        )["tasks"],
+        json!([])
+    );
+    let unchanged_topics = call(
+        &client,
+        "update_task",
+        json!({"task_id": local_task["id"], "expected_revision": reclassified["revision"], "progress": "Topic membership survives unrelated edits."}),
+    );
+    assert_eq!(unchanged_topics["topics"], reclassified["topics"]);
+    let reclassified_source = call(
+        &client,
+        "update_source",
+        json!({"source_id": local_source["id"], "expected_revision": local_source["revision"], "topics": ["User authentication"]}),
+    );
+    assert_eq!(
+        reclassified_source["topics"],
+        json!([local_source["topics"][0]])
+    );
+    assert_eq!(
+        call(
+            &client,
+            "list_sources",
+            json!({"topic": "Dashboard comment security"})
+        )["sources"],
+        json!([])
+    );
 }
 
 #[test]

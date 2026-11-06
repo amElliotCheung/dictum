@@ -16,7 +16,7 @@ fn call(client: &Project, name: &str, input: Value) -> Value {
 }
 
 fn decision(client: &Project, statement: &str, rationale: &str, extra: Value) -> Value {
-    let mut input = json!({
+    let mut input = json!({"topics": ["Project workflow"],
         "statement": statement,
         "rationale": rationale,
         "alternatives_rejected": "Retain alternatives as recorded for this accepted choice."
@@ -45,7 +45,7 @@ fn repeated_reversals_resolve_every_historical_page_and_survive_restart() {
     let task = call(
         &client,
         "create_task",
-        json!({
+        json!({"topics": ["Project workflow"],
             "title": "Read the current database choice",
             "problem_or_goal": "Follow the latest accepted intent through reversals.",
             "design": "Read complete current choices without expanding historical decisions.",
@@ -214,7 +214,7 @@ fn stale_and_foreign_replacements_are_rejected_without_redirecting_writes() {
         let error = client
             .call::<Value>(
                 "record_decision",
-                json!({
+                json!({"topics": ["Project workflow"],
                     "statement": "A stale writer must not replace an unseen choice.",
                     "rationale": "This write must fail.", "supersedes_id": stale["id"]
                 }),
@@ -229,7 +229,7 @@ fn stale_and_foreign_replacements_are_rejected_without_redirecting_writes() {
         json!({"project_id": other["id"], "supersedes_id": current["id"]}),
         json!({"current_decision_id": current["id"]}),
     ] {
-        let mut request = json!({"statement": "Rejected choice", "rationale": "Must not mutate."});
+        let mut request = json!({"topics": ["Project workflow"], "statement": "Rejected choice", "rationale": "Must not mutate."});
         request
             .as_object_mut()
             .unwrap()
@@ -271,7 +271,7 @@ fn concurrent_replacements_have_one_winner_and_report_its_current_id() {
                 barrier.wait();
                 writer.call::<Value>(
                     "record_decision",
-                    json!({
+                    json!({"topics": ["Project workflow"],
                         "statement": format!("Concurrent choice {index}"),
                         "rationale": "Only one successor can be accepted.",
                         "supersedes_id": root_id

@@ -2,8 +2,9 @@
 
 Dictum is a local project-management MCP server for coding agents. It keeps tasks,
 reusable sources, accepted decisions, and versioned task comments in SQLite so work
-can resume without the original conversation. A bundled dashboard displays the
-same records and lets you post comments and execution reports.
+can resume without the original conversation. Project topics organize records for
+discovery. A bundled dashboard displays the same records and lets you post
+comments and execution reports.
 
 ## Build and connect
 
@@ -55,6 +56,7 @@ tool arguments, not shell commands. Substitute the IDs returned by earlier calls
      "project_id": "PROJECT_ID",
      "name": "Requirements",
      "description": "Requirements for the example task",
+     "topics": ["visitor greetings"],
      "content": "# Requirements\n\nShow a useful greeting."
    }
    ```
@@ -68,6 +70,7 @@ tool arguments, not shell commands. Substitute the IDs returned by earlier calls
    {
      "project_id": "PROJECT_ID",
      "title": "Add a greeting",
+     "topics": ["visitor greetings"],
      "priority": "high",
      "problem_or_goal": "Visitors need a useful greeting.",
      "design": "Render the greeting described in the linked requirements.",
@@ -117,7 +120,7 @@ creating a task:
 {"project_id": "PROJECT_ID"}
 ```
 
-The result contains the full `project`, all `always` Sources, and all current
+The result contains the full `project` with its `topics` directory, all `always` Sources, and all current
 decisions in ascending ID order with their full statement, rationale, and alternatives. `task`,
 `parent_task`, and `dependency_state` are null; `recent_comments` is empty and
 both `latest_execution` and `latest_successful_execution` are null.
@@ -127,6 +130,43 @@ deduplicated task-linked plus always Sources, and bounded comments and execution
 evidence. Both modes read one consistent database snapshot. Inline Sources remain
 full and untruncated; context decisions are complete and unpaginated. Use
 `get_context` in place of the former `get_task_context` tool.
+
+## Organize records with topics
+
+Every task, Source, and decision must belong to at least one project topic. Pass
+a nonempty `topics` array of names to `create_task`, `create_source`, and
+`record_decision`. These writes atomically reuse or create the named topics; no
+separate topic tool or setup step is needed. Topic names are local to a project.
+Whitespace and case are normalized for exact reuse, while the first collapsed
+display spelling is preserved. Repeated names in one request are deduplicated.
+
+Read `project.topics` before picking names and reuse an existing concept when it
+fits. Prefer specific names such as `user authentication` over `authentication`;
+avoid creating synonymous topics. Projects typically need tens of topics, with
+no enforced count limit or topic hierarchy. All project responses include the
+complete directory, including currently unused topics, as `{id, project_id,
+name}` objects. Task records, task summaries, Sources, Source descriptors, and
+decisions return the same objects in their own `topics` arrays.
+
+Use an exact topic name to discover matching records with `list_tasks`,
+`list_sources`, or `list_decisions`:
+
+```json
+{"project_id": "PROJECT_ID", "topic": "user authentication"}
+```
+
+Topic matching uses the same normalization as writes and combines with other
+filters before pagination. Unknown names return no matches; blank names fail.
+Lookup never creates a topic. Membership does not automatically include other
+records in context: keep explicit task context links and fetch needed Sources.
+
+`update_task` and `update_source` accept a nonempty replacement `topics` array
+under the record's latest `expected_revision`. Omission preserves membership;
+empty arrays and null are rejected. Topic edits advance the task or Source
+revision, while preserving Source action freshness. Topics are not inherited
+from parent tasks or linked Sources. Decisions and their topic memberships are
+immutable, and replacements must explicitly supply their own topics. Creating
+topics does not change the project's description revision or timestamps.
 
 ## Browse sources and decisions
 
@@ -144,9 +184,10 @@ respectively, in the same project. Cursor validation is independent of filters;
 the cursor record need not match them. `next_before_id` is null when no older
 matching record remains, even if the page is full.
 
-Source filters remain `task_id`, `representation`, `action_due`, and `query`;
+Source filters include `task_id`, `representation`, `action_due`, `query`, and `topic`;
 task filtering covers explicit context links. Decision listings default to
-current choices; `include_superseded: true` includes their history. Later appends
+current choices; `include_superseded: true` includes their history, and `topic`
+filters either view. Later appends
 have higher IDs and do not appear on older pages. Edits, action freshness, and
 decision supersession can change data or filter membership between requests.
 Project discovery through `list_projects` remains unpaginated.
@@ -197,6 +238,7 @@ Call `record_decision` with the accepted statement and rationale. Optional
   "project_id": "PROJECT_ID",
   "statement": "Keep the greeting in the page header.",
   "rationale": "Visitors see it immediately on every page.",
+  "topics": ["visitor greetings"],
   "alternatives_rejected": "- A modal greeting would interrupt navigation."
 }
 ```
@@ -317,7 +359,8 @@ DICTUM_DATABASE=/absolute/path/to/shared/dictum.sqlite3 \
 ```
 
 Open <http://127.0.0.1:3000>, select a project, and switch between the One-time
-and Recurring task tabs. Choose a task to see its brief, dependencies, and
+and Recurring task tabs. Select a project topic to filter tasks and the project
+Decisions and Sources sections together. Choose a task to see its brief, dependencies, and
 versioned conversation. Expand a subtask row to load its details; collapsed
 children do not fetch full context. Project decisions and sources appear below
 the task board, newest first, with **Load more** for older pages. Expand a source
@@ -333,8 +376,9 @@ browser obtains that token from `/api/request-token`; it changes on restart.
 Other writes are rejected.
 
 HTTP clients can read project-only context at `GET /api/projects/:id/context`
-and task context at `GET /api/projects/:id/tasks/:task_id`. The project
-`/decisions` and `/sources` routes accept `page_size` and `before_id` query
+and task context at `GET /api/projects/:id/tasks/:task_id`. Project `/tasks`,
+`/decisions`, and `/sources` routes accept a `topic` name query parameter. The
+`/decisions` and `/sources` routes also accept `page_size` and `before_id` query
 parameters and return `next_before_id`, following the MCP pagination contract.
 
 The committed frontend bundle is embedded in the binary. Normal builds and use
@@ -360,9 +404,9 @@ npm ci
 npm run build
 ```
 
-Only the current schema (v13) is supported. Startup rejects older databases
+Only the current schema (v14) is supported. Startup rejects older databases
 without modifying them; preserve the file and use a fresh path such as
-`.dictum/dictum-v13.sqlite3`. Re-create needed records through MCP rather than
+`.dictum/dictum-v14.sqlite3`. Re-create needed records through MCP rather than
 migrating the older database.
 
 ## License

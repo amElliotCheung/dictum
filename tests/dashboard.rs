@@ -171,7 +171,7 @@ fn call(client: &Project, name: &str, input: Value) -> Value {
 }
 
 fn create_task(client: &Project, project_id: &str, title: &str, kind: &str, extra: Value) -> Value {
-    let mut input = json!({
+    let mut input = json!({"topics": ["Project workflow"],
         "project_id": project_id,
         "title": title,
         "kind": kind,
@@ -616,7 +616,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     let inline_source = call(
         &client,
         "create_source",
-        json!({
+        json!({"topics": ["Project workflow"],
             "project_id": project_id,
             "name": "Inline adversarial source",
             "description": "Stored Markdown that must stay inert in the UI",
@@ -647,7 +647,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     let external_source = call(
         &client,
         "create_source",
-        json!({
+        json!({"topics": ["Project workflow"],
             "project_id": project_id,
             "name": "External source",
             "description": "A locator that must never be fetched by the dashboard",
@@ -677,7 +677,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     let output_source = call(
         &client,
         "create_source",
-        json!({
+        json!({"topics": ["Project workflow"],
             "project_id": project_id,
             "name": "Implementation evidence",
             "description": "Output source used by execution history",
@@ -687,7 +687,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     call(
         &client,
         "record_decision",
-        json!({
+        json!({"topics": ["Project workflow"],
             "project_id": project_id,
             "statement": "Dashboard reads share the MCP store without mutating it.",
             "rationale": "Both transports use the same application boundary."
@@ -939,7 +939,7 @@ fn dashboard_comment_history_keeps_flat_replies_version_targets_and_immutable_ex
     let output = call(
         &client,
         "create_source",
-        json!({"name": "Implementation", "description": "Execution output", "content": "# Original output"}),
+        json!({"topics": ["Project workflow"], "name": "Implementation", "description": "Execution output", "content": "# Original output"}),
     );
     let task = create_task(
         &client,
@@ -1055,7 +1055,7 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
     let inline = call(
         &client,
         "create_source",
-        json!({
+        json!({"topics": ["Project workflow"],
             "name": "Linked design note",
             "description": "A context source attached to a task",
             "content": "# Design\n\nKeep decisions and sources below the task board.",
@@ -1065,7 +1065,7 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
     let external = call(
         &client,
         "create_source",
-        json!({
+        json!({"topics": ["Project workflow"],
             "name": "External specification",
             "description": "An unlinked locator with a manual action",
             "locator": "https://example.com/specification",
@@ -1085,7 +1085,7 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
     let first_decision = call(
         &client,
         "record_decision",
-        json!({
+        json!({"topics": ["Project workflow"],
             "statement": "Keep tasks above project reference sections.",
             "rationale": "Tasks are the dashboard's primary content.",
             "alternatives_rejected": "- Reference-first board: hides the next work item."
@@ -1094,7 +1094,7 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
     let current_decision = call(
         &client,
         "record_decision",
-        json!({
+        json!({"topics": ["Project workflow"],
             "statement": "Show decisions and sources below the task board.",
             "rationale": "They remain available without opening a task.",
             "alternatives_rejected": "- **Task-only references**: would hide project context until selection.",
@@ -1115,7 +1115,7 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
     let other_source: Value = client
         .raw_call(
             "create_source",
-            json!({
+            json!({"topics": ["Project workflow"],
                 "project_id": other_project,
                 "name": "Other project source",
                 "description": "Belongs only to the isolation project",
@@ -1126,7 +1126,7 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
     let other_decision: Value = client
         .raw_call(
             "record_decision",
-            json!({
+            json!({"topics": ["Project workflow"],
                 "project_id": other_project,
                 "statement": "Other project decision",
                 "rationale": "Belongs only to the isolation project"
@@ -1309,10 +1309,15 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
     let mut sources = Vec::new();
     let mut decisions = Vec::new();
     for index in 0..23 {
+        let topics = if index % 2 == 0 {
+            json!(["User authentication"])
+        } else {
+            json!(["Dashboard comment security"])
+        };
         sources.push(call(
             &client,
             "create_source",
-            json!({
+            json!({"topics": topics,
                 "name": format!("Reference {index}"),
                 "description": "A paginated project reference",
                 "content": format!("Full source contents {index}"),
@@ -1322,7 +1327,7 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
         decisions.push(call(
             &client,
             "record_decision",
-            json!({
+            json!({"topics": topics,
                 "statement": format!("Accepted choice {index}"),
                 "rationale": format!("Complete rationale {index}"),
                 "alternatives_rejected": format!("Alternative {index}")
@@ -1336,6 +1341,7 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
         "Selected task",
         "one_time",
         json!({
+            "topics": ["User authentication"],
             "parent_task_id": parent["id"],
             "context_source_ids": [sources[22]["id"]]
         }),
@@ -1358,7 +1364,7 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
     let foreign_source = call(
         &client,
         "create_source",
-        json!({
+        json!({"topics": ["Project workflow"],
             "project_id": foreign_project["id"],
             "name": "Private reference", "description": "Other project's reference",
             "content": "Must not appear", "context_policy": "always"
@@ -1367,7 +1373,7 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
     let foreign_decision = call(
         &client,
         "record_decision",
-        json!({
+        json!({"topics": ["Project workflow"],
             "project_id": foreign_project["id"],
             "statement": "Private choice", "rationale": "Must not appear"
         }),
@@ -1378,6 +1384,46 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
     let project_context = call(&client, "get_context", json!({}));
     assert_eq!(dashboard.get(&project_context_path).json(), project_context);
     assert_eq!(project_context["project"]["id"], project_id);
+    assert_eq!(
+        project_context["project"]["topics"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    let task_filter_path = format!("/api/projects/{project_id}/tasks?topic=User%20authentication");
+    let filtered_tasks = dashboard.get(&task_filter_path);
+    assert_eq!(filtered_tasks.status, 200);
+    assert_eq!(
+        filtered_tasks.json(),
+        call(
+            &client,
+            "list_tasks",
+            json!({"topic": "User authentication"})
+        )
+    );
+    assert_eq!(filtered_tasks.json()["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered_tasks.json()["tasks"][0]["id"], task["id"]);
+    assert_eq!(
+        dashboard
+            .get(&format!("{task_filter_path}&parent_task_id=null"))
+            .json()["tasks"],
+        json!([])
+    );
+    assert_eq!(
+        dashboard
+            .get(&format!("/api/projects/{project_id}/tasks?topic=Unknown"))
+            .json()["tasks"],
+        json!([])
+    );
+    for query in ["topic=%20", "topic=User&topic=Dashboard", "topic=%ZZ"] {
+        assert_eq!(
+            dashboard
+                .get(&format!("/api/projects/{project_id}/tasks?{query}"))
+                .status,
+            400
+        );
+    }
     for field in [
         "task",
         "parent_task",
@@ -1459,6 +1505,42 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
         assert!(second["next_before_id"].is_null());
         continuation_pages.push((continuation_path, second));
 
+        let topic_path = format!("{path}?topic=User%20authentication&page_size=2");
+        let filtered = dashboard.get(&topic_path);
+        assert_eq!(filtered.status, 200);
+        let filtered = filtered.json();
+        assert_eq!(
+            filtered,
+            call(
+                &client,
+                list_tool,
+                json!({"topic": "User authentication", "page_size": 2})
+            )
+        );
+        assert_eq!(filtered[collection][0]["id"], records[22]["id"]);
+        assert_eq!(filtered[collection][1]["id"], records[20]["id"]);
+        assert_eq!(filtered["next_before_id"], records[20]["id"]);
+        let topic_continuation = format!("{topic_path}&before_id={}", records[20]["id"]);
+        let filtered_older = dashboard.get(&topic_continuation).json();
+        assert_eq!(filtered_older[collection][0]["id"], records[18]["id"]);
+        assert_eq!(filtered_older[collection][1]["id"], records[16]["id"]);
+        continuation_pages.push((topic_continuation, filtered_older));
+        assert_eq!(
+            dashboard.get(&format!("{path}?topic=Unknown")).json()[collection],
+            json!([])
+        );
+        assert_eq!(
+            dashboard
+                .get(&format!(
+                    "{path}?topic=%20USER%20%20authentication%20&page_size=100"
+                ))
+                .json()[collection]
+                .as_array()
+                .unwrap()
+                .len(),
+            12
+        );
+
         // An exact-sized page has no continuation; the maximum accepted size works too.
         for page_size in [23, 100] {
             let page = dashboard.get(&format!("{path}?page_size={page_size}"));
@@ -1480,6 +1562,9 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
             "before_id=-1",
             "before_id=invalid",
             "before_id=1&before_id=2",
+            "topic=%20",
+            "topic=User&topic=Dashboard",
+            "topic=%ZZ",
         ] {
             assert_eq!(
                 dashboard.get(&format!("{path}?{query}")).status,
@@ -1505,12 +1590,12 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
     let appended_source = call(
         &client,
         "create_source",
-        json!({"name": "New reference", "description": "Appended while browsing", "content": "New body"}),
+        json!({"topics": ["Project workflow"], "name": "New reference", "description": "Appended while browsing", "content": "New body"}),
     );
     let appended_decision = call(
         &client,
         "record_decision",
-        json!({"statement": "New choice", "rationale": "Appended while browsing"}),
+        json!({"topics": ["Project workflow"], "statement": "New choice", "rationale": "Appended while browsing"}),
     );
     for (collection, appended) in [
         ("sources", appended_source),

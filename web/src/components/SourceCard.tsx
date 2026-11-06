@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api, queryKeys } from '../lib/api';
 import { formatDate } from '../lib/format';
-import type { Source } from '../lib/types';
+import type { Source, Topic } from '../lib/types';
 import { Markdown } from '../lib/markdown';
 import { Button } from './ui/button';
 import { Card } from './ui/card';
+import { Badge } from './ui/badge';
 import { Meta } from './ui/meta';
 
 export function SourceCard({
@@ -14,12 +15,14 @@ export function SourceCard({
   label,
   description,
   meta,
+  topics,
 }: {
   projectId: string;
   sourceId: number;
   label?: string;
   description?: string;
   meta?: string;
+  topics?: Topic[];
 }) {
   const [open, setOpen] = useState(false);
   const sourceQuery = useQuery({
@@ -36,6 +39,9 @@ export function SourceCard({
           <p className="text-sm font-medium">
             {label ?? `Source #${sourceId}`}
           </p>
+          {topics ? <div className="my-1 flex flex-wrap gap-1" aria-label="Topics">
+            {topics.map((topic) => <Badge key={topic.id} variant="secondary">{topic.name}</Badge>)}
+          </div> : null}
           <p className="text-xs text-muted-foreground">
             {description ?? `Source #${sourceId}`}
             {meta ? ` · ${meta}` : ''}
@@ -95,6 +101,9 @@ export function SourceCard({
 export function SourceBody({ source }: { source: Source }) {
   return (
     <div className="space-y-3">
+      <div className="flex flex-wrap gap-1" aria-label="Topics">
+        {source.topics.map((topic) => <Badge key={topic.id} variant="secondary">{topic.name}</Badge>)}
+      </div>
       <p className="text-sm text-muted-foreground">{source.description}</p>
       {source.content !== null ? (
         <Markdown text={source.content} />

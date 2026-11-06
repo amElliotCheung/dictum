@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 const APPLICATION_ID: i64 = 0x4449_4354; // DICT
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -38,7 +38,7 @@ pub enum StoreError {
         actual: i64,
     },
     #[error(
-        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 13 only; preserve the existing file"
+        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 14 only; preserve the existing file"
     )]
     UnsupportedSchema { version: i64, application_id: i64 },
 }
@@ -117,6 +117,7 @@ impl Store {
             id: new_project_id(&transaction)?,
             name: input.name,
             description: input.description,
+            topics: vec![],
             revision: 1,
             created_at: now.clone(),
             updated_at: now,
@@ -137,13 +138,17 @@ impl Store {
     }
 
     pub fn list_projects(&self, input: ListProjects) -> StoreResult<Vec<Project>> {
-        let connection = self.connect()?;
-        let mut statement = connection.prepare("SELECT * FROM projects ORDER BY created_at, id")?;
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
         let query = input.query.as_deref().map(str::to_lowercase);
-        let projects = statement
-            .query_map([], map_project)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(projects
+        let projects = {
+            let mut statement =
+                transaction.prepare("SELECT * FROM projects ORDER BY created_at, id")?;
+            statement
+                .query_map([], map_project)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut projects: Vec<_> = projects
             .into_iter()
             .filter(|project| {
                 query.as_ref().is_none_or(|query| {
@@ -151,7 +156,12 @@ impl Store {
                         || project.description.to_lowercase().contains(query)
                 })
             })
-            .collect())
+            .collect();
+        for project in &mut projects {
+            project.topics = project_topics(&transaction, &project.id)?;
+        }
+        transaction.commit()?;
+        Ok(projects)
     }
 
     pub fn update_project(&self, input: UpdateProject) -> StoreResult<Project> {
@@ -176,6 +186,7 @@ impl Store {
         project.description = input.description;
         project.revision += 1;
         project.updated_at = timestamp(Utc::now());
+        project.topics = project_topics(&transaction, &project.id)?;
         transaction.execute(
             "UPDATE projects SET description=?2, revision=?3, updated_at=?4 WHERE id=?1",
             params![
@@ -217,6 +228,7 @@ impl Store {
             params![input.title, input.problem_or_goal, input.design, encode(&input.acceptance_criteria)?, input.alternatives_rejected, now, input.project_id, status_name(status), kind_name(input.kind), input.trigger_event, priority_name(input.priority), input.parent_task_id],
         )?;
         let id = transaction.last_insert_rowid();
+        replace_topics(&transaction, &input.project_id, "task", id, &input.topics)?;
         replace_context_sources(
             &transaction,
             &input.project_id,
@@ -244,6 +256,7 @@ impl Store {
     }
 
     pub fn list_tasks(&self, input: ListTasks) -> StoreResult<Vec<TaskSummary>> {
+        let topic = input.topic.as_deref().map(topic_key).transpose()?;
         if let Some(label) = &input.trigger_event {
             required(label, "trigger_event")?;
         }
@@ -255,11 +268,11 @@ impl Store {
         }
         let ids = {
             let mut statement = transaction.prepare(
-                "SELECT id FROM tasks WHERE project_id=?1 AND (?2 IS NULL OR priority=?2) ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END, id",
+                "SELECT id FROM tasks WHERE project_id=?1 AND (?2 IS NULL OR priority=?2) AND (?3 IS NULL OR EXISTS(SELECT 1 FROM task_topics link JOIN topics topic ON topic.id=link.topic_id AND topic.project_id=link.project_id WHERE link.task_id=tasks.id AND link.project_id=?1 AND topic.name_key=?3)) ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END, id",
             )?;
             statement
                 .query_map(
-                    params![input.project_id, input.priority.map(priority_name)],
+                    params![input.project_id, input.priority.map(priority_name), topic],
                     |row| row.get(0),
                 )?
                 .collect::<rusqlite::Result<Vec<i64>>>()?
@@ -309,6 +322,7 @@ impl Store {
             }
             result.push(TaskSummary {
                 project_id: task.project_id,
+                topics: task.topics,
                 kind: task.kind,
                 priority: task.priority,
                 trigger_event: task.trigger_event,
@@ -330,11 +344,12 @@ impl Store {
         // All components belong to the same read snapshot across concurrent writers.
         let transaction = connection.transaction()?;
         ensure_project(&transaction, project_id)?;
-        let project = transaction.query_row(
+        let mut project = transaction.query_row(
             "SELECT * FROM projects WHERE id=?1",
             [project_id],
             map_project,
         )?;
+        project.topics = project_topics(&transaction, project_id)?;
         let task = task_id
             .map(|id| task_by_id(&transaction, project_id, id))
             .transpose()?;
@@ -438,6 +453,9 @@ impl Store {
             &task.acceptance_criteria,
         )?;
         validate_task_lifecycle(task.kind, task.status, task.trigger_event.as_deref())?;
+        if let Some(topics) = input.topics {
+            replace_topics(&transaction, &input.project_id, "task", task.id, &topics)?;
+        }
         if let Some(ids) = input.context_source_ids {
             replace_context_sources(&transaction, &input.project_id, task.id, &ids)?;
         }
@@ -625,17 +643,15 @@ impl Store {
             "INSERT INTO sources (project_id, name, description, content, locator, context_policy, action, revision, created_at, updated_at) VALUES (?8, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)",
             params![input.name, input.description, input.content, input.locator, policy_name(input.context_policy), encode_optional(&input.action)?, timestamp(now), input.project_id],
         )?;
-        let result = source_by_id(
-            &transaction,
-            &input.project_id,
-            transaction.last_insert_rowid(),
-            now,
-        )?;
+        let id = transaction.last_insert_rowid();
+        replace_topics(&transaction, &input.project_id, "source", id, &input.topics)?;
+        let result = source_by_id(&transaction, &input.project_id, id, now)?;
         transaction.commit()?;
         Ok(result)
     }
 
     pub fn list_sources(&self, input: ListSources) -> StoreResult<SourceList> {
+        let topic = input.topic.as_deref().map(topic_key).transpose()?;
         let page_size = input.page_size.unwrap_or(20);
         if !(1..=100).contains(&page_size) {
             return invalid("page_size must be between 1 and 100");
@@ -669,11 +685,12 @@ impl Store {
         let mut result = Vec::new();
         {
             let mut statement = transaction.prepare(
-                "SELECT id FROM sources WHERE project_id=?1 AND (?2 IS NULL OR id<?2) ORDER BY id DESC",
+                "SELECT id FROM sources WHERE project_id=?1 AND (?2 IS NULL OR id<?2) AND (?3 IS NULL OR EXISTS(SELECT 1 FROM source_topics link JOIN topics topic ON topic.id=link.topic_id AND topic.project_id=link.project_id WHERE link.source_id=sources.id AND link.project_id=?1 AND topic.name_key=?3)) ORDER BY id DESC",
             )?;
-            let ids = statement.query_map(params![input.project_id, input.before_id], |row| {
-                row.get::<_, i64>(0)
-            })?;
+            let ids = statement
+                .query_map(params![input.project_id, input.before_id, topic], |row| {
+                    row.get::<_, i64>(0)
+                })?;
             for id in ids {
                 let id = id?;
                 if linked.as_ref().is_some_and(|ids| !ids.contains(&id)) {
@@ -714,9 +731,12 @@ impl Store {
     }
 
     pub fn get_source(&self, project_id: &str, source_id: i64) -> StoreResult<Source> {
-        let connection = self.connect()?;
-        ensure_project(&connection, project_id)?;
-        source_by_id(&connection, project_id, source_id, Utc::now())
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction()?;
+        ensure_project(&transaction, project_id)?;
+        let source = source_by_id(&transaction, project_id, source_id, Utc::now())?;
+        transaction.commit()?;
+        Ok(source)
     }
 
     pub fn update_source(&self, input: UpdateSource) -> StoreResult<Source> {
@@ -759,6 +779,15 @@ impl Store {
             &source.locator,
             &source.action,
         )?;
+        if let Some(topics) = input.topics {
+            replace_topics(
+                &transaction,
+                &input.project_id,
+                "source",
+                source.id,
+                &topics,
+            )?;
+        }
         if source.content != previous_content
             || source.locator != previous_locator
             || source.action != previous_action
@@ -867,12 +896,22 @@ impl Store {
             "INSERT INTO decisions (project_id, statement, rationale, alternatives_rejected, supersedes_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![input.project_id, input.statement, input.rationale, input.alternatives_rejected, input.supersedes_id, timestamp(Utc::now())],
         )?;
-        let result = transaction.query_row("SELECT id, project_id, statement, rationale, alternatives_rejected, supersedes_id, created_at, 1 AS is_current, id AS current_decision_id FROM decisions WHERE id=?1 AND project_id=?2", params![transaction.last_insert_rowid(), input.project_id], map_decision)?;
+        let id = transaction.last_insert_rowid();
+        replace_topics(
+            &transaction,
+            &input.project_id,
+            "decision",
+            id,
+            &input.topics,
+        )?;
+        let mut result = transaction.query_row("SELECT id, project_id, statement, rationale, alternatives_rejected, supersedes_id, created_at, 1 AS is_current, id AS current_decision_id FROM decisions WHERE id=?1 AND project_id=?2", params![id, input.project_id], map_decision)?;
+        result.topics = record_topics(&transaction, &input.project_id, "decision", id)?;
         transaction.commit()?;
         Ok(result)
     }
 
     pub fn list_decisions(&self, input: ListDecisions) -> StoreResult<DecisionList> {
+        let topic = input.topic.as_deref().map(topic_key).transpose()?;
         let page_size = input.page_size.unwrap_or(20);
         if !(1..=100).contains(&page_size) {
             return invalid("page_size must be between 1 and 100");
@@ -889,7 +928,7 @@ impl Store {
             ensure_exists(&transaction, &input.project_id, "decision", id)?;
         }
         let mut result = {
-            let mut statement = transaction.prepare("SELECT d.id, d.project_id, d.statement, d.rationale, d.alternatives_rejected, d.supersedes_id, d.created_at, NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id) AS is_current, d.id AS current_decision_id FROM decisions d WHERE d.project_id=?1 AND (?2 IS NULL OR d.id<?2) AND (?3 OR NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id)) ORDER BY d.id DESC LIMIT ?4")?;
+            let mut statement = transaction.prepare("SELECT d.id, d.project_id, d.statement, d.rationale, d.alternatives_rejected, d.supersedes_id, d.created_at, NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id) AS is_current, d.id AS current_decision_id FROM decisions d WHERE d.project_id=?1 AND (?2 IS NULL OR d.id<?2) AND (?3 OR NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id)) AND (?5 IS NULL OR EXISTS(SELECT 1 FROM decision_topics link JOIN topics topic ON topic.id=link.topic_id AND topic.project_id=link.project_id WHERE link.decision_id=d.id AND link.project_id=?1 AND topic.name_key=?5)) ORDER BY d.id DESC LIMIT ?4")?;
             statement
                 .query_map(
                     params![
@@ -897,6 +936,7 @@ impl Store {
                         input.before_id,
                         input.include_superseded,
                         page_size + 1,
+                        topic,
                     ],
                     map_decision,
                 )?
@@ -908,6 +948,8 @@ impl Store {
         // Resolve only returned historical records, using the same read snapshot as the page.
         // The current decision may be newer than the cursor and outside this page.
         for decision in &mut result {
+            decision.topics =
+                record_topics(&transaction, &input.project_id, "decision", decision.id)?;
             if !decision.is_current {
                 decision.current_decision_id =
                     current_decision_id(&transaction, &input.project_id, decision.id)?;
@@ -1040,10 +1082,101 @@ fn map_project(row: &Row<'_>) -> rusqlite::Result<Project> {
         id: row.get("id")?,
         name: row.get("name")?,
         description: row.get("description")?,
+        topics: vec![],
         revision: row.get("revision")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
+}
+
+fn topic_name(value: &str) -> StoreResult<String> {
+    let name = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    required(&name, "topic")?;
+    Ok(name)
+}
+
+fn topic_key(value: &str) -> StoreResult<String> {
+    Ok(topic_name(value)?.to_lowercase())
+}
+
+fn map_topic(row: &Row<'_>) -> rusqlite::Result<Topic> {
+    Ok(Topic {
+        id: row.get("id")?,
+        project_id: row.get("project_id")?,
+        name: row.get("name")?,
+    })
+}
+
+fn project_topics(connection: &Connection, project_id: &str) -> StoreResult<Vec<Topic>> {
+    let mut statement = connection
+        .prepare("SELECT id, project_id, name FROM topics WHERE project_id=?1 ORDER BY id")?;
+    Ok(statement
+        .query_map([project_id], map_topic)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+// Both identifiers come only from this internal whitelist, never from tool input.
+fn topic_relation(entity: &str) -> (&'static str, &'static str) {
+    match entity {
+        "task" => ("task_topics", "task_id"),
+        "source" => ("source_topics", "source_id"),
+        "decision" => ("decision_topics", "decision_id"),
+        _ => unreachable!("internal topic entity name"),
+    }
+}
+
+fn record_topics(
+    connection: &Connection,
+    project_id: &str,
+    entity: &str,
+    id: i64,
+) -> StoreResult<Vec<Topic>> {
+    let (table, column) = topic_relation(entity);
+    let mut statement = connection.prepare(&format!("SELECT topic.id, topic.project_id, topic.name FROM topics topic JOIN {table} link ON link.topic_id=topic.id AND link.project_id=topic.project_id WHERE link.project_id=?1 AND link.{column}=?2 ORDER BY topic.id"))?;
+    Ok(statement
+        .query_map(params![project_id, id], map_topic)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Called only inside the record's immediate write transaction. Validate the entire
+/// replacement before creating topics; any later failure rolls back all changes.
+fn replace_topics(
+    connection: &Connection,
+    project_id: &str,
+    entity: &str,
+    id: i64,
+    names: &[String],
+) -> StoreResult<()> {
+    if names.is_empty() {
+        return invalid("topics must contain at least one nonblank topic name");
+    }
+    let names = names
+        .iter()
+        .map(|name| topic_name(name))
+        .collect::<StoreResult<Vec<_>>>()?;
+    let (table, column) = topic_relation(entity);
+    connection.execute(
+        &format!("DELETE FROM {table} WHERE project_id=?1 AND {column}=?2"),
+        params![project_id, id],
+    )?;
+    let mut seen = BTreeSet::new();
+    for name in names {
+        let key = name.to_lowercase();
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        connection.execute("INSERT INTO topics (project_id, name, name_key) VALUES (?1, ?2, ?3) ON CONFLICT(project_id, name_key) DO NOTHING", params![project_id, name, key])?;
+        let topic_id: i64 = connection.query_row(
+            "SELECT id FROM topics WHERE project_id=?1 AND name_key=?2",
+            params![project_id, key],
+            |row| row.get(0),
+        )?;
+        connection.execute(
+            &format!("INSERT INTO {table} (project_id, {column}, topic_id) VALUES (?1, ?2, ?3)"),
+            params![project_id, id, topic_id],
+        )?;
+    }
+    Ok(())
 }
 
 /// Prefer a real SQLite built-in when available; never register an emulation/extension.
@@ -1202,6 +1335,7 @@ fn task_by_id(connection: &Connection, project_id: &str, id: i64) -> StoreResult
             |row| {
                 Ok(Task {
                     project_id: row.get("project_id")?,
+                    topics: vec![],
                     parent_task_id: row.get("parent_task_id")?,
                     kind: enum_column(row, "kind")?,
                     priority: enum_column(row, "priority")?,
@@ -1225,6 +1359,7 @@ fn task_by_id(connection: &Connection, project_id: &str, id: i64) -> StoreResult
         )
         .optional()?
         .ok_or(StoreError::NotFound { entity: "task", id })?;
+    task.topics = record_topics(connection, project_id, "task", id)?;
     let mut statement = connection.prepare(
         "SELECT source_id FROM task_context_sources WHERE task_id=?1 AND project_id=?2 ORDER BY source_id",
     )?;
@@ -1356,6 +1491,7 @@ fn source_by_id(
             |row| {
                 Ok(Source {
                     project_id: row.get("project_id")?,
+                    topics: vec![],
                     id: row.get("id")?,
                     name: row.get("name")?,
                     description: row.get("description")?,
@@ -1378,6 +1514,7 @@ fn source_by_id(
             entity: "source",
             id,
         })?;
+    source.topics = record_topics(connection, project_id, "source", id)?;
     if let Some(SourceAction {
         trigger: ActionTrigger::Interval { every_minutes },
         ..
@@ -1402,6 +1539,7 @@ fn source_by_id(
 fn descriptor(source: &Source) -> SourceDescriptor {
     SourceDescriptor {
         project_id: source.project_id.clone(),
+        topics: source.topics.clone(),
         id: source.id,
         name: source.name.clone(),
         description: source.description.clone(),
@@ -1420,9 +1558,13 @@ fn descriptor(source: &Source) -> SourceDescriptor {
 
 fn current_decisions(connection: &Connection, project_id: &str) -> StoreResult<Vec<Decision>> {
     let mut statement = connection.prepare("SELECT d.id, d.project_id, d.statement, d.rationale, d.alternatives_rejected, d.supersedes_id, d.created_at, 1 AS is_current, d.id AS current_decision_id FROM decisions d WHERE d.project_id=?1 AND NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id) ORDER BY d.id")?;
-    Ok(statement
+    let mut decisions = statement
         .query_map([project_id], map_decision)?
-        .collect::<rusqlite::Result<Vec<_>>>()?)
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for decision in &mut decisions {
+        decision.topics = record_topics(connection, project_id, "decision", decision.id)?;
+    }
+    Ok(decisions)
 }
 
 fn current_decision_id(
@@ -1451,6 +1593,7 @@ fn current_decision_id(
 fn map_decision(row: &Row<'_>) -> rusqlite::Result<Decision> {
     Ok(Decision {
         project_id: row.get("project_id")?,
+        topics: vec![],
         id: row.get("id")?,
         statement: row.get("statement")?,
         rationale: row.get("rationale")?,

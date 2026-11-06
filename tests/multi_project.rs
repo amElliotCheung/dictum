@@ -19,7 +19,7 @@ fn scoped(client: &Project, project_id: &str, name: &str, mut input: Value) -> V
 }
 
 fn brief() -> Value {
-    json!({"title": "Implement feature", "problem_or_goal": "Keep work isolated", "design": "Use explicit project scope", "acceptance_criteria": ["Only this project's records are used"]})
+    json!({"topics": ["Project workflow"], "title": "Implement feature", "problem_or_goal": "Keep work isolated", "design": "Use explicit project scope", "acceptance_criteria": ["Only this project's records are used"]})
 }
 
 fn project(client: &Project, name: &str, description: &str) -> String {
@@ -158,7 +158,7 @@ fn project_description_edits_preserve_identity_context_and_restart_state() {
         &client,
         scope,
         "create_source",
-        json!({"name": "Requirements", "description": "Project context", "content": "Keep these records", "context_policy": "always"}),
+        json!({"topics": ["Project workflow"], "name": "Requirements", "description": "Project context", "content": "Keep these records", "context_policy": "always"}),
     );
     let dependency = scoped(&client, scope, "create_task", brief());
     let mut task_input = brief();
@@ -181,7 +181,7 @@ fn project_description_edits_preserve_identity_context_and_restart_state() {
         &client,
         scope,
         "record_decision",
-        json!({"statement": "Preserve project history", "rationale": "Description edits retain context"}),
+        json!({"topics": ["Project workflow"], "statement": "Preserve project history", "rationale": "Description edits retain context"}),
     );
     let mut context = scoped(
         &client,
@@ -373,7 +373,7 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
         &client,
         &scope,
         "create_source",
-        json!({"name": "Input", "description": "Scoped source", "locator": "https://example.test/input", "action": {"instruction": "Read", "trigger": {"kind": "manual"}}}),
+        json!({"topics": ["Project workflow"], "name": "Input", "description": "Scoped source", "locator": "https://example.test/input", "action": {"instruction": "Read", "trigger": {"kind": "manual"}}}),
     );
     let task = scoped(&client, &scope, "create_task", brief());
     let requests = [
@@ -399,7 +399,7 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
         ),
         (
             "create_source",
-            json!({"name": "New", "description": "Scoped source", "content": "Document"}),
+            json!({"topics": ["Project workflow"], "name": "New", "description": "Scoped source", "content": "Document"}),
         ),
         ("list_sources", json!({})),
         ("get_source", json!({"source_id": source["id"]})),
@@ -413,7 +413,7 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
         ),
         (
             "record_decision",
-            json!({"statement": "Should never be saved", "rationale": "Requires explicit scope"}),
+            json!({"topics": ["Project workflow"], "statement": "Should never be saved", "rationale": "Requires explicit scope"}),
         ),
         ("list_decisions", json!({})),
     ];
@@ -455,7 +455,7 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
         ),
         (
             "record_decision",
-            json!({"statement": "Unknown predecessor", "rationale": "Invalid link", "supersedes_id": 999_999}),
+            json!({"topics": ["Project workflow"], "statement": "Unknown predecessor", "rationale": "Invalid link", "supersedes_id": 999_999}),
         ),
     ] {
         input["project_id"] = json!(scope);
@@ -490,19 +490,19 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
             client,
             scope,
             "create_source",
-            json!({"name": "Policy", "description": "Always context", "content": format!("Policy for {scope}"), "context_policy": "always"}),
+            json!({"topics": ["Project workflow"], "name": "Policy", "description": "Always context", "content": format!("Policy for {scope}"), "context_policy": "always"}),
         );
         let external = scoped(
             client,
             scope,
             "create_source",
-            json!({"name": "Action", "description": "Own action state", "locator": format!("https://example.test/{scope}"), "action": {"instruction": "Read", "trigger": {"kind": "interval", "every_minutes": 60}}}),
+            json!({"topics": ["Project workflow"], "name": "Action", "description": "Own action state", "locator": format!("https://example.test/{scope}"), "action": {"instruction": "Read", "trigger": {"kind": "interval", "every_minutes": 60}}}),
         );
         let decision = scoped(
             client,
             scope,
             "record_decision",
-            json!({"statement": format!("Choice for {scope}"), "rationale": "Scoped decision", "alternatives_rejected": format!("- Rejected alternative private to {scope}")}),
+            json!({"topics": ["Project workflow"], "statement": format!("Choice for {scope}"), "rationale": "Scoped decision", "alternatives_rejected": format!("- Rejected alternative private to {scope}")}),
         );
         let prerequisite = scoped(client, scope, "create_task", brief());
         let mut input = brief();
@@ -541,7 +541,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
             ),
             (
                 "record_decision",
-                json!({"statement": "Foreign successor", "rationale": "Invalid link", "alternatives_rejected": "This rejected write must not replace private alternatives.", "supersedes_id": foreign_decision["id"]}),
+                json!({"topics": ["Project workflow"], "statement": "Foreign successor", "rationale": "Invalid link", "alternatives_rejected": "This rejected write must not replace private alternatives.", "supersedes_id": foreign_decision["id"]}),
             ),
         ] {
             input["project_id"] = json!(scope);
@@ -659,7 +659,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
         &first,
         &a,
         "record_decision",
-        json!({"statement": "New A choice", "rationale": "Applies only to A", "alternatives_rejected": "- Keep the former A choice: superseded for A only.", "supersedes_id": a_decision["id"]}),
+        json!({"topics": ["Project workflow"], "statement": "New A choice", "rationale": "Applies only to A", "alternatives_rejected": "- Keep the former A choice: superseded for A only.", "supersedes_id": a_decision["id"]}),
     );
     assert_eq!(
         scoped(&second, &b, "list_decisions", json!({}))["decisions"],
@@ -835,13 +835,13 @@ fn database_foreign_keys_also_prevent_cross_project_relationships() {
         &client,
         &b,
         "create_source",
-        json!({"name": "Foreign source", "description": "Fixture", "content": "Document"}),
+        json!({"topics": ["Project workflow"], "name": "Foreign source", "description": "Fixture", "content": "Document"}),
     );
     let b_decision = scoped(
         &client,
         &b,
         "record_decision",
-        json!({"statement": "Foreign choice", "rationale": "Fixture"}),
+        json!({"topics": ["Project workflow"], "statement": "Foreign choice", "rationale": "Fixture"}),
     );
     let before = snapshot(&database);
     let connection = rusqlite::Connection::open(&database).unwrap();

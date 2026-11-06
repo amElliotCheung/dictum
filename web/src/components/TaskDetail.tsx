@@ -76,6 +76,9 @@ function TaskContent({ context, tasks, onOpenTask }: { context: TaskContext; tas
         <Meta label="Created">{formatDate(task.created_at)}</Meta>
         <Meta label="Updated">{formatDate(task.updated_at)}</Meta>
       </dl>
+      <div className="flex flex-wrap gap-1" aria-label="Topics">
+        {task.topics.map((topic) => <Badge key={topic.id} variant="secondary">{topic.name}</Badge>)}
+      </div>
       {parent_task ? (
         <section className="rounded-lg border bg-muted/20 p-3" aria-label="Parent task">
           <div className="flex flex-wrap items-center justify-between gap-2">

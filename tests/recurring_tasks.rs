@@ -15,7 +15,7 @@ fn call(client: &Project, name: &str, input: Value) -> Value {
 }
 
 fn brief(title: &str, kind: &str) -> Value {
-    json!({
+    json!({"topics": ["Project workflow"],
         "title": title,
         "kind": kind,
         "problem_or_goal": "Keep useful evidence of each authorized execution.",
@@ -81,7 +81,7 @@ fn source(client: &Project, name: &str, content: &str) -> Value {
     call(
         client,
         "create_source",
-        json!({"name": name, "description": "Supporting evidence for a reported execution", "content": content}),
+        json!({"topics": ["Project workflow"], "name": name, "description": "Supporting evidence for a reported execution", "content": content}),
     )
 }
 
@@ -156,7 +156,7 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
     let always_context = call(
         &client,
         "create_source",
-        json!({
+        json!({"topics": ["Project workflow"],
             "name": "Project conventions", "description": "Context for every execution",
             "content": "# Conventions\nReport the inspected revision and actual outcome.",
             "context_policy": "always"
