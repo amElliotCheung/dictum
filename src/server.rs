@@ -259,7 +259,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Record an accepted project-wide decision with its rationale, optional nullable Markdown alternatives_rejected, and server-assigned UTC creation time. Omitted or null alternatives_rejected stores null; empty text is allowed. Decisions are immutable. Optional supersedes_id replaces a currently active decision, preserving its original fields; each successor has its own alternatives_rejected value. Each current decision can have only one successor. This is not a proposal or voting workflow.",
+        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Record an accepted project-wide decision with a complete current statement and rationale, optional nullable Markdown alternatives_rejected, and server-assigned UTC creation time. Omitted or null alternatives_rejected stores null; empty text is allowed. Decisions are immutable. Optional supersedes_id replaces a current decision, preserving its original fields; each successor has its own alternatives_rejected value. A reversal creates a new decision with today's reasons. Each current decision can have only one successor. Results include server-derived current_decision_id, equal to the new record's id at creation. Replacing an already superseded decision fails with its current_decision_id; reread the current decision before retrying. This is not a proposal or voting workflow.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -275,7 +275,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Read full accepted decisions newest ID first in an existing project_id. page_size defaults to 20 (1..100); pass next_before_id as before_id for older pages. The cursor must identify a decision in this project, even if excluded by the current/history filter. Current decisions are the default; include_superseded also returns history with supersession links and each record's rationale and nullable alternatives_rejected. Filtering applies before the page limit. Later appends do not enter older ID pages, but supersession can change current membership. get_context always includes all current decisions, independently of pagination.",
+        description = "Read full accepted decisions newest ID first in an existing project_id. page_size defaults to 20 (1..100); pass next_before_id as before_id for older pages. The cursor must identify a decision in this project, even if excluded by the current/history filter. Current decisions are the default; include_superseded also returns history with supersession links and each record's rationale and nullable alternatives_rejected. Each record includes server-derived current_decision_id identifying the current end of its entire chain at read time, even outside this page; it equals id when is_current is true. Follow that current decision for accepted intent. Filtering applies before the page limit. Later appends do not enter older ID pages, but supersession can change current membership and current_decision_id on subsequent reads. get_context always includes all current decisions, independently of pagination.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_decisions(

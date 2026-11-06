@@ -353,7 +353,7 @@ impl Store {
             .into_iter()
             .map(|id| source_by_id(&transaction, project_id, id, now))
             .collect::<StoreResult<Vec<_>>>()?;
-        let current_decisions = decisions(&transaction, project_id, false)?;
+        let current_decisions = current_decisions(&transaction, project_id)?;
         let parent_task = task
             .as_ref()
             .and_then(|task| task.parent_task_id)
@@ -856,14 +856,10 @@ impl Store {
         ensure_project(&transaction, &input.project_id)?;
         if let Some(id) = input.supersedes_id {
             ensure_exists(&transaction, &input.project_id, "decision", id)?;
-            let superseded: bool = transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM decisions WHERE supersedes_id=?1 AND project_id=?2)",
-                params![id, input.project_id],
-                |row| row.get(0),
-            )?;
-            if superseded {
+            let current_id = current_decision_id(&transaction, &input.project_id, id)?;
+            if current_id != id {
                 return invalid(format!(
-                    "decision {id} is already superseded; replace its current successor"
+                    "decision {id} is already superseded; current_decision_id={current_id}; reread that decision before replacing it"
                 ));
             }
         }
@@ -871,7 +867,7 @@ impl Store {
             "INSERT INTO decisions (project_id, statement, rationale, alternatives_rejected, supersedes_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![input.project_id, input.statement, input.rationale, input.alternatives_rejected, input.supersedes_id, timestamp(Utc::now())],
         )?;
-        let result = transaction.query_row("SELECT id, project_id, statement, rationale, alternatives_rejected, supersedes_id, created_at, 1 AS is_current FROM decisions WHERE id=?1 AND project_id=?2", params![transaction.last_insert_rowid(), input.project_id], map_decision)?;
+        let result = transaction.query_row("SELECT id, project_id, statement, rationale, alternatives_rejected, supersedes_id, created_at, 1 AS is_current, id AS current_decision_id FROM decisions WHERE id=?1 AND project_id=?2", params![transaction.last_insert_rowid(), input.project_id], map_decision)?;
         transaction.commit()?;
         Ok(result)
     }
@@ -893,7 +889,7 @@ impl Store {
             ensure_exists(&transaction, &input.project_id, "decision", id)?;
         }
         let mut result = {
-            let mut statement = transaction.prepare("SELECT d.id, d.project_id, d.statement, d.rationale, d.alternatives_rejected, d.supersedes_id, d.created_at, NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id) AS is_current FROM decisions d WHERE d.project_id=?1 AND (?2 IS NULL OR d.id<?2) AND (?3 OR NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id)) ORDER BY d.id DESC LIMIT ?4")?;
+            let mut statement = transaction.prepare("SELECT d.id, d.project_id, d.statement, d.rationale, d.alternatives_rejected, d.supersedes_id, d.created_at, NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id) AS is_current, d.id AS current_decision_id FROM decisions d WHERE d.project_id=?1 AND (?2 IS NULL OR d.id<?2) AND (?3 OR NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id)) ORDER BY d.id DESC LIMIT ?4")?;
             statement
                 .query_map(
                     params![
@@ -909,6 +905,14 @@ impl Store {
         let has_more = result.len() > page_size as usize;
         result.truncate(page_size as usize);
         let next_before_id = has_more.then(|| result.last().expect("nonempty page").id);
+        // Resolve only returned historical records, using the same read snapshot as the page.
+        // The current decision may be newer than the cursor and outside this page.
+        for decision in &mut result {
+            if !decision.is_current {
+                decision.current_decision_id =
+                    current_decision_id(&transaction, &input.project_id, decision.id)?;
+            }
+        }
         transaction.commit()?;
         Ok(DecisionList {
             decisions: result,
@@ -1414,15 +1418,34 @@ fn descriptor(source: &Source) -> SourceDescriptor {
     }
 }
 
-fn decisions(
+fn current_decisions(connection: &Connection, project_id: &str) -> StoreResult<Vec<Decision>> {
+    let mut statement = connection.prepare("SELECT d.id, d.project_id, d.statement, d.rationale, d.alternatives_rejected, d.supersedes_id, d.created_at, 1 AS is_current, d.id AS current_decision_id FROM decisions d WHERE d.project_id=?1 AND NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id) ORDER BY d.id")?;
+    Ok(statement
+        .query_map([project_id], map_decision)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn current_decision_id(
     connection: &Connection,
     project_id: &str,
-    include_superseded: bool,
-) -> StoreResult<Vec<Decision>> {
-    let mut statement = connection.prepare("SELECT d.id, d.project_id, d.statement, d.rationale, d.alternatives_rejected, d.supersedes_id, d.created_at, NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id) AS is_current FROM decisions d WHERE d.project_id=?2 AND (?1 OR NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id)) ORDER BY d.id")?;
-    Ok(statement
-        .query_map(params![include_superseded, project_id], map_decision)?
-        .collect::<rusqlite::Result<Vec<_>>>()?)
+    decision_id: i64,
+) -> StoreResult<i64> {
+    Ok(connection.query_row(
+        "WITH RECURSIVE chain(id) AS (
+            SELECT id FROM decisions WHERE id=?1 AND project_id=?2
+            UNION ALL
+            SELECT successor.id FROM decisions successor
+            JOIN chain ON successor.supersedes_id=chain.id
+            WHERE successor.project_id=?2
+        )
+        SELECT chain.id FROM chain
+        WHERE NOT EXISTS (
+            SELECT 1 FROM decisions successor
+            WHERE successor.supersedes_id=chain.id AND successor.project_id=?2
+        )",
+        params![decision_id, project_id],
+        |row| row.get(0),
+    )?)
 }
 
 fn map_decision(row: &Row<'_>) -> rusqlite::Result<Decision> {
@@ -1435,6 +1458,7 @@ fn map_decision(row: &Row<'_>) -> rusqlite::Result<Decision> {
         supersedes_id: row.get("supersedes_id")?,
         created_at: row.get("created_at")?,
         is_current: row.get("is_current")?,
+        current_decision_id: row.get("current_decision_id")?,
     })
 }
 

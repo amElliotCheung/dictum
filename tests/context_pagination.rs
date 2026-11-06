@@ -306,6 +306,7 @@ fn decision_pages_filter_superseded_records_and_keep_cursors_valid() {
     );
     let mut historical = superseded;
     historical["is_current"] = json!(false);
+    historical["current_decision_id"] = replacement["id"].clone();
     assert_eq!(history["decisions"], json!([historical, oldest]));
     assert!(history["next_before_id"].is_null());
 }

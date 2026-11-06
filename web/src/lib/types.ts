@@ -137,6 +137,7 @@ export interface Decision {
   supersedes_id: number | null;
   created_at: string;
   is_current: boolean;
+  current_decision_id: number;
 }
 
 export interface DecisionList {

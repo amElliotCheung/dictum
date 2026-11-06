@@ -208,6 +208,24 @@ an accepted choice changes; each decision retains its own alternatives.
 The dashboard shows an **Alternatives rejected** section when the field is
 non-null, in both project and task-context decision cards.
 
+Every returned decision includes a server-derived `current_decision_id`: its own
+ID when current, or the ID at the current end of its supersession chain when
+historical. For example, if decision 41 chooses DynamoDB, 52 replaces it with
+PostgreSQL, and 68 replaces 52 with DynamoDB again, a subsequent history read
+returns `current_decision_id: 68` on all three records. Their statements,
+rationales and timestamps remain unchanged. The field is computed at read time,
+including when the current decision is outside the requested history page; it
+does not add a database column or require a schema migration.
+
+Normal context and decision discovery include only current choices. Use
+`list_decisions` with `include_superseded: true` for history, and follow each
+record's `current_decision_id` for current intent. Replacing a historical record
+fails and reports its current decision ID; reread the current choice before
+retrying. A reversal must create a new decision with a complete current statement
+and rationale, including the reasons that apply now. Supersession follows explicit
+links; the server does not infer that independently created decisions address
+the same question.
+
 ## Subtasks
 
 Create a direct subtask by supplying `parent_task_id` to `create_task`. Parent and

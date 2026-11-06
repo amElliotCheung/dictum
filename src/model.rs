@@ -231,6 +231,8 @@ pub struct Decision {
     pub supersedes_id: Option<i64>,
     pub created_at: String,
     pub is_current: bool,
+    /// Server-derived current decision in this supersession chain at read time; equals id when current.
+    pub current_decision_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

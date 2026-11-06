@@ -1144,6 +1144,7 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
     assert_eq!(decisions[0]["id"], current_decision["id"]);
     assert_eq!(decisions[0]["supersedes_id"], first_decision["id"]);
     assert_eq!(decisions[0]["is_current"], true);
+    assert_eq!(decisions[0]["current_decision_id"], current_decision["id"]);
     assert_eq!(decisions[0], current_decision);
     assert_eq!(
         decisions[0]["alternatives_rejected"],
@@ -1165,6 +1166,7 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
         .iter()
         .find(|entry| entry["id"] == first_decision["id"])
         .unwrap();
+    assert_eq!(predecessor["current_decision_id"], current_decision["id"]);
     assert_eq!(
         predecessor["alternatives_rejected"],
         first_decision["alternatives_rejected"]
