@@ -1,5 +1,7 @@
-//! Public MCP inputs and results. Timestamps are RFC 3339 UTC. Project IDs are UUIDv7;
-//! topic, task, comment, source, and decision IDs are local to a database and require an explicit project scope.
+//! Public MCP inputs and results. Timestamps are RFC 3339 UTC. All entity IDs and
+//! references are canonical UUIDv7 strings; records still require explicit project scope.
+
+pub use crate::id::Id;
 
 use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -24,8 +26,8 @@ where
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Topic {
-    pub id: i64,
-    pub project_id: String,
+    pub id: Id,
+    pub project_id: Id,
     /// Specific project-local name. Case and whitespace variants identify the same topic.
     pub name: String,
 }
@@ -33,7 +35,7 @@ pub struct Topic {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Project {
     /// Server-assigned UUIDv7. Names need not be unique; use this ID for scoped tools.
-    pub id: String,
+    pub id: Id,
     pub name: String,
     pub description: String,
     /// Compact directory, ordered by topic ID. Membership does not advance project revision.
@@ -55,7 +57,7 @@ pub struct CreateProject {
 #[serde(deny_unknown_fields)]
 pub struct UpdateProject {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: String,
+    pub project_id: Id,
     pub expected_revision: i64,
     /// Required nonblank replacement description. Each accepted update increments revision.
     pub description: String,
@@ -157,8 +159,8 @@ pub struct SourceAttempt {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Source {
-    pub id: i64,
-    pub project_id: String,
+    pub id: Id,
+    pub project_id: Id,
     pub topics: Vec<Topic>,
     pub name: String,
     pub description: String,
@@ -180,8 +182,8 @@ pub struct Source {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SourceDescriptor {
-    pub id: i64,
-    pub project_id: String,
+    pub id: Id,
+    pub project_id: Id,
     pub topics: Vec<Topic>,
     pub name: String,
     pub description: String,
@@ -195,11 +197,11 @@ pub struct SourceDescriptor {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Task {
-    pub id: i64,
-    pub project_id: String,
+    pub id: Id,
+    pub project_id: Id,
     pub topics: Vec<Topic>,
     /// Optional same-kind root task in this project. Parentage is organizational only.
-    pub parent_task_id: Option<i64>,
+    pub parent_task_id: Option<Id>,
     pub kind: TaskKind,
     pub priority: TaskPriority,
     /// External event label only; not a subscription, schedule, wakeup or authorization.
@@ -211,9 +213,9 @@ pub struct Task {
     pub alternatives_rejected: Option<String>,
     pub status: TaskStatus,
     pub progress: Option<String>,
-    pub context_source_ids: Vec<i64>,
-    pub prerequisite_task_ids: Vec<i64>,
-    pub completion_task_ids: Vec<i64>,
+    pub context_source_ids: Vec<Id>,
+    pub prerequisite_task_ids: Vec<Id>,
+    pub completion_task_ids: Vec<Id>,
     /// Task version, advanced only by update_task; comments retain their targeted version.
     pub revision: i64,
     pub created_at: String,
@@ -224,14 +226,14 @@ pub struct Task {
 pub struct DependencyState {
     /// A todo task whose before_start dependencies are all done.
     pub ready_to_start: bool,
-    pub unmet_prerequisite_task_ids: Vec<i64>,
-    pub unmet_completion_task_ids: Vec<i64>,
+    pub unmet_prerequisite_task_ids: Vec<Id>,
+    pub unmet_completion_task_ids: Vec<Id>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TaskSummary {
-    pub id: i64,
-    pub project_id: String,
+    pub id: Id,
+    pub project_id: Id,
     pub topics: Vec<Topic>,
     pub kind: TaskKind,
     pub priority: TaskPriority,
@@ -246,18 +248,18 @@ pub struct TaskSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Decision {
-    pub id: i64,
-    pub project_id: String,
+    pub id: Id,
+    pub project_id: Id,
     /// Classification retained with this immutable decision, including after supersession.
     pub topics: Vec<Topic>,
     pub statement: String,
     pub rationale: String,
     pub alternatives_rejected: Option<String>,
-    pub supersedes_id: Option<i64>,
+    pub supersedes_id: Option<Id>,
     pub created_at: String,
     pub is_current: bool,
     /// Server-derived current decision in this supersession chain at read time; equals id when current.
-    pub current_decision_id: i64,
+    pub current_decision_id: Id,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -285,20 +287,20 @@ pub struct ExecutionResult {
     pub outcome: ActionOutcome,
     /// Source identities retained for this execution; source contents remain mutable.
     #[serde(default)]
-    pub output_source_ids: Vec<i64>,
+    pub output_source_ids: Vec<Id>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TaskComment {
-    pub id: i64,
-    pub project_id: String,
-    pub task_id: i64,
+    pub id: Id,
+    pub project_id: Id,
+    pub task_id: Id,
     /// Target task version, not the revision produced by appending a comment.
     pub task_revision: i64,
     /// Markdown discussion or reported execution evidence; not independently verified.
     pub body: String,
     /// Optional existing comment on this same task. Replies are not nested in reads.
-    pub reply_to_comment_id: Option<i64>,
+    pub reply_to_comment_id: Option<Id>,
     /// Server-assigned UTC recording time, not an independently observed execution time.
     pub recorded_at: String,
     pub execution_result: Option<ExecutionResult>,
@@ -307,27 +309,27 @@ pub struct TaskComment {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecordTaskComment {
-    pub project_id: String,
-    pub task_id: i64,
+    pub project_id: Id,
+    pub task_id: Id,
     /// Required target task version, between 1 and the current revision, inclusive.
     pub task_revision: i64,
     /// Useful to later agents; prefer 1-3 short sentences/bullets with new findings or evidence.
     /// For executions, identify work/checks, tested implementation, outcome and limitations.
     /// Omit narration and duplication. Nonblank Markdown, max 4,000 characters, not a target.
     pub body: String,
-    pub reply_to_comment_id: Option<i64>,
+    pub reply_to_comment_id: Option<Id>,
     pub execution_result: Option<ExecutionResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListTaskComments {
-    pub project_id: String,
-    pub task_id: i64,
+    pub project_id: Id,
+    pub task_id: Id,
     /// Prefer small pages (e.g. 5) for a concrete question; default 20, range 1..100.
     pub page_size: Option<i64>,
     /// Return comments older than this comment ID, which must belong to this task/project.
-    pub before_id: Option<i64>,
+    pub before_id: Option<Id>,
     /// Omitted: all comments. True: execution comments. False: ordinary comments.
     pub has_execution_result: Option<bool>,
 }
@@ -337,27 +339,27 @@ pub struct TaskCommentList {
     /// Newest IDs first. Later appends do not change subsequent pages.
     pub comments: Vec<TaskComment>,
     /// Pass as before_id for the next page; absent when no older entries remain.
-    pub next_before_id: Option<i64>,
+    pub next_before_id: Option<Id>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GetTaskComment {
-    pub project_id: String,
-    pub task_id: i64,
-    pub comment_id: i64,
+    pub project_id: Id,
+    pub task_id: Id,
+    pub comment_id: Id,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateTask {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: String,
+    pub project_id: Id,
     /// Nonempty specific topic names. Reuse the project directory; missing names are created atomically.
     #[schemars(length(min = 1))]
     pub topics: Vec<String>,
     /// Optional root parent in this project with the same task kind. Nesting is one level.
-    pub parent_task_id: Option<i64>,
+    pub parent_task_id: Option<Id>,
     /// Immutable after creation. Defaults to one_time (todo); recurring defaults to active.
     #[serde(default)]
     pub kind: TaskKind,
@@ -373,18 +375,18 @@ pub struct CreateTask {
     pub acceptance_criteria: Vec<String>,
     pub alternatives_rejected: Option<String>,
     #[serde(default)]
-    pub context_source_ids: Vec<i64>,
+    pub context_source_ids: Vec<Id>,
     #[serde(default)]
-    pub prerequisite_task_ids: Vec<i64>,
+    pub prerequisite_task_ids: Vec<Id>,
     #[serde(default)]
-    pub completion_task_ids: Vec<i64>,
+    pub completion_task_ids: Vec<Id>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListTasks {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: String,
+    pub project_id: Id,
     /// Exact project-local topic name, ignoring case and whitespace. Unknown names match nothing.
     pub topic: Option<String>,
     /// Omitted: all tasks. Null: roots only. ID: direct children of this task.
@@ -393,7 +395,7 @@ pub struct ListTasks {
         deserialize_with = "nullable_patch",
         skip_serializing_if = "Option::is_none"
     )]
-    pub parent_task_id: Option<Option<i64>>,
+    pub parent_task_id: Option<Option<Id>>,
     pub kind: Option<TaskKind>,
     /// Exact priority filter. Results sort high, medium, low, then ascending ID.
     pub priority: Option<TaskPriority>,
@@ -408,17 +410,17 @@ pub struct ListTasks {
 #[serde(deny_unknown_fields)]
 pub struct GetContext {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: String,
+    pub project_id: Id,
     /// Omit or pass null for project-only context; an ID adds that task's context.
-    pub task_id: Option<i64>,
+    pub task_id: Option<Id>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateTask {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: String,
-    pub task_id: i64,
+    pub project_id: Id,
+    pub task_id: Id,
     pub expected_revision: i64,
     /// Omitted: preserve. Nonempty array: replace; null and empty arrays are invalid.
     #[serde(
@@ -434,7 +436,7 @@ pub struct UpdateTask {
         deserialize_with = "nullable_patch",
         skip_serializing_if = "Option::is_none"
     )]
-    pub parent_task_id: Option<Option<i64>>,
+    pub parent_task_id: Option<Option<Id>>,
     /// Omitted: preserve. Supplied: replace under expected_revision.
     pub priority: Option<TaskPriority>,
     /// Recurring only. Omitted: preserve. Null: clear. Nonblank string: replace.
@@ -462,16 +464,16 @@ pub struct UpdateTask {
         skip_serializing_if = "Option::is_none"
     )]
     pub progress: Option<Option<String>>,
-    pub context_source_ids: Option<Vec<i64>>,
-    pub prerequisite_task_ids: Option<Vec<i64>>,
-    pub completion_task_ids: Option<Vec<i64>>,
+    pub context_source_ids: Option<Vec<Id>>,
+    pub prerequisite_task_ids: Option<Vec<Id>>,
+    pub completion_task_ids: Option<Vec<Id>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSource {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: String,
+    pub project_id: Id,
     /// Nonempty specific topic names; reuse or create within this project atomically.
     #[schemars(length(min = 1))]
     pub topics: Vec<String>,
@@ -484,38 +486,38 @@ pub struct CreateSource {
     pub action: Option<SourceAction>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListSources {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: String,
+    pub project_id: Id,
     /// Exact project-local topic name, ignoring case and whitespace. Combines with other filters.
     pub topic: Option<String>,
     /// Filter by explicit task context links, not execution outputs or implicit always sources.
-    pub task_id: Option<i64>,
+    pub task_id: Option<Id>,
     pub representation: Option<Representation>,
     pub action_due: Option<bool>,
     pub query: Option<String>,
     /// Default 20; must be between 1 and 100.
     pub page_size: Option<i64>,
     /// Return older source IDs; the cursor must belong to this project, regardless of filters.
-    pub before_id: Option<i64>,
+    pub before_id: Option<Id>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GetSource {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: String,
-    pub source_id: i64,
+    pub project_id: Id,
+    pub source_id: Id,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateSource {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: String,
-    pub source_id: i64,
+    pub project_id: Id,
+    pub source_id: Id,
     pub expected_revision: i64,
     /// Omitted: preserve. Nonempty array: replace; null and empty arrays are invalid.
     #[serde(
@@ -580,8 +582,8 @@ pub enum SourceActionResult {
 #[serde(deny_unknown_fields)]
 pub struct RecordSourceAction {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: String,
-    pub source_id: i64,
+    pub project_id: Id,
+    pub source_id: Id,
     pub expected_revision: i64,
     pub result: SourceActionResult,
 }
@@ -590,7 +592,7 @@ pub struct RecordSourceAction {
 #[serde(deny_unknown_fields)]
 pub struct RecordDecision {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: String,
+    pub project_id: Id,
     /// Required nonempty specific topic names, including for replacements. Retained immutably.
     #[schemars(length(min = 1))]
     pub topics: Vec<String>,
@@ -598,14 +600,14 @@ pub struct RecordDecision {
     pub rationale: String,
     /// Optional Markdown retained on this immutable decision; omitted or null stores null.
     pub alternatives_rejected: Option<String>,
-    pub supersedes_id: Option<i64>,
+    pub supersedes_id: Option<Id>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListDecisions {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: String,
+    pub project_id: Id,
     /// Exact project-local topic name, ignoring case and whitespace. Combines with history/pagination.
     pub topic: Option<String>,
     #[serde(default)]
@@ -613,7 +615,7 @@ pub struct ListDecisions {
     /// Default 20; must be between 1 and 100.
     pub page_size: Option<i64>,
     /// Return older decision IDs; the cursor must belong to this project, regardless of filters.
-    pub before_id: Option<i64>,
+    pub before_id: Option<Id>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -626,7 +628,7 @@ pub struct SourceList {
     /// Newest IDs first. Source edits can change filter membership between pages.
     pub sources: Vec<SourceDescriptor>,
     /// Pass as before_id for the next page; null when no matching older entries remain.
-    pub next_before_id: Option<i64>,
+    pub next_before_id: Option<Id>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -634,5 +636,5 @@ pub struct DecisionList {
     /// Newest IDs first. Supersession can change current-only membership between pages.
     pub decisions: Vec<Decision>,
     /// Pass as before_id for the next page; null when no matching older entries remain.
-    pub next_before_id: Option<i64>,
+    pub next_before_id: Option<Id>,
 }

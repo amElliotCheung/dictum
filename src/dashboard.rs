@@ -153,7 +153,10 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
                 Err(_) => return Response::error(400, "invalid comment JSON body"),
             };
             let input = RecordTaskComment {
-                project_id: (*project_id).to_string(),
+                project_id: match parse_id("project id", project_id) {
+                    Ok(id) => id,
+                    Err(response) => return response,
+                },
                 task_id,
                 task_revision: body.task_revision,
                 body: body.body,
@@ -183,7 +186,10 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
             .await
         }
         ["api", "projects", project_id, "tasks"] => {
-            let project_id = (*project_id).to_string();
+            let project_id = match parse_id("project id", project_id) {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
             let topic = match query_value(query_string, "topic") {
                 Ok(topic) => topic,
                 Err(()) => return Response::error(400, "invalid topic query"),
@@ -203,14 +209,22 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
                         project_id,
                         topic,
                         parent_task_id,
-                        ..ListTasks::default()
+                        kind: None,
+                        priority: None,
+                        trigger_event: None,
+                        status: None,
+                        ready_to_start: None,
+                        query: None,
                     })?,
                 })
             })
             .await
         }
         ["api", "projects", project_id, "decisions"] => {
-            let project_id = (*project_id).to_string();
+            let project_id = match parse_id("project id", project_id) {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
             let topic = match query_value(query_string, "topic") {
                 Ok(topic) => topic,
                 Err(()) => return Response::error(400, "invalid topic query"),
@@ -225,13 +239,16 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
                     topic,
                     page_size,
                     before_id,
-                    ..ListDecisions::default()
+                    include_superseded: false,
                 })
             })
             .await
         }
         ["api", "projects", project_id, "sources"] => {
-            let project_id = (*project_id).to_string();
+            let project_id = match parse_id("project id", project_id) {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
             let topic = match query_value(query_string, "topic") {
                 Ok(topic) => topic,
                 Err(()) => return Response::error(400, "invalid topic query"),
@@ -246,17 +263,26 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
                     topic,
                     page_size,
                     before_id,
-                    ..ListSources::default()
+                    task_id: None,
+                    representation: None,
+                    action_due: None,
+                    query: None,
                 })
             })
             .await
         }
         ["api", "projects", project_id, "context"] => {
-            let project_id = (*project_id).to_string();
+            let project_id = match parse_id("project id", project_id) {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
             api_response(store, move |store| store.get_context(&project_id, None)).await
         }
         ["api", "projects", project_id, "tasks", task_id] => {
-            let project_id = (*project_id).to_string();
+            let project_id = match parse_id("project id", project_id) {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
             let task_id = match parse_id("task id", task_id) {
                 Ok(task_id) => task_id,
                 Err(response) => return response,
@@ -267,7 +293,10 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
             .await
         }
         ["api", "projects", project_id, "tasks", task_id, "comments"] => {
-            let project_id = (*project_id).to_string();
+            let project_id = match parse_id("project id", project_id) {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
             let task_id = match parse_id("task id", task_id) {
                 Ok(task_id) => task_id,
                 Err(response) => return response,
@@ -276,7 +305,7 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
                 Ok(value) => value,
                 Err(response) => return response,
             };
-            let before_id = match parse_query_i64(query_string, "before_id") {
+            let before_id = match parse_query_id(query_string, "before_id") {
                 Ok(value) => value,
                 Err(response) => return response,
             };
@@ -309,7 +338,10 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
             "comments",
             comment_id,
         ] => {
-            let project_id = (*project_id).to_string();
+            let project_id = match parse_id("project id", project_id) {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
             let task_id = match parse_id("task id", task_id) {
                 Ok(id) => id,
                 Err(response) => return response,
@@ -328,7 +360,10 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
             .await
         }
         ["api", "projects", project_id, "sources", source_id] => {
-            let project_id = (*project_id).to_string();
+            let project_id = match parse_id("project id", project_id) {
+                Ok(id) => id,
+                Err(response) => return response,
+            };
             let source_id = match parse_id("source id", source_id) {
                 Ok(source_id) => source_id,
                 Err(response) => return response,
@@ -355,7 +390,7 @@ where
 struct CommentBody {
     task_revision: i64,
     body: String,
-    reply_to_comment_id: Option<i64>,
+    reply_to_comment_id: Option<Id>,
     execution_result: Option<ExecutionResult>,
 }
 
@@ -660,21 +695,25 @@ fn allowed_origin(headers: &[(String, String)], port: u16) -> bool {
     allowed.iter().any(|candidate| candidate == &origin)
 }
 
-fn parse_id(name: &str, value: &str) -> Result<i64, Response> {
-    match value.parse::<i64>() {
-        Ok(id) if id > 0 => Ok(id),
-        _ => Err(Response::error(
-            400,
-            &format!("{name} must be a positive integer"),
-        )),
-    }
+fn parse_id(name: &str, value: &str) -> Result<Id, Response> {
+    value
+        .parse()
+        .map_err(|_| Response::error(400, &format!("{name} must be a canonical UUIDv7")))
 }
 
-fn pagination(query: &str) -> Result<(Option<i64>, Option<i64>), Response> {
+fn pagination(query: &str) -> Result<(Option<i64>, Option<Id>), Response> {
     Ok((
         parse_query_i64(query, "page_size")?,
-        parse_query_i64(query, "before_id")?,
+        parse_query_id(query, "before_id")?,
     ))
+}
+
+fn parse_query_id(query: &str, name: &str) -> Result<Option<Id>, Response> {
+    match query_value(query, name) {
+        Ok(None) => Ok(None),
+        Ok(Some(value)) => parse_id(name, &value).map(Some),
+        Err(()) => Err(Response::error(400, "invalid query")),
+    }
 }
 
 fn parse_query_i64(query: &str, name: &str) -> Result<Option<i64>, Response> {

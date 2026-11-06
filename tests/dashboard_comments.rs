@@ -152,10 +152,13 @@ fn dashboard_comments_keep_versions_outputs_replies_and_history_across_restart()
     );
     let dashboard = Dashboard::start(&database);
     let base = format!("/api/projects/{}/tasks", client.project_id);
-    let path = format!("{base}/{}/comments", parent["id"]);
+    let path = format!("{base}/{}/comments", parent["id"].as_str().unwrap());
     let token = dashboard.token();
 
-    let (status, headers) = dashboard.get(&format!("{base}?parent_task_id={}", parent["id"]));
+    let (status, headers) = dashboard.get(&format!(
+        "{base}?parent_task_id={}",
+        parent["id"].as_str().unwrap()
+    ));
     assert_eq!(status, 200);
     assert_eq!(headers["tasks"].as_array().unwrap().len(), 1);
     assert_eq!(headers["tasks"][0]["id"], child["id"]);
@@ -168,7 +171,9 @@ fn dashboard_comments_keep_versions_outputs_replies_and_history_across_restart()
         1
     );
     assert_eq!(
-        dashboard.get(&format!("{base}/{}", child["id"])).1["parent_task"],
+        dashboard
+            .get(&format!("{base}/{}", child["id"].as_str().unwrap()))
+            .1["parent_task"],
         parent
     );
 
@@ -181,7 +186,7 @@ fn dashboard_comments_keep_versions_outputs_replies_and_history_across_restart()
     assert!(note["execution_result"].is_null());
     assert_eq!(
         client
-            .get_context(parent["id"].as_i64().unwrap())
+            .get_context(parent["id"].as_str().unwrap().to_owned())
             .unwrap()
             .task
             .revision,
@@ -205,7 +210,9 @@ fn dashboard_comments_keep_versions_outputs_replies_and_history_across_restart()
     }));
     assert_eq!(status, 201);
     assert_eq!(
-        dashboard.get(&format!("{path}/{}", execution["id"])).1,
+        dashboard
+            .get(&format!("{path}/{}", execution["id"].as_str().unwrap()))
+            .1,
         execution
     );
     let page = dashboard.get(&format!("{path}?page_size=1")).1;
@@ -220,7 +227,7 @@ fn dashboard_comments_keep_versions_outputs_replies_and_history_across_restart()
     let older = dashboard
         .get(&format!(
             "{path}?page_size=1&before_id={}",
-            page["next_before_id"]
+            page["next_before_id"].as_str().unwrap()
         ))
         .1;
     assert_eq!(older["comments"][0], execution);
@@ -240,11 +247,18 @@ fn dashboard_comments_keep_versions_outputs_replies_and_history_across_restart()
         3
     );
     assert_eq!(
-        dashboard.get(&format!("{base}/{}", parent["id"])).1["task"],
+        dashboard
+            .get(&format!("{base}/{}", parent["id"].as_str().unwrap()))
+            .1["task"],
         edited
     );
     assert_eq!(
-        dashboard.get(&format!("{base}/{}/results", parent["id"])).0,
+        dashboard
+            .get(&format!(
+                "{base}/{}/results",
+                parent["id"].as_str().unwrap()
+            ))
+            .0,
         404
     );
 
@@ -258,7 +272,9 @@ fn dashboard_comments_keep_versions_outputs_replies_and_history_across_restart()
     assert_eq!(done["revision"], 3);
     assert_eq!(dashboard.post(&path, &token, json!({"task_revision": 3, "body": "Rework discussion has no automatic lifecycle effect."})).0, 201);
     assert_eq!(
-        dashboard.get(&format!("{base}/{}", parent["id"])).1["task"],
+        dashboard
+            .get(&format!("{base}/{}", parent["id"].as_str().unwrap()))
+            .1["task"],
         done
     );
     drop(dashboard);
@@ -276,7 +292,12 @@ fn dashboard_comments_keep_versions_outputs_replies_and_history_across_restart()
             .0,
         403
     );
-    assert_eq!(restarted.get(&format!("{path}/{}", later["id"])).1, later);
+    assert_eq!(
+        restarted
+            .get(&format!("{path}/{}", later["id"].as_str().unwrap()))
+            .1,
+        later
+    );
     assert_eq!(
         restarted
             .post(
@@ -318,7 +339,8 @@ fn dashboard_comment_writes_reject_invalid_scopes_origins_tokens_and_bodies_atom
     let dashboard = Dashboard::start(&database);
     let path = format!(
         "/api/projects/{}/tasks/{}/comments",
-        client.project_id, target["id"]
+        client.project_id,
+        target["id"].as_str().unwrap()
     );
     let token = dashboard.token();
     let origin = dashboard.origin();
@@ -424,7 +446,9 @@ fn dashboard_comment_writes_reject_invalid_scopes_origins_tokens_and_bodies_atom
         400
     );
     assert_eq!(dashboard.get(&path).1["comments"], json!([]));
-    let current = client.get_context(target["id"].as_i64().unwrap()).unwrap();
+    let current = client
+        .get_context(target["id"].as_str().unwrap().to_owned())
+        .unwrap();
     assert_eq!(current.task.revision, 1);
     assert_eq!(
         current.task.updated_at,

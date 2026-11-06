@@ -5,6 +5,7 @@ import { api, ApiError, queryKeys } from '../lib/api';
 import { formatDate, formatKind, statusLabels } from '../lib/format';
 import type { Task, TaskContext, TaskStatus, TaskSummary } from '../lib/types';
 import { Markdown } from '../lib/markdown';
+import { isUuidV7 } from '../lib/utils';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Meta } from './ui/meta';
@@ -14,13 +15,13 @@ import { TaskComments } from './TaskComments';
 
 export function TaskDetail({ projectId, taskId, tasks, onClose, onOpenTask }: {
   projectId: string;
-  taskId: number;
+  taskId: string;
   tasks: TaskSummary[];
   onClose: () => void;
-  onOpenTask: (taskId: number) => void;
+  onOpenTask: (taskId: string) => void;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
-  const validTask = Number.isInteger(taskId) && taskId > 0;
+  const validTask = isUuidV7(taskId);
   useEffect(() => { closeRef.current?.focus(); }, [projectId, taskId]);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } };
@@ -41,14 +42,14 @@ export function TaskDetail({ projectId, taskId, tasks, onClose, onOpenTask }: {
       <aside role="dialog" aria-modal="false" aria-labelledby="task-detail-title" tabIndex={-1} className="fixed inset-y-0 right-0 z-30 flex w-full max-w-2xl flex-col border-l bg-card shadow-2xl">
         <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
           <div className="min-w-0">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Task {validTask ? `#${taskId}` : ''}</p>
+            <p className="break-all text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Task {validTask ? `#${taskId}` : ''}</p>
             <h2 id="task-detail-title" className="truncate text-lg font-semibold">{context?.task.title ?? (validTask ? 'Loading task…' : 'Invalid task selection')}</h2>
           </div>
           <Button ref={closeRef} variant="ghost" size="icon" onClick={onClose} aria-label="Close task details"><X className="h-4 w-4" /></Button>
         </div>
         <div className="flex-1 overflow-y-auto px-4 py-4">
           {!validTask ? (
-            <PanelState title="Invalid task selection" message="The task ID in this URL is not a positive integer. Close this panel and choose a task from the board." />
+            <PanelState title="Invalid task selection" message="The task ID in this URL is not a UUIDv7. Close this panel and choose a task from the board." />
           ) : contextQuery.isPending ? <LoadingDetail /> : !context ? (
             <PanelState title={notFound ? 'Task not found' : 'Unable to load task'} message={notFound ? `No task #${taskId} exists in this project.` : contextQuery.error?.message ?? 'Unknown error'} onRetry={() => { void contextQuery.refetch(); }} />
           ) : (
@@ -63,7 +64,7 @@ export function TaskDetail({ projectId, taskId, tasks, onClose, onOpenTask }: {
   );
 }
 
-function TaskContent({ context, tasks, onOpenTask }: { context: TaskContext; tasks: TaskSummary[]; onOpenTask: (taskId: number) => void }) {
+function TaskContent({ context, tasks, onOpenTask }: { context: TaskContext; tasks: TaskSummary[]; onOpenTask: (taskId: string) => void }) {
   const { task, dependency_state, parent_task } = context;
   return (
     <div className="space-y-6">
@@ -83,7 +84,7 @@ function TaskContent({ context, tasks, onOpenTask }: { context: TaskContext; tas
         <section className="rounded-lg border bg-muted/20 p-3" aria-label="Parent task">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs font-medium text-muted-foreground">Parent task · version {parent_task.revision}</p>
-            <Button variant="outline" size="sm" onClick={() => onOpenTask(parent_task.id)}>Open parent #{parent_task.id}</Button>
+            <Button variant="outline" size="sm" className="h-auto max-w-full whitespace-normal break-all py-1.5 text-left" onClick={() => onOpenTask(parent_task.id)}>Open parent #{parent_task.id}</Button>
           </div>
           <p className="mt-2 text-sm font-semibold">{parent_task.title}</p>
           <details className="mt-3"><summary className="cursor-pointer text-xs font-medium">Read parent brief</summary><div className="mt-3"><TaskBrief task={parent_task} /></div></details>
@@ -130,7 +131,7 @@ function TaskBrief({ task }: { task: Task }) {
   );
 }
 
-function Subtasks({ projectId, taskId, tasks, onOpenTask }: { projectId: string; taskId: number; tasks: TaskSummary[]; onOpenTask: (taskId: number) => void }) {
+function Subtasks({ projectId, taskId, tasks, onOpenTask }: { projectId: string; taskId: string; tasks: TaskSummary[]; onOpenTask: (taskId: string) => void }) {
   const childrenQuery = useQuery({ queryKey: queryKeys.children(projectId, taskId), queryFn: () => api.tasks(projectId, taskId), refetchInterval: 5_000 });
   return (
     <Section title="Subtasks">
@@ -142,7 +143,7 @@ function Subtasks({ projectId, taskId, tasks, onOpenTask }: { projectId: string;
   );
 }
 
-function Subtask({ projectId, task, tasks, onOpenTask }: { projectId: string; task: TaskSummary; tasks: TaskSummary[]; onOpenTask: (taskId: number) => void }) {
+function Subtask({ projectId, task, tasks, onOpenTask }: { projectId: string; task: TaskSummary; tasks: TaskSummary[]; onOpenTask: (taskId: string) => void }) {
   const [open, setOpen] = useState(false);
   const contextQuery = useQuery({ queryKey: queryKeys.context(projectId, task.id), queryFn: () => api.context(projectId, task.id), enabled: open, refetchInterval: open ? 5_000 : false, retry: false });
   const contentId = `subtask-content-${task.id}`;
@@ -176,10 +177,10 @@ const statusClasses: Record<TaskStatus, string> = {
 function StatusBadge({ status }: { status: TaskStatus }) {
   return <Badge variant="outline" className={statusClasses[status]}>{statusLabels[status]}</Badge>;
 }
-function DependencyGroup({ title, ids, unmet, tasks, onOpenTask }: { title: string; ids: number[]; unmet: number[]; tasks: TaskSummary[]; onOpenTask: (taskId: number) => void }) {
+function DependencyGroup({ title, ids, unmet, tasks, onOpenTask }: { title: string; ids: string[]; unmet: string[]; tasks: TaskSummary[]; onOpenTask: (taskId: string) => void }) {
   return (
     <div><h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h4>
-      {ids.length ? <div className="mt-1 flex flex-wrap gap-2">{ids.map((id) => <Button key={id} variant="outline" size="sm" className={unmet.includes(id) ? 'border-rose-300 bg-rose-50 text-rose-800' : undefined} onClick={() => onOpenTask(id)} title={tasks.find((candidate) => candidate.id === id)?.title}>#{id}{unmet.includes(id) ? ' · unmet' : ''}</Button>)}</div> : <p className="mt-1 text-sm text-muted-foreground">None</p>}
+      {ids.length ? <div className="mt-1 flex flex-wrap gap-2">{ids.map((id) => <Button key={id} variant="outline" size="sm" className={`h-auto max-w-full whitespace-normal break-all py-1.5 text-left ${unmet.includes(id) ? 'border-rose-300 bg-rose-50 text-rose-800' : ''}`} onClick={() => onOpenTask(id)} title={tasks.find((candidate) => candidate.id === id)?.title}>#{id}{unmet.includes(id) ? ' · unmet' : ''}</Button>)}</div> : <p className="mt-1 text-sm text-muted-foreground">None</p>}
     </div>
   );
 }

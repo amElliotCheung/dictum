@@ -16,6 +16,9 @@ use rmcp::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 
+/// Valid UUIDv7 placeholder used only while constructing typed scoped requests.
+pub const PROJECT_PLACEHOLDER: &str = "00000000-0000-7000-8000-000000000000";
+
 /// Task-selected response: the real MCP call must return non-null task and gates.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SelectedTaskContext {
@@ -67,7 +70,7 @@ impl Project {
         };
         let projects: ProjectList = project.raw_call("list_projects", json!({}))?;
         project.project_id = if let Some(existing) = projects.projects.first() {
-            existing.id.clone()
+            existing.id.to_string()
         } else {
             project
                 .raw_call::<dictum_mcp::model::Project>(
@@ -75,6 +78,7 @@ impl Project {
                     json!({"name": "Test project", "description": "End-to-end test workspace"}),
                 )?
                 .id
+                .to_string()
         };
         Ok(project)
     }
@@ -85,7 +89,7 @@ impl Project {
             && input
                 .get("project_id")
                 .and_then(serde_json::Value::as_str)
-                .is_none_or(str::is_empty)
+                .is_none_or(|id| id.is_empty() || id == PROJECT_PLACEHOLDER)
         {
             input["project_id"] = json!(self.project_id);
         }
@@ -122,7 +126,7 @@ impl Project {
     pub fn update_task(&self, input: UpdateTask) -> Result<Task> {
         self.call("update_task", input)
     }
-    pub fn get_context(&self, task_id: i64) -> Result<SelectedTaskContext> {
+    pub fn get_context(&self, task_id: impl Serialize) -> Result<SelectedTaskContext> {
         self.call("get_context", json!({"task_id": task_id}))
     }
     pub fn list_tasks(&self, input: ListTasks) -> Result<Vec<TaskSummary>> {
@@ -134,7 +138,7 @@ impl Project {
     pub fn update_source(&self, input: UpdateSource) -> Result<Source> {
         self.call("update_source", input)
     }
-    pub fn get_source(&self, source_id: i64) -> Result<Source> {
+    pub fn get_source(&self, source_id: impl Serialize) -> Result<Source> {
         self.call("get_source", json!({"source_id": source_id}))
     }
     pub fn list_sources(&self, input: ListSources) -> Result<Vec<SourceDescriptor>> {

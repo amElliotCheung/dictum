@@ -18,7 +18,7 @@ export function SourceCard({
   topics,
 }: {
   projectId: string;
-  sourceId: number;
+  sourceId: string;
   label?: string;
   description?: string;
   meta?: string;
@@ -36,13 +36,13 @@ export function SourceCard({
     <Card className="p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-sm font-medium">
+          <p className="break-words text-sm font-medium">
             {label ?? `Source #${sourceId}`}
           </p>
           {topics ? <div className="my-1 flex flex-wrap gap-1" aria-label="Topics">
             {topics.map((topic) => <Badge key={topic.id} variant="secondary">{topic.name}</Badge>)}
           </div> : null}
-          <p className="text-xs text-muted-foreground">
+          <p className="break-words text-xs text-muted-foreground">
             {description ?? `Source #${sourceId}`}
             {meta ? ` · ${meta}` : ''}
           </p>

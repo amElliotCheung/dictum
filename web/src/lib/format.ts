@@ -40,6 +40,6 @@ export function formatTime(value: number): string {
       });
 }
 
-export function formatIds(ids: number[]): string {
+export function formatIds(ids: string[]): string {
   return ids.map((id) => `#${id}`).join(', ');
 }

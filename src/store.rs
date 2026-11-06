@@ -1,6 +1,6 @@
 //! Transactional, project-scoped SQLite storage. The database holds reported work, not a scheduler.
 
-use crate::model::*;
+use crate::{id::new_id, model::*};
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 const APPLICATION_ID: i64 = 0x4449_4354; // DICT
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -25,20 +25,20 @@ pub enum StoreError {
     #[error("validation error: {0}")]
     Validation(String),
     #[error("project {0} was not found")]
-    ProjectNotFound(String),
+    ProjectNotFound(Id),
     #[error("{entity} {id} was not found in this project")]
-    NotFound { entity: &'static str, id: i64 },
+    NotFound { entity: &'static str, id: Id },
     #[error(
         "{entity} {id} revision conflict: expected {expected}, found {actual}; reread before retrying"
     )]
     RevisionConflict {
         entity: &'static str,
-        id: String,
+        id: Id,
         expected: i64,
         actual: i64,
     },
     #[error(
-        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 14 only; preserve the existing file"
+        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 15 only; preserve the existing file"
     )]
     UnsupportedSchema { version: i64, application_id: i64 },
 }
@@ -114,7 +114,7 @@ impl Store {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = timestamp(Utc::now());
         let project = Project {
-            id: new_project_id(&transaction)?,
+            id: new_id(&transaction)?,
             name: input.name,
             description: input.description,
             topics: vec![],
@@ -165,7 +165,6 @@ impl Store {
     }
 
     pub fn update_project(&self, input: UpdateProject) -> StoreResult<Project> {
-        required(&input.project_id, "project_id")?;
         required(&input.description, "description")?;
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -176,10 +175,10 @@ impl Store {
                 map_project,
             )
             .optional()?
-            .ok_or_else(|| StoreError::ProjectNotFound(input.project_id.clone()))?;
+            .ok_or_else(|| StoreError::ProjectNotFound(input.project_id))?;
         check_revision(
             "project",
-            &project.id,
+            project.id,
             input.expected_revision,
             project.revision,
         )?;
@@ -223,11 +222,11 @@ impl Store {
             input.parent_task_id,
         )?;
         let now = timestamp(Utc::now());
+        let id = new_id(&transaction)?;
         transaction.execute(
-            "INSERT INTO tasks (project_id, title, problem_or_goal, design, acceptance_criteria, alternatives_rejected, status, revision, created_at, updated_at, kind, trigger_event, priority, parent_task_id) VALUES (?7, ?1, ?2, ?3, ?4, ?5, ?8, 1, ?6, ?6, ?9, ?10, ?11, ?12)",
-            params![input.title, input.problem_or_goal, input.design, encode(&input.acceptance_criteria)?, input.alternatives_rejected, now, input.project_id, status_name(status), kind_name(input.kind), input.trigger_event, priority_name(input.priority), input.parent_task_id],
+            "INSERT INTO tasks (id, project_id, title, problem_or_goal, design, acceptance_criteria, alternatives_rejected, status, revision, created_at, updated_at, kind, trigger_event, priority, parent_task_id) VALUES (?13, ?7, ?1, ?2, ?3, ?4, ?5, ?8, 1, ?6, ?6, ?9, ?10, ?11, ?12)",
+            params![input.title, input.problem_or_goal, input.design, encode(&input.acceptance_criteria)?, input.alternatives_rejected, now, input.project_id, status_name(status), kind_name(input.kind), input.trigger_event, priority_name(input.priority), input.parent_task_id, id],
         )?;
-        let id = transaction.last_insert_rowid();
         replace_topics(&transaction, &input.project_id, "task", id, &input.topics)?;
         replace_context_sources(
             &transaction,
@@ -275,7 +274,7 @@ impl Store {
                     params![input.project_id, input.priority.map(priority_name), topic],
                     |row| row.get(0),
                 )?
-                .collect::<rusqlite::Result<Vec<i64>>>()?
+                .collect::<rusqlite::Result<Vec<Id>>>()?
         };
         let query = input.query.as_deref().map(str::to_lowercase);
         let mut result = Vec::new();
@@ -339,7 +338,7 @@ impl Store {
         Ok(result)
     }
 
-    pub fn get_context(&self, project_id: &str, task_id: Option<i64>) -> StoreResult<Context> {
+    pub fn get_context(&self, project_id: &Id, task_id: Option<Id>) -> StoreResult<Context> {
         let mut connection = self.connect()?;
         // All components belong to the same read snapshot across concurrent writers.
         let transaction = connection.transaction()?;
@@ -361,7 +360,7 @@ impl Store {
         let source_ids = {
             let mut statement = transaction.prepare("SELECT id FROM sources WHERE project_id=?2 AND (context_policy = 'always' OR id IN (SELECT source_id FROM task_context_sources WHERE task_id = ?1 AND project_id=?2)) ORDER BY id")?;
             statement
-                .query_map(params![task_id, project_id], |row| row.get::<_, i64>(0))?
+                .query_map(params![task_id, project_id], |row| row.get::<_, Id>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         let sources = source_ids
@@ -557,11 +556,11 @@ impl Store {
             .execution_result
             .as_ref()
             .map(|result| outcome_name(result.outcome));
+        let id = new_id(&transaction)?;
         transaction.execute(
-            "INSERT INTO task_comments (project_id, task_id, task_revision, body, reply_to_comment_id, outcome, recorded_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![input.project_id, task.id, input.task_revision, input.body, input.reply_to_comment_id, outcome, timestamp(Utc::now())],
+            "INSERT INTO task_comments (id, project_id, task_id, task_revision, body, reply_to_comment_id, outcome, recorded_at) VALUES (?8, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![input.project_id, task.id, input.task_revision, input.body, input.reply_to_comment_id, outcome, timestamp(Utc::now()), id],
         )?;
-        let id = transaction.last_insert_rowid();
         if let Some(result) = input.execution_result {
             for source_id in result
                 .output_source_ids
@@ -589,9 +588,6 @@ impl Store {
         ensure_project(&transaction, &input.project_id)?;
         ensure_exists(&transaction, &input.project_id, "task", input.task_id)?;
         if let Some(id) = input.before_id {
-            if id <= 0 {
-                return invalid("before_id must be a positive comment ID belonging to this task");
-            }
             task_comment_by_id(&transaction, &input.project_id, input.task_id, id)?;
         }
         let mut comments = task_comments(
@@ -639,11 +635,11 @@ impl Store {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         ensure_project(&transaction, &input.project_id)?;
         let now = Utc::now();
+        let id = new_id(&transaction)?;
         transaction.execute(
-            "INSERT INTO sources (project_id, name, description, content, locator, context_policy, action, revision, created_at, updated_at) VALUES (?8, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)",
-            params![input.name, input.description, input.content, input.locator, policy_name(input.context_policy), encode_optional(&input.action)?, timestamp(now), input.project_id],
+            "INSERT INTO sources (id, project_id, name, description, content, locator, context_policy, action, revision, created_at, updated_at) VALUES (?9, ?8, ?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)",
+            params![input.name, input.description, input.content, input.locator, policy_name(input.context_policy), encode_optional(&input.action)?, timestamp(now), input.project_id, id],
         )?;
-        let id = transaction.last_insert_rowid();
         replace_topics(&transaction, &input.project_id, "source", id, &input.topics)?;
         let result = source_by_id(&transaction, &input.project_id, id, now)?;
         transaction.commit()?;
@@ -660,9 +656,6 @@ impl Store {
         let transaction = connection.transaction()?;
         ensure_project(&transaction, &input.project_id)?;
         if let Some(id) = input.before_id {
-            if id <= 0 {
-                return invalid("before_id must be a positive source ID belonging to this project");
-            }
             ensure_exists(&transaction, &input.project_id, "source", id)?;
         }
         let linked = if let Some(task_id) = input.task_id {
@@ -673,7 +666,7 @@ impl Store {
             Some(
                 statement
                     .query_map(params![task_id, input.project_id], |row| {
-                        row.get::<_, i64>(0)
+                        row.get::<_, Id>(0)
                     })?
                     .collect::<rusqlite::Result<BTreeSet<_>>>()?,
             )
@@ -689,7 +682,7 @@ impl Store {
             )?;
             let ids = statement
                 .query_map(params![input.project_id, input.before_id, topic], |row| {
-                    row.get::<_, i64>(0)
+                    row.get::<_, Id>(0)
                 })?;
             for id in ids {
                 let id = id?;
@@ -730,7 +723,7 @@ impl Store {
         })
     }
 
-    pub fn get_source(&self, project_id: &str, source_id: i64) -> StoreResult<Source> {
+    pub fn get_source(&self, project_id: &Id, source_id: Id) -> StoreResult<Source> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         ensure_project(&transaction, project_id)?;
@@ -892,11 +885,11 @@ impl Store {
                 ));
             }
         }
+        let id = new_id(&transaction)?;
         transaction.execute(
-            "INSERT INTO decisions (project_id, statement, rationale, alternatives_rejected, supersedes_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![input.project_id, input.statement, input.rationale, input.alternatives_rejected, input.supersedes_id, timestamp(Utc::now())],
+            "INSERT INTO decisions (id, project_id, statement, rationale, alternatives_rejected, supersedes_id, created_at) VALUES (?7, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![input.project_id, input.statement, input.rationale, input.alternatives_rejected, input.supersedes_id, timestamp(Utc::now()), id],
         )?;
-        let id = transaction.last_insert_rowid();
         replace_topics(
             &transaction,
             &input.project_id,
@@ -920,11 +913,6 @@ impl Store {
         let transaction = connection.transaction()?;
         ensure_project(&transaction, &input.project_id)?;
         if let Some(id) = input.before_id {
-            if id <= 0 {
-                return invalid(
-                    "before_id must be a positive decision ID belonging to this project",
-                );
-            }
             ensure_exists(&transaction, &input.project_id, "decision", id)?;
         }
         let mut result = {
@@ -1045,16 +1033,11 @@ fn validate_source(
     Ok(())
 }
 
-fn check_revision(
-    entity: &'static str,
-    id: impl ToString,
-    expected: i64,
-    actual: i64,
-) -> StoreResult<()> {
+fn check_revision(entity: &'static str, id: Id, expected: i64, actual: i64) -> StoreResult<()> {
     if expected != actual {
         Err(StoreError::RevisionConflict {
             entity,
-            id: id.to_string(),
+            id,
             expected,
             actual,
         })
@@ -1063,8 +1046,7 @@ fn check_revision(
     }
 }
 
-fn ensure_project(connection: &Connection, project_id: &str) -> StoreResult<()> {
-    required(project_id, "project_id")?;
+fn ensure_project(connection: &Connection, project_id: &Id) -> StoreResult<()> {
     let exists: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM projects WHERE id=?1)",
         [project_id],
@@ -1073,7 +1055,7 @@ fn ensure_project(connection: &Connection, project_id: &str) -> StoreResult<()> 
     if exists {
         Ok(())
     } else {
-        Err(StoreError::ProjectNotFound(project_id.into()))
+        Err(StoreError::ProjectNotFound(*project_id))
     }
 }
 
@@ -1107,7 +1089,7 @@ fn map_topic(row: &Row<'_>) -> rusqlite::Result<Topic> {
     })
 }
 
-fn project_topics(connection: &Connection, project_id: &str) -> StoreResult<Vec<Topic>> {
+fn project_topics(connection: &Connection, project_id: &Id) -> StoreResult<Vec<Topic>> {
     let mut statement = connection
         .prepare("SELECT id, project_id, name FROM topics WHERE project_id=?1 ORDER BY id")?;
     Ok(statement
@@ -1127,9 +1109,9 @@ fn topic_relation(entity: &str) -> (&'static str, &'static str) {
 
 fn record_topics(
     connection: &Connection,
-    project_id: &str,
+    project_id: &Id,
     entity: &str,
-    id: i64,
+    id: Id,
 ) -> StoreResult<Vec<Topic>> {
     let (table, column) = topic_relation(entity);
     let mut statement = connection.prepare(&format!("SELECT topic.id, topic.project_id, topic.name FROM topics topic JOIN {table} link ON link.topic_id=topic.id AND link.project_id=topic.project_id WHERE link.project_id=?1 AND link.{column}=?2 ORDER BY topic.id"))?;
@@ -1142,9 +1124,9 @@ fn record_topics(
 /// replacement before creating topics; any later failure rolls back all changes.
 fn replace_topics(
     connection: &Connection,
-    project_id: &str,
+    project_id: &Id,
     entity: &str,
-    id: i64,
+    id: Id,
     names: &[String],
 ) -> StoreResult<()> {
     if names.is_empty() {
@@ -1165,8 +1147,8 @@ fn replace_topics(
         if !seen.insert(key.clone()) {
             continue;
         }
-        connection.execute("INSERT INTO topics (project_id, name, name_key) VALUES (?1, ?2, ?3) ON CONFLICT(project_id, name_key) DO NOTHING", params![project_id, name, key])?;
-        let topic_id: i64 = connection.query_row(
+        connection.execute("INSERT INTO topics (id, project_id, name, name_key) VALUES (?4, ?1, ?2, ?3) ON CONFLICT(project_id, name_key) DO NOTHING", params![project_id, name, key, new_id(connection)?])?;
+        let topic_id: Id = connection.query_row(
             "SELECT id FROM topics WHERE project_id=?1 AND name_key=?2",
             params![project_id, key],
             |row| row.get(0),
@@ -1179,21 +1161,11 @@ fn replace_topics(
     Ok(())
 }
 
-/// Prefer a real SQLite built-in when available; never register an emulation/extension.
-pub(crate) fn new_project_id(connection: &Connection) -> StoreResult<String> {
-    let builtin: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_function_list WHERE name='uuidv7' AND builtin=1 AND narg IN (0, -1))", [], |row| row.get(0))?;
-    if builtin {
-        Ok(connection.query_row("SELECT uuidv7()", [], |row| row.get(0))?)
-    } else {
-        Ok(uuid::Uuid::now_v7().to_string())
-    }
-}
-
 fn ensure_exists(
     connection: &Connection,
-    project_id: &str,
+    project_id: &Id,
     entity: &'static str,
-    id: i64,
+    id: Id,
 ) -> StoreResult<()> {
     let sql = match entity {
         "task" => "SELECT EXISTS(SELECT 1 FROM tasks WHERE id=?1 AND project_id=?2)",
@@ -1211,10 +1183,10 @@ fn ensure_exists(
 
 fn validate_parent(
     connection: &Connection,
-    project_id: &str,
-    task_id: Option<i64>,
+    project_id: &Id,
+    task_id: Option<Id>,
     kind: TaskKind,
-    parent_task_id: Option<i64>,
+    parent_task_id: Option<Id>,
 ) -> StoreResult<()> {
     let Some(parent_id) = parent_task_id else {
         return Ok(());
@@ -1246,9 +1218,9 @@ fn validate_parent(
 
 fn replace_context_sources(
     connection: &Connection,
-    project_id: &str,
-    task_id: i64,
-    ids: &[i64],
+    project_id: &Id,
+    task_id: Id,
+    ids: &[Id],
 ) -> StoreResult<()> {
     for &id in ids {
         ensure_exists(connection, project_id, "source", id)?;
@@ -1268,10 +1240,10 @@ fn replace_context_sources(
 
 fn replace_dependencies(
     connection: &Connection,
-    project_id: &str,
-    task_id: i64,
+    project_id: &Id,
+    task_id: Id,
     kind: &str,
-    ids: &[i64],
+    ids: &[Id],
 ) -> StoreResult<()> {
     for &id in ids {
         if id == task_id {
@@ -1302,7 +1274,7 @@ fn replace_dependencies(
     Ok(())
 }
 
-fn reject_cycle(connection: &Connection, project_id: &str, task_id: i64) -> StoreResult<()> {
+fn reject_cycle(connection: &Connection, project_id: &Id, task_id: Id) -> StoreResult<()> {
     let cycle: bool = connection.query_row(
         "WITH RECURSIVE reachable(id) AS (SELECT depends_on_task_id FROM task_dependencies WHERE task_id=?1 AND project_id=?2 UNION SELECT d.depends_on_task_id FROM task_dependencies d JOIN reachable r ON d.task_id=r.id WHERE d.project_id=?2) SELECT EXISTS(SELECT 1 FROM reachable WHERE id=?1)",
         params![task_id, project_id], |row| row.get(0),
@@ -1316,18 +1288,18 @@ fn reject_cycle(connection: &Connection, project_id: &str, task_id: i64) -> Stor
 
 fn linked_ids(
     connection: &Connection,
-    project_id: &str,
+    project_id: &Id,
     sql: &str,
-    task_id: i64,
+    task_id: Id,
     kind: &str,
-) -> StoreResult<Vec<i64>> {
+) -> StoreResult<Vec<Id>> {
     let mut statement = connection.prepare(sql)?;
     Ok(statement
         .query_map(params![task_id, kind, project_id], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn task_by_id(connection: &Connection, project_id: &str, id: i64) -> StoreResult<Task> {
+fn task_by_id(connection: &Connection, project_id: &Id, id: Id) -> StoreResult<Task> {
     let mut task = connection
         .query_row(
             "SELECT * FROM tasks WHERE id=?1 AND project_id=?2",
@@ -1391,9 +1363,9 @@ fn dependency_state(connection: &Connection, task: &Task) -> StoreResult<Depende
 
 fn task_comment_by_id(
     connection: &Connection,
-    project_id: &str,
-    task_id: i64,
-    id: i64,
+    project_id: &Id,
+    task_id: Id,
+    id: Id,
 ) -> StoreResult<TaskComment> {
     let mut comment = connection
         .query_row(
@@ -1438,9 +1410,9 @@ fn task_comment_by_id(
 
 fn task_comments(
     connection: &Connection,
-    project_id: &str,
-    task_id: i64,
-    before_id: Option<i64>,
+    project_id: &Id,
+    task_id: Id,
+    before_id: Option<Id>,
     has_execution_result: Option<bool>,
     limit: i64,
 ) -> StoreResult<Vec<TaskComment>> {
@@ -1450,7 +1422,7 @@ fn task_comments(
     let ids = statement
         .query_map(
             params![project_id, task_id, before_id, has_execution_result, limit],
-            |row| row.get::<_, i64>(0),
+            |row| row.get::<_, Id>(0),
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     ids.into_iter()
@@ -1460,8 +1432,8 @@ fn task_comments(
 
 fn latest_task_execution(
     connection: &Connection,
-    project_id: &str,
-    task_id: i64,
+    project_id: &Id,
+    task_id: Id,
     successful: bool,
 ) -> StoreResult<Option<TaskComment>> {
     let sql = if successful {
@@ -1470,9 +1442,7 @@ fn latest_task_execution(
         "SELECT id FROM task_comments WHERE project_id=?1 AND task_id=?2 AND outcome IS NOT NULL ORDER BY id DESC LIMIT 1"
     };
     let id = connection
-        .query_row(sql, params![project_id, task_id], |row| {
-            row.get::<_, i64>(0)
-        })
+        .query_row(sql, params![project_id, task_id], |row| row.get::<_, Id>(0))
         .optional()?;
     id.map(|id| task_comment_by_id(connection, project_id, task_id, id))
         .transpose()
@@ -1480,8 +1450,8 @@ fn latest_task_execution(
 
 fn source_by_id(
     connection: &Connection,
-    project_id: &str,
-    id: i64,
+    project_id: &Id,
+    id: Id,
     now: DateTime<Utc>,
 ) -> StoreResult<Source> {
     let mut source = connection
@@ -1538,7 +1508,7 @@ fn source_by_id(
 
 fn descriptor(source: &Source) -> SourceDescriptor {
     SourceDescriptor {
-        project_id: source.project_id.clone(),
+        project_id: source.project_id,
         topics: source.topics.clone(),
         id: source.id,
         name: source.name.clone(),
@@ -1556,7 +1526,7 @@ fn descriptor(source: &Source) -> SourceDescriptor {
     }
 }
 
-fn current_decisions(connection: &Connection, project_id: &str) -> StoreResult<Vec<Decision>> {
+fn current_decisions(connection: &Connection, project_id: &Id) -> StoreResult<Vec<Decision>> {
     let mut statement = connection.prepare("SELECT d.id, d.project_id, d.statement, d.rationale, d.alternatives_rejected, d.supersedes_id, d.created_at, 1 AS is_current, d.id AS current_decision_id FROM decisions d WHERE d.project_id=?1 AND NOT EXISTS(SELECT 1 FROM decisions successor WHERE successor.supersedes_id=d.id) ORDER BY d.id")?;
     let mut decisions = statement
         .query_map([project_id], map_decision)?
@@ -1569,9 +1539,9 @@ fn current_decisions(connection: &Connection, project_id: &str) -> StoreResult<V
 
 fn current_decision_id(
     connection: &Connection,
-    project_id: &str,
-    decision_id: i64,
-) -> StoreResult<i64> {
+    project_id: &Id,
+    decision_id: Id,
+) -> StoreResult<Id> {
     Ok(connection.query_row(
         "WITH RECURSIVE chain(id) AS (
             SELECT id FROM decisions WHERE id=?1 AND project_id=?2

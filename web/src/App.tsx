@@ -4,7 +4,7 @@ import { RefreshCw, Search } from 'lucide-react';
 import { api, ApiError, queryKeys } from './lib/api';
 import { formatTime } from './lib/format';
 import type { TaskKind } from './lib/types';
-import { cn } from './lib/utils';
+import { cn, isUuidV7 } from './lib/utils';
 import { Board } from './components/Board';
 import { ProjectChooser } from './components/ProjectChooser';
 import { ProjectSections } from './components/ProjectSections';
@@ -14,7 +14,7 @@ import { Input } from './components/ui/input';
 
 interface Selection {
   projectId: string | null;
-  taskId: number | null;
+  taskId: string | null;
   topic: string | null;
 }
 
@@ -22,12 +22,7 @@ function readSelection(): Selection {
   const params = new URLSearchParams(window.location.search);
   const rawProject = params.get('project');
   const rawTask = params.get('task');
-  let taskId: number | null = null;
-  if (rawTask !== null) {
-    const parsed = Number(rawTask);
-    taskId =
-      Number.isInteger(parsed) && parsed > 0 ? parsed : Number.NaN;
-  }
+  const taskId = rawTask;
   return {
     projectId:
       rawProject !== null && rawProject.length > 0 ? rawProject : null,
@@ -48,7 +43,7 @@ function useSelection() {
   const navigate = useCallback(
     (
       projectId: string | null,
-      taskId: number | null,
+      taskId: string | null,
       replace = false,
       topic?: string | null,
     ) => {
@@ -62,8 +57,8 @@ function useSelection() {
       } else {
         url.searchParams.delete('project');
       }
-      if (taskId !== null && Number.isFinite(taskId)) {
-        url.searchParams.set('task', String(taskId));
+      if (taskId !== null && isUuidV7(taskId)) {
+        url.searchParams.set('task', taskId);
       } else {
         url.searchParams.delete('task');
       }
@@ -91,7 +86,7 @@ export default function App() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [activeKind, setActiveKind] = useState<TaskKind>('one_time');
-  const syncedTaskId = useRef<number | null>(null);
+  const syncedTaskId = useRef<string | null>(null);
 
   const projectsQuery = useQuery({
     queryKey: queryKeys.projects,
@@ -146,7 +141,7 @@ export default function App() {
   }, [projectId, queryClient]);
 
   const openTask = useCallback(
-    (id: number) => {
+    (id: string) => {
       if (projectId) {
         navigate(projectId, id);
       }
@@ -160,7 +155,7 @@ export default function App() {
     }
     const previousTask = taskId;
     navigate(projectId, null);
-    if (previousTask !== null && Number.isFinite(previousTask)) {
+    if (previousTask !== null && isUuidV7(previousTask)) {
       requestAnimationFrame(() => {
         const card = document.querySelector<HTMLElement>(
           `[data-task-id="${previousTask}"]`,

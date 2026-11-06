@@ -388,9 +388,9 @@ fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
         .json();
     let tasks = tasks["tasks"].as_array().unwrap();
     assert_eq!(tasks.len(), 9);
-    let ids: Vec<i64> = tasks
+    let ids: Vec<String> = tasks
         .iter()
-        .map(|task| task["id"].as_i64().unwrap())
+        .map(|task| task["id"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(
         json!(ids),
@@ -417,7 +417,10 @@ fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
     );
     assert_eq!(
         dashboard
-            .get(&format!("/api/projects/{project_a}/tasks/{}", todo["id"]))
+            .get(&format!(
+                "/api/projects/{project_a}/tasks/{}",
+                todo["id"].as_str().unwrap()
+            ))
             .json()["task"]["priority"],
         "low"
     );
@@ -460,7 +463,7 @@ fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
         dashboard
             .get(&format!(
                 "/api/projects/{project_b_id}/tasks/{}",
-                todo["id"]
+                todo["id"].as_str().unwrap()
             ))
             .status,
         404
@@ -469,7 +472,7 @@ fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
         dashboard
             .get(&format!(
                 "/api/projects/{project_a}/tasks/{}",
-                other_task["id"]
+                other_task["id"].as_str().unwrap()
             ))
             .status,
         404
@@ -546,11 +549,17 @@ fn dashboard_serves_board_statuses_isolation_and_listener_lifecycle() {
     // Former launch and cancellation paths expose neither reads nor mutations.
     for path in [
         "/api/run-token".to_owned(),
-        format!("/api/projects/{project_a}/tasks/{}/runs", todo["id"]),
-        format!("/api/projects/{project_a}/tasks/{}/runs/1", todo["id"]),
+        format!(
+            "/api/projects/{project_a}/tasks/{}/runs",
+            todo["id"].as_str().unwrap()
+        ),
+        format!(
+            "/api/projects/{project_a}/tasks/{}/runs/1",
+            todo["id"].as_str().unwrap()
+        ),
         format!(
             "/api/projects/{project_a}/tasks/{}/runs/1/cancel",
-            todo["id"]
+            todo["id"].as_str().unwrap()
         ),
     ] {
         assert_eq!(dashboard.get(&path).status, 404, "GET {path}");
@@ -705,7 +714,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     );
     let task = update_task(&client, &task, json!({"progress": "Prepared for history"}));
     let mut revision = task["revision"].as_i64().unwrap();
-    let mut latest_execution_id = 0;
+    let mut latest_execution_id = String::new();
     for index in 0..25 {
         let result = call(
             &client,
@@ -713,7 +722,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
             json!({"project_id": project_id, "task_id": task["id"], "task_revision": revision, "body": format!("Recorded evidence for run {index}"), "execution_result": {"outcome": "success", "output_source_ids": [output_source["id"]]}}),
         );
         revision = result["task_revision"].as_i64().unwrap();
-        latest_execution_id = result["id"].as_i64().unwrap();
+        latest_execution_id = result["id"].as_str().unwrap().to_owned();
     }
     let other_task = create_task(&client, &project_id, "Cursor task", "one_time", json!({}));
     let other_result = call(
@@ -723,7 +732,10 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     );
 
     let dashboard = Dashboard::start(&database, 0);
-    let context_path = format!("/api/projects/{project_id}/tasks/{}", task["id"]);
+    let context_path = format!(
+        "/api/projects/{project_id}/tasks/{}",
+        task["id"].as_str().unwrap()
+    );
     let results_path = format!("{context_path}/comments");
 
     let context = dashboard.get(&context_path).json();
@@ -748,8 +760,14 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
         .get(&format!("{results_path}?page_size=20"))
         .json();
     assert_eq!(first_page["comments"].as_array().unwrap().len(), 20);
-    let cursor = first_page["next_before_id"].as_i64().unwrap();
-    assert_eq!(cursor, first_page["comments"][19]["id"].as_i64().unwrap());
+    let cursor = first_page["next_before_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        cursor,
+        first_page["comments"][19]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    );
     let second_page = dashboard
         .get(&format!("{results_path}?page_size=20&before_id={cursor}"))
         .json();
@@ -763,7 +781,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
         dashboard
             .get(&format!(
                 "{results_path}?page_size=20&before_id={}",
-                other_result["id"]
+                other_result["id"].as_str().unwrap()
             ))
             .status,
         404
@@ -786,7 +804,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     let external = dashboard
         .get(&format!(
             "/api/projects/{project_id}/sources/{}",
-            external_source["id"]
+            external_source["id"].as_str().unwrap()
         ))
         .json();
     assert_eq!(external["locator"], "https://example.com/not-fetched");
@@ -823,7 +841,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
             dashboard
                 .get(&format!(
                     "/api/projects/{project_id}/sources/{}",
-                    inline_source["id"]
+                    inline_source["id"].as_str().unwrap()
                 ))
                 .status,
             200
@@ -955,7 +973,10 @@ fn dashboard_comment_history_keeps_flat_replies_version_targets_and_immutable_ex
     );
     let done = update_task(&client, &task, json!({"status": "done"}));
     let dashboard = Dashboard::start(&database, 0);
-    let context_path = format!("/api/projects/{project_id}/tasks/{}", task["id"]);
+    let context_path = format!(
+        "/api/projects/{project_id}/tasks/{}",
+        task["id"].as_str().unwrap()
+    );
     let comments_path = format!("{context_path}/comments");
     let review = call(
         &client,
@@ -984,7 +1005,7 @@ Please inspect restart persistence before changing the brief."}),
     assert_eq!(first_page["comments"].as_array().unwrap().len(), 20);
     let older_path = format!(
         "{comments_path}?before_id={}",
-        first_page["next_before_id"].as_i64().unwrap()
+        first_page["next_before_id"].as_str().unwrap().to_owned()
     );
     let older = dashboard.get(&older_path).json();
     assert_eq!(older["comments"].as_array().unwrap().len(), 3);
@@ -992,7 +1013,10 @@ Please inspect restart persistence before changing the brief."}),
     assert_eq!(older["comments"][2], original);
     assert_eq!(
         dashboard
-            .get(&format!("{comments_path}/{}", original["id"]))
+            .get(&format!(
+                "{comments_path}/{}",
+                original["id"].as_str().unwrap()
+            ))
             .json(),
         original
     );
@@ -1150,7 +1174,10 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
         decisions[0]["alternatives_rejected"],
         "- **Task-only references**: would hide project context until selection."
     );
-    let context_path = format!("/api/projects/{project_a}/tasks/{}", task["id"]);
+    let context_path = format!(
+        "/api/projects/{project_a}/tasks/{}",
+        task["id"].as_str().unwrap()
+    );
     assert_eq!(
         dashboard.get(&context_path).json()["current_decisions"],
         json!([current_decision])
@@ -1256,7 +1283,7 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
             dashboard
                 .get(&format!(
                     "/api/projects/{project_a}/sources/{}",
-                    external["id"]
+                    external["id"].as_str().unwrap()
                 ))
                 .status,
             200
@@ -1380,7 +1407,10 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
     );
     let dashboard = Dashboard::start(&database, 0);
     let project_context_path = format!("/api/projects/{project_id}/context");
-    let task_context_path = format!("/api/projects/{project_id}/tasks/{}", task["id"]);
+    let task_context_path = format!(
+        "/api/projects/{project_id}/tasks/{}",
+        task["id"].as_str().unwrap()
+    );
     let project_context = call(&client, "get_context", json!({}));
     assert_eq!(dashboard.get(&project_context_path).json(), project_context);
     assert_eq!(project_context["project"]["id"], project_id);
@@ -1476,8 +1506,8 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
         assert_eq!(first_entries.len(), 20);
         assert_eq!(first_entries[0]["id"], records[22]["id"]);
         assert_eq!(first_entries[19]["id"], records[3]["id"]);
-        let cursor = first["next_before_id"].as_i64().unwrap();
-        assert_eq!(cursor, records[3]["id"].as_i64().unwrap());
+        let cursor = first["next_before_id"].as_str().unwrap().to_owned();
+        assert_eq!(cursor, records[3]["id"].as_str().unwrap().to_owned());
         let continuation_path = format!("{path}?page_size=20&before_id={cursor}");
         let second = dashboard.get(&continuation_path).json();
         assert_eq!(
@@ -1520,7 +1550,10 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
         assert_eq!(filtered[collection][0]["id"], records[22]["id"]);
         assert_eq!(filtered[collection][1]["id"], records[20]["id"]);
         assert_eq!(filtered["next_before_id"], records[20]["id"]);
-        let topic_continuation = format!("{topic_path}&before_id={}", records[20]["id"]);
+        let topic_continuation = format!(
+            "{topic_path}&before_id={}",
+            records[20]["id"].as_str().unwrap()
+        );
         let filtered_older = dashboard.get(&topic_continuation).json();
         assert_eq!(filtered_older[collection][0]["id"], records[18]["id"]);
         assert_eq!(filtered_older[collection][1]["id"], records[16]["id"]);
@@ -1572,7 +1605,10 @@ fn dashboard_project_context_and_reference_pages_match_mcp_and_survive_restart()
                 "{collection}: {query}"
             );
         }
-        for cursor in [foreign_id.clone(), json!(i64::MAX)] {
+        for cursor in [
+            foreign_id.as_str().unwrap(),
+            "ffffffff-ffff-7fff-bfff-ffffffffffff",
+        ] {
             assert_eq!(
                 dashboard.get(&format!("{path}?before_id={cursor}")).status,
                 404
@@ -1668,7 +1704,11 @@ fn independent_dashboards_read_the_same_database_and_restart_separately() {
         "one_time",
         json!({}),
     );
-    let path = format!("/api/projects/{}/tasks/{}", client.project_id, task["id"]);
+    let path = format!(
+        "/api/projects/{}/tasks/{}",
+        client.project_id,
+        task["id"].as_str().unwrap()
+    );
     assert_eq!(first.get(&path).json()["task"], task);
     assert_eq!(second.get(&path).json()["task"], task);
     drop(first);

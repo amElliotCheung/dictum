@@ -34,7 +34,7 @@ fn comment(
     task: &Value,
     body: &str,
     execution: Option<&str>,
-    reply: Option<i64>,
+    reply: Option<&str>,
 ) -> Value {
     let mut input = json!({"task_id": task["id"], "task_revision": task["revision"], "body": body});
     if let Some(outcome) = execution {
@@ -118,14 +118,14 @@ fn comments_target_existing_versions_and_preserve_the_complete_task_across_resta
         &original,
         "This reply concerns the original design.",
         None,
-        note["id"].as_i64(),
+        note["id"].as_str(),
     );
     let execution = comment(
         &client,
         &updated,
         "Checked revision abc123: compatibility checks passed.",
         Some("success"),
-        reply["id"].as_i64(),
+        reply["id"].as_str(),
     );
     assert_eq!(context(&client, &original)["task"], updated);
     assert_eq!(reply["task_revision"], original["revision"]);
@@ -285,7 +285,7 @@ fn invalid_comments_versions_replies_outputs_and_legacy_fields_are_atomic() {
     for reply in [
         json!(0),
         json!(-1),
-        json!(999_999),
+        json!("ffffffff-ffff-7fff-bfff-ffffffffffff"),
         other_note["id"].clone(),
         foreign_note["id"].clone(),
     ] {
@@ -316,7 +316,11 @@ fn invalid_comments_versions_replies_outputs_and_legacy_fields_are_atomic() {
         input["execution_result"] = execution;
         rejected(&client, &database, "record_task_comment", input);
     }
-    for invalid in [json!(0), json!(999_999), foreign_source["id"].clone()] {
+    for invalid in [
+        json!(0),
+        json!("ffffffff-ffff-7fff-bfff-ffffffffffff"),
+        foreign_source["id"].clone(),
+    ] {
         let mut input = valid.clone();
         input["execution_result"] =
             json!({"outcome": "failure", "output_source_ids": [source["id"], invalid]});
@@ -328,7 +332,10 @@ fn invalid_comments_versions_replies_outputs_and_legacy_fields_are_atomic() {
     assert_eq!(context(&client, &first)["task"], first);
     for (task_id, comment_id) in [
         (first["id"].clone(), other_note["id"].clone()),
-        (first["id"].clone(), json!(999_999)),
+        (
+            first["id"].clone(),
+            json!("ffffffff-ffff-7fff-bfff-ffffffffffff"),
+        ),
     ] {
         rejected(
             &client,
@@ -404,7 +411,7 @@ fn discussion_and_execution_comments_preserve_done_and_paused_lifecycles() {
             &original,
             "Late evidence about version one.",
             Some("failure"),
-            note["id"].as_i64(),
+            note["id"].as_str(),
         );
         assert_eq!(context(&client, &original)["task"], updated);
     }
@@ -581,7 +588,7 @@ fn schema_v5_is_rejected_without_changing_its_data_schema_or_file() {
     let error = String::from_utf8(output.stderr).unwrap();
     assert!(error.contains("version 5"), "unexpected error: {error}");
     assert!(
-        error.contains("schema version 14"),
+        error.contains("schema version 15"),
         "unexpected error: {error}"
     );
     assert_eq!(std::fs::read(&database).unwrap(), before);
@@ -603,7 +610,7 @@ fn schema_v5_is_rejected_without_changing_its_data_schema_or_file() {
 
 #[test]
 fn recent_unsupported_versions_are_rejected_without_changing_existing_records() {
-    for version in [8, 9, 10, 11, 12, 13] {
+    for version in [8, 9, 10, 11, 12, 13, 14] {
         let directory = tempfile::tempdir().unwrap();
         let database = directory
             .path()
@@ -655,7 +662,7 @@ fn recent_unsupported_versions_are_rejected_without_changing_existing_records() 
                 "unexpected error: {error}"
             );
             assert!(
-                error.contains("schema version 14"),
+                error.contains("schema version 15"),
                 "unexpected error: {error}"
             );
             assert_eq!(std::fs::read(&database).unwrap(), before);

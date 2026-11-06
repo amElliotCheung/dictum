@@ -19,7 +19,7 @@ export function ProjectSections({ projectId, topic }: { projectId: string; topic
 function DecisionsSection({ projectId, topic }: { projectId: string; topic: string | null }) {
   const query = useInfiniteQuery({
     queryKey: queryKeys.decisions(projectId, topic),
-    initialPageParam: undefined as number | undefined,
+    initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => api.decisions(projectId, pageParam, topic),
     getNextPageParam: (page) => page.next_before_id ?? undefined,
     refetchInterval: 5_000,
@@ -74,7 +74,7 @@ function DecisionsSection({ projectId, topic }: { projectId: string; topic: stri
 function SourcesSection({ projectId, topic }: { projectId: string; topic: string | null }) {
   const query = useInfiniteQuery({
     queryKey: queryKeys.projectSources(projectId, topic),
-    initialPageParam: undefined as number | undefined,
+    initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => api.sources(projectId, pageParam, topic),
     getNextPageParam: (page) => page.next_before_id ?? undefined,
     refetchInterval: 5_000,

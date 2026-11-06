@@ -16,7 +16,7 @@ fn database() -> (TempDir, Project) {
 }
 
 fn input<T: DeserializeOwned>(mut value: Value) -> T {
-    value["project_id"] = json!("");
+    value["project_id"] = json!(support::PROJECT_PLACEHOLDER);
     serde_json::from_value(value).unwrap()
 }
 
@@ -307,7 +307,7 @@ fn mixed_dependency_cycles_and_invalid_links_roll_back_the_entire_write() {
         store
             .update_task(task_patch(
                 &first,
-                json!({"title": "Also not saved", "context_source_ids": [999_999]})
+                json!({"title": "Also not saved", "context_source_ids": ["ffffffff-ffff-7fff-bfff-ffffffffffff"]})
             ))
             .is_err()
     );
@@ -318,9 +318,9 @@ fn mixed_dependency_cycles_and_invalid_links_roll_back_the_entire_write() {
     assert!(unchanged.context_source_ids.is_empty());
 
     let mut invalid = task_input("Missing dependency");
-    invalid["completion_task_ids"] = json!([999_999]);
+    invalid["completion_task_ids"] = json!(["ffffffff-ffff-7fff-bfff-ffffffffffff"]);
     assert!(store.create_task(input(invalid)).is_err());
-    assert_eq!(store.list_tasks(ListTasks::default()).unwrap().len(), 2);
+    assert_eq!(store.list_tasks(input(json!({}))).unwrap().len(), 2);
 
     let second = store
         .update_task(task_patch(&second, json!({"prerequisite_task_ids": []})))
@@ -392,7 +392,7 @@ fn task_creation_rejects_empty_brief_sections_and_completion_conditions() {
         brief["acceptance_criteria"] = criteria;
         assert!(store.create_task(input(brief)).is_err());
     }
-    assert!(store.list_tasks(ListTasks::default()).unwrap().is_empty());
+    assert!(store.list_tasks(input(json!({}))).unwrap().is_empty());
 }
 
 #[test]
@@ -718,7 +718,7 @@ fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
             "supersedes_id": first.id
         })))
         .unwrap();
-    let current = store.list_decisions(ListDecisions::default()).unwrap();
+    let current = store.list_decisions(input(json!({}))).unwrap();
     assert_eq!(current.len(), 1);
     assert_eq!(current[0].id, second.id);
     assert_eq!(
@@ -727,7 +727,7 @@ fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
     );
     assert_ne!(first.alternatives_rejected, second.alternatives_rejected);
     assert!(store.record_decision(input(json!({"topics": ["Project workflow"], "statement": "Another replacement", "rationale": "Invalid branch.", "supersedes_id": first.id}))).is_err());
-    assert!(store.record_decision(input(json!({"topics": ["Project workflow"], "statement": "Missing predecessor", "rationale": "Invalid reference.", "supersedes_id": 999_999}))).is_err());
+    assert!(store.record_decision(input(json!({"topics": ["Project workflow"], "statement": "Missing predecessor", "rationale": "Invalid reference.", "supersedes_id": "ffffffff-ffff-7fff-bfff-ffffffffffff"}))).is_err());
     let history = store
         .list_decisions(input(json!({"include_superseded": true})))
         .unwrap();
@@ -956,7 +956,7 @@ fn task_priorities_sort_filter_and_survive_revision_checked_updates_and_restart(
     let low = make("Priority low", "low");
     let high = make("Priority high first", "high");
     let high_second = make("Priority high second", "high");
-    let ordered = store.list_tasks(ListTasks::default()).unwrap();
+    let ordered = store.list_tasks(input(json!({}))).unwrap();
     assert_eq!(
         ordered.iter().map(|task| task.id).collect::<Vec<_>>(),
         vec![high.id, high_second.id, default.id, low.id]
@@ -993,7 +993,7 @@ fn task_priorities_sort_filter_and_survive_revision_checked_updates_and_restart(
     assert_eq!(low.priority, TaskPriority::High);
     assert_eq!(
         store
-            .list_tasks(ListTasks::default())
+            .list_tasks(input(json!({})))
             .unwrap()
             .iter()
             .map(|task| task.id)
@@ -1027,12 +1027,12 @@ fn task_priorities_sort_filter_and_survive_revision_checked_updates_and_restart(
         json!(3),
         Value::Null,
     ] {
-        let before = store.list_tasks(ListTasks::default()).unwrap();
+        let before = store.list_tasks(input(json!({}))).unwrap();
         let mut invalid = task_input("Invalid priority must not create a task");
         invalid["priority"] = priority;
         assert!(store.call::<Value>("create_task", invalid).is_err());
         assert_eq!(
-            serde_json::to_value(store.list_tasks(ListTasks::default()).unwrap()).unwrap(),
+            serde_json::to_value(store.list_tasks(input(json!({}))).unwrap()).unwrap(),
             serde_json::to_value(before).unwrap()
         );
     }
@@ -1049,11 +1049,11 @@ fn task_priorities_sort_filter_and_survive_revision_checked_updates_and_restart(
                 .is_err()
         );
     }
-    let expected = store.list_tasks(ListTasks::default()).unwrap();
+    let expected = store.list_tasks(input(json!({}))).unwrap();
     drop(store);
     let restarted = Project::open(&database_path).unwrap();
     assert_eq!(
-        serde_json::to_value(restarted.list_tasks(ListTasks::default()).unwrap()).unwrap(),
+        serde_json::to_value(restarted.list_tasks(input(json!({}))).unwrap()).unwrap(),
         serde_json::to_value(expected).unwrap()
     );
     assert_eq!(

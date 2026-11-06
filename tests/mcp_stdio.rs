@@ -95,6 +95,76 @@ async fn scoped_call(
     call(client, name, input).await
 }
 
+fn assert_uuid_id_schema(schema: &Value, path: &str, array: bool) {
+    if let Some(alternatives) = schema.get("anyOf").and_then(Value::as_array) {
+        let non_null = alternatives
+            .iter()
+            .filter(|alternative| alternative["type"] != "null")
+            .collect::<Vec<_>>();
+        assert_eq!(non_null.len(), 1, "ambiguous ID schema at {path}: {schema}");
+        assert_uuid_id_schema(non_null[0], path, array);
+        return;
+    }
+    let expected_type = if array { "array" } else { "string" };
+    match &schema["type"] {
+        Value::String(kind) => assert_eq!(kind, expected_type, "{path}"),
+        Value::Array(kinds) => {
+            assert!(kinds.contains(&json!(expected_type)), "{path}: {schema}");
+            assert!(
+                kinds
+                    .iter()
+                    .all(|kind| kind == expected_type || kind == "null"),
+                "{path}: {schema}"
+            );
+        }
+        _ => panic!("missing explicit ID type at {path}: {schema}"),
+    }
+    if array {
+        assert_uuid_id_schema(&schema["items"], &format!("{path}[]"), false);
+    } else {
+        assert_eq!(schema["format"], "uuid", "{path}");
+        assert_eq!(schema["minLength"], 36, "{path}");
+        assert_eq!(schema["maxLength"], 36, "{path}");
+        assert_eq!(
+            schema["pattern"],
+            "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "{path}"
+        );
+    }
+}
+
+/// Inspect the schemas discovered from the real process, including nested result
+/// definitions, so references and pagination cannot silently return to integers.
+fn assert_all_schema_ids_are_uuidv7(schema: &Value, path: &str) -> usize {
+    let mut count = 0;
+    match schema {
+        Value::Object(object) => {
+            if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+                for (name, property) in properties {
+                    if name == "id" || name.ends_with("_id") || name.ends_with("_ids") {
+                        assert_uuid_id_schema(
+                            property,
+                            &format!("{path}.{name}"),
+                            name.ends_with("_ids"),
+                        );
+                        count += 1;
+                    }
+                }
+            }
+            for (name, value) in object {
+                count += assert_all_schema_ids_are_uuidv7(value, &format!("{path}.{name}"));
+            }
+        }
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                count += assert_all_schema_ids_are_uuidv7(value, &format!("{path}[{index}]"));
+            }
+        }
+        _ => {}
+    }
+    count
+}
+
 async fn workflow(discover: bool) -> Result<()> {
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("project.sqlite3");
@@ -132,6 +202,23 @@ async fn workflow(discover: bool) -> Result<()> {
             "missing output schema: {}",
             tool.name
         );
+        let input = serde_json::to_value(&tool.input_schema)?;
+        let output = serde_json::to_value(&tool.output_schema)?;
+        let input_ids = assert_all_schema_ids_are_uuidv7(&input, &format!("{}.input", tool.name));
+        let output_ids =
+            assert_all_schema_ids_are_uuidv7(&output, &format!("{}.output", tool.name));
+        assert!(
+            output_ids > 0,
+            "missing output identity schemas: {}",
+            tool.name
+        );
+        if !matches!(tool.name.as_ref(), "create_project" | "list_projects") {
+            assert!(
+                input_ids > 0,
+                "missing input identity schemas: {}",
+                tool.name
+            );
+        }
         let required = tool.input_schema.get("required").and_then(Value::as_array);
         if matches!(
             tool.name.as_ref(),
@@ -405,7 +492,7 @@ async fn workflow(discover: bool) -> Result<()> {
     let project_id = project["id"].as_str().unwrap().to_owned();
     let connection = rusqlite::Connection::open(&database)?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(version, 14);
+    assert_eq!(version, 15);
     let tables = connection
         .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")?
         .query_map([], |row| row.get::<_, String>(0))?

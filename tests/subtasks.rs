@@ -9,13 +9,13 @@ fn call(client: &Project, name: &str, input: Value) -> Value {
     client.call(name, input).unwrap()
 }
 
-fn brief(title: &str, kind: &str, parent: Option<i64>) -> Value {
+fn brief(title: &str, kind: &str, parent: Option<&str>) -> Value {
     json!({"topics": ["Project workflow"], "title": title, "kind": kind, "parent_task_id": parent,
         "problem_or_goal": format!("Deliver {title}."), "design": "Keep each brief independently executable.",
         "acceptance_criteria": ["The selected task is independently verified."]})
 }
 
-fn create(client: &Project, title: &str, kind: &str, parent: Option<i64>) -> Value {
+fn create(client: &Project, title: &str, kind: &str, parent: Option<&str>) -> Value {
     call(client, "create_task", brief(title, kind, parent))
 }
 
@@ -29,12 +29,12 @@ fn context(client: &Project, task: &Value) -> Value {
     call(client, "get_context", json!({"task_id": task["id"]}))
 }
 
-fn ids(list: &Value) -> Vec<i64> {
+fn ids(list: &Value) -> Vec<String> {
     list["tasks"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|task| task["id"].as_i64().unwrap())
+        .map(|task| task["id"].as_str().unwrap().to_owned())
         .collect()
 }
 
@@ -51,7 +51,7 @@ fn subtask_context_has_the_full_current_parent_without_inheriting_its_records() 
     let mut input = brief("Root brief", "one_time", None);
     input["context_source_ids"] = json!([source["id"]]);
     let parent = call(&client, "create_task", input);
-    let child = create(&client, "Child brief", "one_time", parent["id"].as_i64());
+    let child = create(&client, "Child brief", "one_time", parent["id"].as_str());
     call(
         &client,
         "record_task_comment",
@@ -89,8 +89,8 @@ fn parent_filters_distinguish_omission_null_and_id_and_compose_with_existing_fil
     let client = Project::open(directory.path().join("filters.sqlite3")).unwrap();
     let first = create(&client, "First root", "one_time", None);
     let second = create(&client, "Second root", "one_time", None);
-    let low = create(&client, "Child low", "one_time", first["id"].as_i64());
-    let high = create(&client, "Child high", "one_time", first["id"].as_i64());
+    let low = create(&client, "Child low", "one_time", first["id"].as_str());
+    let high = create(&client, "Child high", "one_time", first["id"].as_str());
     let low = update(&client, &low, json!({"priority": "low"}));
     let high = update(&client, &high, json!({"priority": "high"}));
     assert_eq!(
@@ -100,8 +100,8 @@ fn parent_filters_distinguish_omission_null_and_id_and_compose_with_existing_fil
             json!({"parent_task_id": null})
         )),
         vec![
-            first["id"].as_i64().unwrap(),
-            second["id"].as_i64().unwrap()
+            first["id"].as_str().unwrap().to_owned(),
+            second["id"].as_str().unwrap().to_owned()
         ]
     );
     assert_eq!(
@@ -110,7 +110,10 @@ fn parent_filters_distinguish_omission_null_and_id_and_compose_with_existing_fil
             "list_tasks",
             json!({"parent_task_id": first["id"]})
         )),
-        vec![high["id"].as_i64().unwrap(), low["id"].as_i64().unwrap()]
+        vec![
+            high["id"].as_str().unwrap().to_owned(),
+            low["id"].as_str().unwrap().to_owned()
+        ]
     );
     assert_eq!(
         ids(&call(
@@ -118,7 +121,7 @@ fn parent_filters_distinguish_omission_null_and_id_and_compose_with_existing_fil
             "list_tasks",
             json!({"parent_task_id": first["id"], "priority": "high", "query": "CHILD", "status": "todo", "kind": "one_time", "ready_to_start": true})
         )),
-        vec![high["id"].as_i64().unwrap()]
+        vec![high["id"].as_str().unwrap().to_owned()]
     );
     assert_eq!(
         call(&client, "list_tasks", json!({}))["tasks"]
@@ -148,7 +151,7 @@ fn invalid_parentage_is_rejected_atomically_including_child_roots_and_foreign_ki
     let database = directory.path().join("validation.sqlite3");
     let client = Project::open(&database).unwrap();
     let parent = create(&client, "Root", "one_time", None);
-    let child = create(&client, "Child", "one_time", parent["id"].as_i64());
+    let child = create(&client, "Child", "one_time", parent["id"].as_str());
     let other = create(&client, "Other root", "one_time", None);
     let recurring = create(&client, "Recurring root", "recurring", None);
     let foreign_project = call(
@@ -163,7 +166,7 @@ fn invalid_parentage_is_rejected_atomically_including_child_roots_and_foreign_ki
     for parent_id in [
         json!(0),
         json!(-1),
-        json!(999_999),
+        json!("ffffffff-ffff-7fff-bfff-ffffffffffff"),
         recurring["id"].clone(),
         foreign["id"].clone(),
         child["id"].clone(),
@@ -179,7 +182,7 @@ fn invalid_parentage_is_rejected_atomically_including_child_roots_and_foreign_ki
         (&parent, child["id"].clone()),
         (&child, recurring["id"].clone()),
         (&child, foreign["id"].clone()),
-        (&child, json!(999_999)),
+        (&child, json!("ffffffff-ffff-7fff-bfff-ffffffffffff")),
     ] {
         let previous = context(&client, task);
         assert!(client.call::<Value>("update_task", json!({"task_id": task["id"], "expected_revision": task["revision"], "parent_task_id": parent_id, "title": "Must roll back"})).is_err());
@@ -196,7 +199,7 @@ fn invalid_parentage_is_rejected_atomically_including_child_roots_and_foreign_ki
     for parent_id in [
         json!(0),
         json!(-1),
-        json!(999_999),
+        json!("ffffffff-ffff-7fff-bfff-ffffffffffff"),
         foreign["id"].clone(),
         json!("1"),
     ] {
@@ -217,7 +220,7 @@ fn parentage_does_not_gate_completion_copy_status_or_restrict_same_kind_recurren
         &client,
         "Unfinished child",
         "one_time",
-        parent["id"].as_i64(),
+        parent["id"].as_str(),
     );
     call(
         &client,
@@ -230,7 +233,7 @@ fn parentage_does_not_gate_completion_copy_status_or_restrict_same_kind_recurren
         &client,
         "Another child of done parent",
         "one_time",
-        parent["id"].as_i64(),
+        parent["id"].as_str(),
     );
     assert_eq!(added["status"], "todo");
     assert_eq!(context(&client, &parent)["task"], done);
@@ -239,7 +242,7 @@ fn parentage_does_not_gate_completion_copy_status_or_restrict_same_kind_recurren
         &client,
         "Recurring child",
         "recurring",
-        recurring["id"].as_i64(),
+        recurring["id"].as_str(),
     );
     let paused = update(&client, &recurring, json!({"status": "paused"}));
     assert_eq!(
@@ -268,7 +271,7 @@ fn reciprocal_moves_and_child_creation_races_cannot_introduce_grandchildren() {
                 let client = Project::open(database).unwrap();
                 barrier.wait();
                 if create_child && index == 1 {
-                    client.call::<Value>("create_task", brief("Concurrent child", "one_time", first["id"].as_i64()))
+                    client.call::<Value>("create_task", brief("Concurrent child", "one_time", first["id"].as_str()))
                 } else {
                     let (task, parent) = if index == 0 { (&first, &second) } else { (&second, &first) };
                     client.call::<Value>("update_task", json!({"task_id": task["id"], "expected_revision": task["revision"], "parent_task_id": parent["id"]}))

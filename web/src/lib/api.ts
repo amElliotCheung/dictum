@@ -58,42 +58,42 @@ export const api = {
   projects(): Promise<ProjectList> {
     return getJson<ProjectList>('/api/projects');
   },
-  tasks(projectId: string, parentTaskId?: number | null, topic?: string | null): Promise<TaskList> {
+  tasks(projectId: string, parentTaskId?: string | null, topic?: string | null): Promise<TaskList> {
     const params = new URLSearchParams();
-    if (parentTaskId !== undefined) params.set('parent_task_id', parentTaskId === null ? 'null' : String(parentTaskId));
+    if (parentTaskId !== undefined) params.set('parent_task_id', parentTaskId === null ? 'null' : parentTaskId);
     if (topic) params.set('topic', topic);
     const query = params.size > 0 ? `?${params.toString()}` : '';
     return getJson<TaskList>(`${projectPath(projectId)}/tasks${query}`);
   },
-  decisions(projectId: string, beforeId?: number, topic?: string | null): Promise<DecisionList> {
+  decisions(projectId: string, beforeId?: string, topic?: string | null): Promise<DecisionList> {
     const params = new URLSearchParams({ page_size: '20' });
-    if (beforeId !== undefined) params.set('before_id', String(beforeId));
+    if (beforeId !== undefined) params.set('before_id', beforeId);
     if (topic) params.set('topic', topic);
     return getJson<DecisionList>(`${projectPath(projectId)}/decisions?${params.toString()}`);
   },
-  sources(projectId: string, beforeId?: number, topic?: string | null): Promise<SourceList> {
+  sources(projectId: string, beforeId?: string, topic?: string | null): Promise<SourceList> {
     const params = new URLSearchParams({ page_size: '20' });
-    if (beforeId !== undefined) params.set('before_id', String(beforeId));
+    if (beforeId !== undefined) params.set('before_id', beforeId);
     if (topic) params.set('topic', topic);
     return getJson<SourceList>(`${projectPath(projectId)}/sources?${params.toString()}`);
   },
   projectContext(projectId: string): Promise<Context> {
     return getJson<Context>(`${projectPath(projectId)}/context`);
   },
-  context(projectId: string, taskId: number): Promise<TaskContext> {
+  context(projectId: string, taskId: string): Promise<TaskContext> {
     return getJson<TaskContext>(
       `${projectPath(projectId)}/tasks/${taskId}`,
     );
   },
   comments(
     projectId: string,
-    taskId: number,
-    beforeId?: number,
+    taskId: string,
+    beforeId?: string,
     hasExecutionResult?: boolean,
   ): Promise<TaskCommentList> {
     const params = new URLSearchParams({ page_size: '20' });
     if (beforeId !== undefined) {
-      params.set('before_id', String(beforeId));
+      params.set('before_id', beforeId);
     }
     if (hasExecutionResult !== undefined) {
       params.set('has_execution_result', String(hasExecutionResult));
@@ -102,10 +102,10 @@ export const api = {
       `${projectPath(projectId)}/tasks/${taskId}/comments?${params.toString()}`,
     );
   },
-  comment(projectId: string, taskId: number, commentId: number): Promise<TaskComment> {
+  comment(projectId: string, taskId: string, commentId: string): Promise<TaskComment> {
     return getJson<TaskComment>(`${projectPath(projectId)}/tasks/${taskId}/comments/${commentId}`);
   },
-  async recordComment(projectId: string, taskId: number, body: RecordTaskComment): Promise<TaskComment> {
+  async recordComment(projectId: string, taskId: string, body: RecordTaskComment): Promise<TaskComment> {
     const { token } = await getJson<{ token: string }>('/api/request-token');
     return requestJson<TaskComment>(`${projectPath(projectId)}/tasks/${taskId}/comments`, {
       method: 'POST',
@@ -113,7 +113,7 @@ export const api = {
       body: JSON.stringify(body),
     });
   },
-  source(projectId: string, sourceId: number): Promise<Source> {
+  source(projectId: string, sourceId: string): Promise<Source> {
     return getJson<Source>(`${projectPath(projectId)}/sources/${sourceId}`);
   },
 };
@@ -122,18 +122,18 @@ export const queryKeys = {
   projects: ['projects'] as const,
   tasks: (projectId: string | null, topic?: string | null) =>
     ['projects', projectId, 'tasks', 'list', topic ?? null] as const,
-  context: (projectId: string, taskId: number) =>
+  context: (projectId: string, taskId: string) =>
     ['projects', projectId, 'tasks', taskId, 'context'] as const,
-  children: (projectId: string, taskId: number) =>
+  children: (projectId: string, taskId: string) =>
     ['projects', projectId, 'tasks', 'children', taskId] as const,
-  comments: (projectId: string, taskId: number) =>
+  comments: (projectId: string, taskId: string) =>
     ['projects', projectId, 'tasks', taskId, 'comments'] as const,
-  comment: (projectId: string, taskId: number, commentId: number) =>
+  comment: (projectId: string, taskId: string, commentId: string) =>
     ['projects', projectId, 'tasks', taskId, 'comment', commentId] as const,
   decisions: (projectId: string, topic?: string | null) =>
     ['projects', projectId, 'decisions', topic ?? null] as const,
   projectSources: (projectId: string, topic?: string | null) =>
     ['projects', projectId, 'project-sources', topic ?? null] as const,
-  source: (projectId: string, sourceId: number) =>
+  source: (projectId: string, sourceId: string) =>
     ['projects', projectId, 'sources', sourceId] as const,
 };

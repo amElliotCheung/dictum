@@ -38,7 +38,13 @@ fn update(client: &Project, task: &Value, mut patch: Value) -> Value {
     call(client, "update_task", patch)
 }
 
-fn record(client: &Project, task: &Value, outcome: &str, evidence: &str, outputs: &[i64]) -> Value {
+fn record(
+    client: &Project,
+    task: &Value,
+    outcome: &str,
+    evidence: &str,
+    outputs: &[String],
+) -> Value {
     let before = Utc::now();
     let result = call(
         client,
@@ -55,7 +61,7 @@ fn record(client: &Project, task: &Value, outcome: &str, evidence: &str, outputs
         json!(
             outputs
                 .iter()
-                .copied()
+                .cloned()
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect::<Vec<_>>()
@@ -85,12 +91,12 @@ fn source(client: &Project, name: &str, content: &str) -> Value {
     )
 }
 
-fn ids(values: &Value) -> Vec<i64> {
+fn ids(values: &Value) -> Vec<String> {
     values
         .as_array()
         .unwrap()
         .iter()
-        .map(|value| value["id"].as_i64().unwrap())
+        .map(|value| value["id"].as_str().unwrap().to_owned())
         .collect()
 }
 
@@ -188,7 +194,7 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
         &task,
         "success",
         "Release one inspected; checks passed.",
-        &[output["id"].as_i64().unwrap()],
+        &[output["id"].as_str().unwrap().to_owned()],
     );
     let after_first = context(&client, &task);
     assert_eq!(after_first["latest_execution"], first);
@@ -203,7 +209,7 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
         &after_first["task"],
         "success",
         "Release two inspected; checks passed.",
-        &[other_output["id"].as_i64().unwrap()],
+        &[other_output["id"].as_str().unwrap().to_owned()],
     );
     let stored_task = context(&client, &task)["task"].clone();
     drop(client);
@@ -251,7 +257,7 @@ fn recurring_history_survives_restart_and_context_keeps_only_the_latest_outcomes
     }
     assert_eq!(
         ids(&call(&restarted, "list_tasks", json!({}))["tasks"]),
-        vec![task["id"].as_i64().unwrap()]
+        vec![task["id"].as_str().unwrap().to_owned()]
     );
     assert!(final_context.get("results").is_none());
     assert_eq!(
@@ -304,7 +310,7 @@ fn keyset_history_pages_are_stable_when_other_clients_append() {
             &format!("Execution {index}: passing checks."),
             &[],
         );
-        expected.push(result["id"].as_i64().unwrap());
+        expected.push(result["id"].as_str().unwrap().to_owned());
         task = context(&first, &task)["task"].clone();
     }
     expected.reverse();
@@ -383,7 +389,7 @@ fn keyset_history_pages_are_stable_when_other_clients_append() {
     for before_id in [
         json!(0),
         json!(-1),
-        json!(999_999),
+        json!("ffffffff-ffff-7fff-bfff-ffffffffffff"),
         json!(1.5),
         json!("2"),
         unrelated["id"].clone(),
@@ -411,7 +417,7 @@ fn historical_execution_comments_preserve_version_targets_outputs_and_task_revis
         &task,
         "success",
         "Version one checks passed.",
-        &[output["id"].as_i64().unwrap()],
+        &[output["id"].as_str().unwrap().to_owned()],
     );
     assert_eq!(context(&first, &task)["task"], task);
     let updated = update(
@@ -432,8 +438,8 @@ fn historical_execution_comments_preserve_version_targets_outputs_and_task_revis
         "no_change",
         "Version two checked; source identity deduplicates.",
         &[
-            output["id"].as_i64().unwrap(),
-            output["id"].as_i64().unwrap(),
+            output["id"].as_str().unwrap().to_owned(),
+            output["id"].as_str().unwrap().to_owned(),
         ],
     );
     assert_eq!(historical["task_revision"], task["revision"]);
@@ -485,7 +491,7 @@ fn simultaneous_execution_comments_preserve_both_reports_and_their_own_outputs()
                     &task,
                     "success",
                     &format!("Writer {index}: execution passed."),
-                    &[output["id"].as_i64().unwrap()],
+                    &[output["id"].as_str().unwrap().to_owned()],
                 );
                 assert_eq!(
                     report["execution_result"]["output_source_ids"],
@@ -503,7 +509,7 @@ fn simultaneous_execution_comments_preserve_both_reports_and_their_own_outputs()
     for report in &results {
         assert_eq!(report["task_revision"], task["revision"]);
     }
-    results.sort_by_key(|report| std::cmp::Reverse(report["id"].as_i64().unwrap()));
+    results.sort_by_key(|report| std::cmp::Reverse(report["id"].as_str().unwrap().to_owned()));
     assert_eq!(
         history(&client, &task, json!({}))["comments"],
         json!(results)
@@ -608,7 +614,7 @@ fn kinds_lifecycles_triggers_and_filters_remain_distinct() {
     );
     assert_eq!(
         ids(&selected["tasks"]),
-        vec![recurring["id"].as_i64().unwrap()]
+        vec![recurring["id"].as_str().unwrap().to_owned()]
     );
     assert_eq!(selected["tasks"][0]["kind"], "recurring");
     assert_eq!(selected["tasks"][0]["trigger_event"], "release");
@@ -626,21 +632,21 @@ fn kinds_lifecycles_triggers_and_filters_remain_distinct() {
     );
     assert_eq!(
         ids(&call(&client, "list_tasks", json!({"kind": "one_time"}))["tasks"]),
-        vec![ordinary["id"].as_i64().unwrap()]
+        vec![ordinary["id"].as_str().unwrap().to_owned()]
     );
     assert_eq!(
         ids(&call(&client, "list_tasks", json!({"kind": "recurring"}))["tasks"])
             .into_iter()
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([
-            recurring["id"].as_i64().unwrap(),
-            prefix["id"].as_i64().unwrap(),
-            case["id"].as_i64().unwrap()
+            recurring["id"].as_str().unwrap().to_owned(),
+            prefix["id"].as_str().unwrap().to_owned(),
+            case["id"].as_str().unwrap().to_owned()
         ])
     );
     assert_eq!(
         ids(&call(&client, "list_tasks", json!({"ready_to_start": true}))["tasks"]),
-        vec![ordinary["id"].as_i64().unwrap()]
+        vec![ordinary["id"].as_str().unwrap().to_owned()]
     );
     assert_eq!(
         call(
@@ -812,7 +818,7 @@ fn ordinary_tasks_require_successful_results_before_done_and_preserve_history() 
         &after_failure["task"],
         "success",
         "Rechecked after the fix: checks passed.",
-        &[historical_output["id"].as_i64().unwrap()],
+        &[historical_output["id"].as_str().unwrap().to_owned()],
     );
     let after_success = context(&client, &task);
     assert_eq!(after_success["task"]["status"], "in_progress");
@@ -856,9 +862,9 @@ fn recurring_priority_is_independent_of_lifecycle_and_composes_with_discovery_fi
     assert_eq!(
         ids(&call(&client, "list_tasks", json!({"kind": "recurring"}))["tasks"]),
         vec![
-            high["id"].as_i64().unwrap(),
-            default["id"].as_i64().unwrap(),
-            low["id"].as_i64().unwrap()
+            high["id"].as_str().unwrap().to_owned(),
+            default["id"].as_str().unwrap().to_owned(),
+            low["id"].as_str().unwrap().to_owned()
         ]
     );
     let selected = call(
@@ -866,7 +872,10 @@ fn recurring_priority_is_independent_of_lifecycle_and_composes_with_discovery_fi
         "list_tasks",
         json!({"kind": "recurring", "status": "paused", "trigger_event": "release", "query": "HIGH", "priority": "high"}),
     );
-    assert_eq!(ids(&selected["tasks"]), vec![high["id"].as_i64().unwrap()]);
+    assert_eq!(
+        ids(&selected["tasks"]),
+        vec![high["id"].as_str().unwrap().to_owned()]
+    );
     assert_eq!(selected["tasks"][0]["priority"], "high");
     assert!(
         call(
@@ -886,7 +895,10 @@ fn recurring_priority_is_independent_of_lifecycle_and_composes_with_discovery_fi
             "list_tasks",
             json!({"kind": "recurring", "priority": "high"})
         )["tasks"]),
-        vec![low["id"].as_i64().unwrap(), high["id"].as_i64().unwrap()]
+        vec![
+            low["id"].as_str().unwrap().to_owned(),
+            high["id"].as_str().unwrap().to_owned()
+        ]
     );
     let low = update(
         &client,

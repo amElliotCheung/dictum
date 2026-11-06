@@ -1,12 +1,13 @@
 import { useSyncExternalStore } from 'react';
 import type { Outcome } from './types';
+import { isUuidV7 } from './utils';
 
 export interface CommentDraft {
   body: string;
   taskRevision: number | null;
-  replyToCommentId: number | null;
+  replyToCommentId: string | null;
   outcome: Outcome | '';
-  outputSourceIds: number[];
+  outputSourceIds: string[];
   sending: boolean;
   error: string | null;
   notice: string | null;
@@ -22,7 +23,7 @@ function emptyDraft(): CommentDraft {
   };
 }
 
-export function draftKey(projectId: string, taskId: number): string {
+export function draftKey(projectId: string, taskId: string): string {
   return `dictum-comment:${projectId}:${taskId}`;
 }
 
@@ -38,10 +39,10 @@ export function readDraft(key: string): CommentDraft {
         ...draft,
         body: value.body ?? '',
         taskRevision: Number.isInteger(value.taskRevision) ? value.taskRevision! : null,
-        replyToCommentId: Number.isInteger(value.replyToCommentId) ? value.replyToCommentId! : null,
+        replyToCommentId: isUuidV7(value.replyToCommentId) ? value.replyToCommentId : null,
         outcome: ['success', 'no_change', 'failure'].includes(value.outcome ?? '') ? value.outcome! : '',
         outputSourceIds: Array.isArray(value.outputSourceIds)
-          ? value.outputSourceIds.filter((id) => Number.isInteger(id) && id > 0) : [],
+          ? value.outputSourceIds.filter(isUuidV7) : [],
         error: value.sending
           ? 'A previous submission may have completed. Check the timeline before posting this draft again.'
           : null,

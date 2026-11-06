@@ -1,7 +1,7 @@
 import { useRef, type KeyboardEvent } from 'react';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { cn } from '../lib/utils';
+import { cn, compareIds } from '../lib/utils';
 import { formatIds, statusLabels } from '../lib/format';
 import type {
   Project,
@@ -93,8 +93,8 @@ export function Board({
   search: string;
   activeKind: TaskKind;
   onKindChange: (kind: TaskKind) => void;
-  selectedTaskId: number | null;
-  onSelectTask: (taskId: number) => void;
+  selectedTaskId: string | null;
+  onSelectTask: (taskId: string) => void;
   onClearSearch: () => void;
 }) {
   const tabRefs = useRef<Record<TaskKind, HTMLButtonElement | null>>({
@@ -115,7 +115,7 @@ export function Board({
   const visible = query
     ? kindTasks.filter(
         (task) =>
-          String(task.id).includes(query) ||
+          task.id.includes(query) ||
           task.title.toLowerCase().includes(query),
       )
     : kindTasks;
@@ -264,8 +264,8 @@ function Lifecycle({
   hint: string;
   columns: ColumnDefinition[];
   tasks: TaskSummary[];
-  selectedTaskId: number | null;
-  onSelectTask: (taskId: number) => void;
+  selectedTaskId: string | null;
+  onSelectTask: (taskId: string) => void;
 }) {
   return (
     <section aria-labelledby={`${id}-heading`}>
@@ -292,7 +292,7 @@ function Lifecycle({
             .sort(
               (left, right) =>
                 priorityRank[left.priority] - priorityRank[right.priority] ||
-                left.id - right.id,
+                compareIds(left.id, right.id),
             );
           return (
             <div
@@ -348,7 +348,7 @@ function TaskCard({
 }: {
   task: TaskSummary;
   selected: boolean;
-  onSelect: (taskId: number) => void;
+  onSelect: (taskId: string) => void;
 }) {
   const dependencies = task.dependency_state;
   return (
@@ -362,8 +362,8 @@ function TaskCard({
         selected && 'border-primary ring-2 ring-primary',
       )}
     >
-      <span className="flex items-center justify-between gap-2">
-        <span className="text-xs font-semibold tabular-nums text-muted-foreground">
+      <span className="flex flex-wrap items-center justify-between gap-2">
+        <span className="max-w-full break-all text-xs font-semibold tabular-nums text-muted-foreground">
           #{task.id}
         </span>
         <span className="flex flex-wrap justify-end gap-1">
@@ -398,7 +398,7 @@ function TaskCard({
           {dependencies.unmet_prerequisite_task_ids.length > 0 ? (
             <Badge
               variant="outline"
-              className="border-amber-300 bg-amber-50 text-amber-800"
+              className="max-w-full break-all border-amber-300 bg-amber-50 text-amber-800"
             >
               Start blocked: {formatIds(dependencies.unmet_prerequisite_task_ids)}
             </Badge>
@@ -406,7 +406,7 @@ function TaskCard({
           {dependencies.unmet_completion_task_ids.length > 0 ? (
             <Badge
               variant="outline"
-              className="border-rose-300 bg-rose-50 text-rose-800"
+              className="max-w-full break-all border-rose-300 bg-rose-50 text-rose-800"
             >
               {task.kind === 'recurring' ? 'Success blocked' : 'Done blocked'}: {formatIds(dependencies.unmet_completion_task_ids)}
             </Badge>

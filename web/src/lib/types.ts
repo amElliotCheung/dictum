@@ -1,5 +1,5 @@
 export interface Topic {
-  id: number;
+  id: string;
   project_id: string;
   name: string;
 }
@@ -31,13 +31,13 @@ export type TaskStatus =
 
 export interface DependencyState {
   ready_to_start: boolean;
-  unmet_prerequisite_task_ids: number[];
-  unmet_completion_task_ids: number[];
+  unmet_prerequisite_task_ids: string[];
+  unmet_completion_task_ids: string[];
 }
 
 export interface TaskSummary {
   topics: Topic[];
-  id: number;
+  id: string;
   project_id: string;
   kind: TaskKind;
   priority: TaskPriority;
@@ -52,9 +52,9 @@ export interface TaskSummary {
 
 export interface Task {
   topics: Topic[];
-  id: number;
+  id: string;
   project_id: string;
-  parent_task_id: number | null;
+  parent_task_id: string | null;
   kind: TaskKind;
   priority: TaskPriority;
   trigger_event: string | null;
@@ -65,9 +65,9 @@ export interface Task {
   alternatives_rejected: string | null;
   status: TaskStatus;
   progress: string | null;
-  context_source_ids: number[];
-  prerequisite_task_ids: number[];
-  completion_task_ids: number[];
+  context_source_ids: string[];
+  prerequisite_task_ids: string[];
+  completion_task_ids: string[];
   revision: number;
   created_at: string;
   updated_at: string;
@@ -103,7 +103,7 @@ export interface SourceAttempt {
 
 export interface Source {
   topics: Topic[];
-  id: number;
+  id: string;
   project_id: string;
   name: string;
   description: string;
@@ -122,7 +122,7 @@ export interface Source {
 
 export interface SourceDescriptor {
   topics: Topic[];
-  id: number;
+  id: string;
   project_id: string;
   name: string;
   description: string;
@@ -136,54 +136,54 @@ export interface SourceDescriptor {
 
 export interface SourceList {
   sources: SourceDescriptor[];
-  next_before_id: number | null;
+  next_before_id: string | null;
 }
 
 export interface Decision {
   topics: Topic[];
-  id: number;
+  id: string;
   project_id: string;
   statement: string;
   rationale: string;
   alternatives_rejected: string | null;
-  supersedes_id: number | null;
+  supersedes_id: string | null;
   created_at: string;
   is_current: boolean;
-  current_decision_id: number;
+  current_decision_id: string;
 }
 
 export interface DecisionList {
   decisions: Decision[];
-  next_before_id: number | null;
+  next_before_id: string | null;
 }
 
 export type Outcome = 'success' | 'no_change' | 'failure';
 
 export interface TaskComment {
-  id: number;
+  id: string;
   project_id: string;
-  task_id: number;
+  task_id: string;
   task_revision: number;
   body: string;
-  reply_to_comment_id: number | null;
+  reply_to_comment_id: string | null;
   recorded_at: string;
   execution_result: ExecutionResult | null;
 }
 
 export interface ExecutionResult {
   outcome: Outcome;
-  output_source_ids: number[];
+  output_source_ids: string[];
 }
 
 export interface TaskCommentList {
   comments: TaskComment[];
-  next_before_id: number | null;
+  next_before_id: string | null;
 }
 
 export interface RecordTaskComment {
   task_revision: number;
   body: string;
-  reply_to_comment_id?: number | null;
+  reply_to_comment_id?: string | null;
   execution_result?: ExecutionResult | null;
 }
 

@@ -1,5 +1,5 @@
 CREATE TABLE projects (
-    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36 AND substr(id, 15, 1) = '7' AND substr(id, 20, 1) IN ('8','9','a','b')),
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36 AND substr(id, 9, 1) = '-' AND substr(id, 14, 1) = '-' AND substr(id, 19, 1) = '-' AND substr(id, 24, 1) = '-' AND length(replace(id, '-', '')) = 32 AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*' AND substr(id, 15, 1) = '7' AND substr(id, 20, 1) IN ('8','9','a','b')),
     name TEXT NOT NULL CHECK (length(trim(name)) > 0),
     description TEXT NOT NULL CHECK (length(trim(description)) > 0),
     revision INTEGER NOT NULL CHECK (revision > 0),
@@ -8,9 +8,9 @@ CREATE TABLE projects (
 );
 
 CREATE TABLE tasks (
-    id INTEGER PRIMARY KEY,
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36 AND substr(id, 9, 1) = '-' AND substr(id, 14, 1) = '-' AND substr(id, 19, 1) = '-' AND substr(id, 24, 1) = '-' AND length(replace(id, '-', '')) = 32 AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*' AND substr(id, 15, 1) = '7' AND substr(id, 20, 1) IN ('8','9','a','b')),
     project_id TEXT NOT NULL REFERENCES projects(id),
-    parent_task_id INTEGER,
+    parent_task_id TEXT,
     kind TEXT NOT NULL DEFAULT 'one_time' CHECK (kind IN ('one_time', 'recurring')),
     priority TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high')),
     trigger_event TEXT CHECK (trigger_event IS NULL OR (kind = 'recurring' AND length(trim(trigger_event)) > 0)),
@@ -30,7 +30,7 @@ CREATE TABLE tasks (
 );
 
 CREATE TABLE topics (
-    id INTEGER PRIMARY KEY,
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36 AND substr(id, 9, 1) = '-' AND substr(id, 14, 1) = '-' AND substr(id, 19, 1) = '-' AND substr(id, 24, 1) = '-' AND length(replace(id, '-', '')) = 32 AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*' AND substr(id, 15, 1) = '7' AND substr(id, 20, 1) IN ('8','9','a','b')),
     project_id TEXT NOT NULL REFERENCES projects(id),
     name TEXT NOT NULL CHECK (length(trim(name)) > 0),
     name_key TEXT NOT NULL CHECK (length(trim(name_key)) > 0),
@@ -39,7 +39,7 @@ CREATE TABLE topics (
 );
 
 CREATE TABLE sources (
-    id INTEGER PRIMARY KEY,
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36 AND substr(id, 9, 1) = '-' AND substr(id, 14, 1) = '-' AND substr(id, 19, 1) = '-' AND substr(id, 24, 1) = '-' AND length(replace(id, '-', '')) = 32 AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*' AND substr(id, 15, 1) = '7' AND substr(id, 20, 1) IN ('8','9','a','b')),
     project_id TEXT NOT NULL REFERENCES projects(id),
     name TEXT NOT NULL CHECK (length(trim(name)) > 0),
     description TEXT NOT NULL CHECK (length(trim(description)) > 0),
@@ -57,12 +57,12 @@ CREATE TABLE sources (
 );
 
 CREATE TABLE decisions (
-    id INTEGER PRIMARY KEY,
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36 AND substr(id, 9, 1) = '-' AND substr(id, 14, 1) = '-' AND substr(id, 19, 1) = '-' AND substr(id, 24, 1) = '-' AND length(replace(id, '-', '')) = 32 AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*' AND substr(id, 15, 1) = '7' AND substr(id, 20, 1) IN ('8','9','a','b')),
     project_id TEXT NOT NULL REFERENCES projects(id),
     statement TEXT NOT NULL CHECK (length(trim(statement)) > 0),
     rationale TEXT NOT NULL CHECK (length(trim(rationale)) > 0),
     alternatives_rejected TEXT,
-    supersedes_id INTEGER UNIQUE,
+    supersedes_id TEXT UNIQUE,
     created_at TEXT NOT NULL,
     UNIQUE (project_id, id),
     FOREIGN KEY (project_id, supersedes_id) REFERENCES decisions(project_id, id),
@@ -71,8 +71,8 @@ CREATE TABLE decisions (
 
 CREATE TABLE task_context_sources (
     project_id TEXT NOT NULL REFERENCES projects(id),
-    task_id INTEGER NOT NULL,
-    source_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
     FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id),
     FOREIGN KEY (project_id, source_id) REFERENCES sources(project_id, id),
     PRIMARY KEY (task_id, source_id)
@@ -80,8 +80,8 @@ CREATE TABLE task_context_sources (
 
 CREATE TABLE task_topics (
     project_id TEXT NOT NULL REFERENCES projects(id),
-    task_id INTEGER NOT NULL,
-    topic_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    topic_id TEXT NOT NULL,
     FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id),
     FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id),
     PRIMARY KEY (task_id, topic_id)
@@ -89,8 +89,8 @@ CREATE TABLE task_topics (
 
 CREATE TABLE source_topics (
     project_id TEXT NOT NULL REFERENCES projects(id),
-    source_id INTEGER NOT NULL,
-    topic_id INTEGER NOT NULL,
+    source_id TEXT NOT NULL,
+    topic_id TEXT NOT NULL,
     FOREIGN KEY (project_id, source_id) REFERENCES sources(project_id, id),
     FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id),
     PRIMARY KEY (source_id, topic_id)
@@ -98,8 +98,8 @@ CREATE TABLE source_topics (
 
 CREATE TABLE decision_topics (
     project_id TEXT NOT NULL REFERENCES projects(id),
-    decision_id INTEGER NOT NULL,
-    topic_id INTEGER NOT NULL,
+    decision_id TEXT NOT NULL,
+    topic_id TEXT NOT NULL,
     FOREIGN KEY (project_id, decision_id) REFERENCES decisions(project_id, id),
     FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id),
     PRIMARY KEY (decision_id, topic_id)
@@ -111,8 +111,8 @@ CREATE INDEX decision_topics_topic ON decision_topics(project_id, topic_id, deci
 
 CREATE TABLE task_dependencies (
     project_id TEXT NOT NULL REFERENCES projects(id),
-    task_id INTEGER NOT NULL,
-    depends_on_task_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    depends_on_task_id TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('before_start', 'before_done')),
     FOREIGN KEY (project_id, task_id) REFERENCES tasks(project_id, id),
     FOREIGN KEY (project_id, depends_on_task_id) REFERENCES tasks(project_id, id),
@@ -121,12 +121,12 @@ CREATE TABLE task_dependencies (
 );
 
 CREATE TABLE task_comments (
-    id INTEGER PRIMARY KEY,
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) = 36 AND substr(id, 9, 1) = '-' AND substr(id, 14, 1) = '-' AND substr(id, 19, 1) = '-' AND substr(id, 24, 1) = '-' AND length(replace(id, '-', '')) = 32 AND replace(id, '-', '') NOT GLOB '*[^0-9a-f]*' AND substr(id, 15, 1) = '7' AND substr(id, 20, 1) IN ('8','9','a','b')),
     project_id TEXT NOT NULL REFERENCES projects(id),
-    task_id INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
     task_revision INTEGER NOT NULL CHECK (task_revision >= 1),
     body TEXT NOT NULL CHECK (length(trim(body)) > 0 AND length(body) <= 4000),
-    reply_to_comment_id INTEGER,
+    reply_to_comment_id TEXT,
     outcome TEXT CHECK (outcome IS NULL OR outcome IN ('success', 'no_change', 'failure')),
     recorded_at TEXT NOT NULL,
     UNIQUE (project_id, id),
@@ -138,8 +138,8 @@ CREATE TABLE task_comments (
 
 CREATE TABLE task_comment_sources (
     project_id TEXT NOT NULL REFERENCES projects(id),
-    comment_id INTEGER NOT NULL,
-    source_id INTEGER NOT NULL,
+    comment_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
     FOREIGN KEY (project_id, comment_id) REFERENCES task_comments(project_id, id),
     FOREIGN KEY (project_id, source_id) REFERENCES sources(project_id, id),
     PRIMARY KEY (comment_id, source_id)

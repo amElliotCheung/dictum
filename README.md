@@ -6,6 +6,12 @@ can resume without the original conversation. Project topics organize records fo
 discovery. A bundled dashboard displays the same records and lets you post
 comments and execution reports.
 
+All project, topic, task, source, decision, and comment IDs are server-generated
+UUIDv7 strings. References and pagination cursors use the same canonical lowercase,
+hyphenated format; numeric IDs and other UUID versions are rejected. A shared Rust
+generator preserves ascending append order across clients, restarts and clock
+regressions. SQLite does not provide a built-in UUIDv7 function.
+
 ## Build and connect
 
 Requires Rust 1.88 or newer and a native C compiler for bundled SQLite.
@@ -64,7 +70,7 @@ tool arguments, not shell commands. Substitute the IDs returned by earlier calls
    Sources accept exactly one of Markdown `content` or an external `locator`.
    A locator registers a reference; the server does not fetch it automatically.
 
-3. Call `create_task`, replacing `1` with the returned source ID:
+3. Call `create_task`, replacing `SOURCE_ID` with the returned source ID:
 
    ```json
    {
@@ -75,14 +81,14 @@ tool arguments, not shell commands. Substitute the IDs returned by earlier calls
      "problem_or_goal": "Visitors need a useful greeting.",
      "design": "Render the greeting described in the linked requirements.",
      "acceptance_criteria": ["The greeting appears in the UI."],
-     "context_source_ids": [1]
+     "context_source_ids": ["SOURCE_ID"]
    }
    ```
 
-4. Call `get_context`, replacing `1` with the returned task ID:
+4. Call `get_context`, replacing `TASK_ID` with the returned task ID:
 
    ```json
-   {"project_id": "PROJECT_ID", "task_id": 1}
+   {"project_id": "PROJECT_ID", "task_id": "TASK_ID"}
    ```
 
    This returns the full project, task brief, linked context sources, project
@@ -179,7 +185,7 @@ decision records. Both accept `page_size` (default 20, range 1–100) and option
 ```
 
 Pass a non-null `next_before_id` as `before_id` on the next call, retaining the
-same filters. `before_id` must be a positive ID of an existing Source or decision,
+same filters. `before_id` must be a UUIDv7 ID of an existing Source or decision,
 respectively, in the same project. Cursor validation is independent of filters;
 the cursor record need not match them. `next_before_id` is null when no older
 matching record remains, even if the page is full.
@@ -252,9 +258,9 @@ non-null, in both project and task-context decision cards.
 
 Every returned decision includes a server-derived `current_decision_id`: its own
 ID when current, or the ID at the current end of its supersession chain when
-historical. For example, if decision 41 chooses DynamoDB, 52 replaces it with
-PostgreSQL, and 68 replaces 52 with DynamoDB again, a subsequent history read
-returns `current_decision_id: 68` on all three records. Their statements,
+historical. For example, if decision A chooses DynamoDB, B replaces it with
+PostgreSQL, and C replaces B with DynamoDB again, a subsequent history read
+returns C's UUIDv7 as `current_decision_id` on all three records. Their statements,
 rationales and timestamps remain unchanged. The field is computed at read time,
 including when the current decision is outside the requested history page; it
 does not add a database column or require a schema migration.
@@ -297,7 +303,7 @@ Call `record_task_comment` with the task version you actually read:
 ```json
 {
   "project_id": "PROJECT_ID",
-  "task_id": 1,
+  "task_id": "TASK_ID",
   "task_revision": 1,
   "body": "Implemented the greeting in commit abc1234; desktop and mobile browser checks passed.",
   "execution_result": {
@@ -404,9 +410,9 @@ npm ci
 npm run build
 ```
 
-Only the current schema (v14) is supported. Startup rejects older databases
+Only the current schema (v15) is supported. Startup rejects older databases
 without modifying them; preserve the file and use a fresh path such as
-`.dictum/dictum-v14.sqlite3`. Re-create needed records through MCP rather than
+`.dictum/dictum-v15.sqlite3`. Re-create needed records through MCP rather than
 migrating the older database.
 
 ## License

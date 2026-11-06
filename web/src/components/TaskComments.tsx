@@ -7,6 +7,7 @@ import {
 } from '../lib/comment-drafts';
 import { formatDate } from '../lib/format';
 import { Markdown } from '../lib/markdown';
+import { compareIds } from '../lib/utils';
 import type { Outcome, Task, TaskComment, TaskContext } from '../lib/types';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -21,11 +22,11 @@ export function TaskComments({ context }: { context: TaskContext }) {
   const commentsQuery = useInfiniteQuery({
     queryKey: queryKeys.comments(task.project_id, task.id),
     queryFn: ({ pageParam }) => api.comments(task.project_id, task.id, pageParam),
-    initialPageParam: undefined as number | undefined,
+    initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_before_id ?? undefined,
     refetchInterval: 5_000,
   });
-  const comments = new Map<number, TaskComment>();
+  const comments = new Map<string, TaskComment>();
   for (const comment of [
     ...context.recent_comments,
     context.latest_execution,
@@ -36,7 +37,7 @@ export function TaskComments({ context }: { context: TaskContext }) {
   for (const page of commentsQuery.data?.pages ?? []) {
     for (const comment of page.comments) comments.set(comment.id, comment);
   }
-  const timeline = [...comments.values()].sort((left, right) => right.id - left.id);
+  const timeline = [...comments.values()].sort((left, right) => compareIds(right.id, left.id));
   const reply = (comment: TaskComment) => {
     const draft = readDraft(key);
     if (draft.sending) return;
@@ -92,7 +93,7 @@ function CommentComposer({ task, textareaRef }: { task: Task; textareaRef: RefOb
   const queryClient = useQueryClient();
   const sourcesQuery = useInfiniteQuery({
     queryKey: queryKeys.projectSources(task.project_id),
-    initialPageParam: undefined as number | undefined,
+    initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => api.sources(task.project_id, pageParam),
     getNextPageParam: (page) => page.next_before_id ?? undefined,
     enabled: draft.outcome !== '',
@@ -141,7 +142,7 @@ function CommentComposer({ task, textareaRef }: { task: Task; textareaRef: RefOb
       </div>
       {draft.replyToCommentId !== null ? (
         <div className="mb-2 flex items-center justify-between gap-2 text-xs">
-          <span>Replying to comment #{draft.replyToCommentId}</span>
+          <span className="min-w-0 break-all">Replying to comment #{draft.replyToCommentId}</span>
           <Button variant="ghost" size="sm" disabled={draft.sending} onClick={() => edit({ replyToCommentId: null })}>Remove reply</Button>
         </div>
       ) : null}
@@ -189,7 +190,7 @@ function CommentComposer({ task, textareaRef }: { task: Task; textareaRef: RefOb
             {sources.map((source) => (
               <label key={source.id} className="flex items-start gap-2 text-xs">
                 <input type="checkbox" checked={draft.outputSourceIds.includes(source.id)} onChange={(event) => edit({ outputSourceIds: event.target.checked ? [...draft.outputSourceIds, source.id] : draft.outputSourceIds.filter((id) => id !== source.id) })} className="mt-0.5" />
-                <span>#{source.id} · {source.name}</span>
+                <span className="min-w-0 break-all">#{source.id} · {source.name}</span>
               </label>
             ))}
           </div>
@@ -199,7 +200,7 @@ function CommentComposer({ task, textareaRef }: { task: Task; textareaRef: RefOb
               {sourcesQuery.isFetchingNextPage ? 'Loading…' : 'Load more output sources'}
             </Button>
           ) : null}
-          {draft.outputSourceIds.length ? <p className="mt-2 text-xs text-muted-foreground">Selected: {draft.outputSourceIds.map((id) => `#${id}`).join(', ')}</p> : null}
+          {draft.outputSourceIds.length ? <p className="mt-2 break-all text-xs text-muted-foreground">Selected: {draft.outputSourceIds.map((id) => `#${id}`).join(', ')}</p> : null}
         </fieldset>
       ) : null}
       {draft.error ? <p role="alert" className="mt-3 text-xs text-destructive">{draft.error}</p> : null}
@@ -215,13 +216,13 @@ function CommentComposer({ task, textareaRef }: { task: Task; textareaRef: RefOb
   );
 }
 
-function CommentCard({ comment, task, comments, latestExecution, latestSuccessfulExecution, replyDisabled, onReply }: { comment: TaskComment; task: Task; comments: ReadonlyMap<number, TaskComment>; latestExecution: boolean; latestSuccessfulExecution: boolean; replyDisabled: boolean; onReply: () => void }) {
+function CommentCard({ comment, task, comments, latestExecution, latestSuccessfulExecution, replyDisabled, onReply }: { comment: TaskComment; task: Task; comments: ReadonlyMap<string, TaskComment>; latestExecution: boolean; latestSuccessfulExecution: boolean; replyDisabled: boolean; onReply: () => void }) {
   const current = comment.task_revision === task.revision;
   return (
     <Card className="p-3" id={`task-${task.id}-comment-${comment.id}`}>
       <div className="flex flex-wrap items-center gap-2">
         {comment.execution_result ? <OutcomeBadge outcome={comment.execution_result.outcome} /> : <Badge variant="outline">Comment</Badge>}
-        <span className="text-xs text-muted-foreground">#{comment.id} · {formatDate(comment.recorded_at)}</span>
+        <span className="break-all text-xs text-muted-foreground">#{comment.id} · {formatDate(comment.recorded_at)}</span>
         <Badge variant="outline">Version {comment.task_revision} · {current ? 'current' : comment.task_revision < task.revision ? 'older' : 'refresh pending'}</Badge>
         {latestExecution ? <Badge variant="secondary">Latest execution</Badge> : null}
         {latestSuccessfulExecution ? <Badge variant="secondary">Latest successful execution</Badge> : null}
@@ -230,12 +231,12 @@ function CommentCard({ comment, task, comments, latestExecution, latestSuccessfu
       <div className="mt-2"><Markdown text={comment.body} /></div>
       <CommentOutputs comment={comment} />
       {comment.execution_result ? <p className="mt-2 text-[11px] text-muted-foreground">Reported execution evidence. Recorded time is the server receipt time.</p> : null}
-      <Button variant="ghost" size="sm" className="mt-2" disabled={replyDisabled} onClick={onReply}>Reply to #{comment.id}</Button>
+      <Button variant="ghost" size="sm" className="mt-2 h-auto max-w-full whitespace-normal break-all py-1.5 text-left" disabled={replyDisabled} onClick={onReply}>Reply to #{comment.id}</Button>
     </Card>
   );
 }
 
-function ReplyReference({ task, commentId, known }: { task: Task; commentId: number; known?: TaskComment }) {
+function ReplyReference({ task, commentId, known }: { task: Task; commentId: string; known?: TaskComment }) {
   const [open, setOpen] = useState(false);
   const parentQuery = useQuery({
     queryKey: queryKeys.comment(task.project_id, task.id, commentId),
@@ -245,7 +246,7 @@ function ReplyReference({ task, commentId, known }: { task: Task; commentId: num
   const parent = known ?? parentQuery.data;
   return (
     <div className="mt-2 rounded-md border bg-muted/30 p-2">
-      <Button variant="ghost" size="sm" className="h-auto p-0 text-xs" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+      <Button variant="ghost" size="sm" className="h-auto max-w-full whitespace-normal break-all p-0 text-left text-xs" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
         {open ? 'Hide' : 'View'} replied comment #{commentId}
       </Button>
       {open ? (

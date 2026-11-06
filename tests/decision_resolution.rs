@@ -222,7 +222,7 @@ fn stale_and_foreign_replacements_are_rejected_without_redirecting_writes() {
             .unwrap_err()
             .to_string();
         assert!(error.contains("current_decision_id"), "{error}");
-        assert!(error.contains(&current["id"].to_string()), "{error}");
+        assert!(error.contains(current["id"].as_str().unwrap()), "{error}");
     }
     for input in [
         json!({"supersedes_id": foreign["id"]}),
@@ -295,7 +295,7 @@ fn concurrent_replacements_have_one_winner_and_report_its_current_id() {
         .unwrap()
         .to_string();
     assert!(error.contains("current_decision_id"), "{error}");
-    assert!(error.contains(&winner["id"].to_string()), "{error}");
+    assert!(error.contains(winner["id"].as_str().unwrap()), "{error}");
     let history = call(
         &reader,
         "list_decisions",
@@ -350,7 +350,7 @@ async fn tool_discovery_advertises_current_decision_id_as_server_derived_output(
             &schema
         };
         assert_eq!(
-            decision_schema["properties"]["current_decision_id"]["type"], "integer",
+            decision_schema["properties"]["current_decision_id"]["type"], "string",
             "{name}: {schema}"
         );
         assert!(

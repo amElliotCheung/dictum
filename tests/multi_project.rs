@@ -433,29 +433,41 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
         }
     }
     for (name, mut input) in [
-        ("get_context", json!({"task_id": 999_999})),
-        ("list_task_comments", json!({"task_id": 999_999})),
+        (
+            "get_context",
+            json!({"task_id": "ffffffff-ffff-7fff-bfff-ffffffffffff"}),
+        ),
+        (
+            "list_task_comments",
+            json!({"task_id": "ffffffff-ffff-7fff-bfff-ffffffffffff"}),
+        ),
         (
             "record_task_comment",
-            json!({"task_id": 999_999, "task_revision": 1, "body": "Unknown task", "execution_result": {"outcome": "success"}}),
+            json!({"task_id": "ffffffff-ffff-7fff-bfff-ffffffffffff", "task_revision": 1, "body": "Unknown task", "execution_result": {"outcome": "success"}}),
         ),
         (
             "update_task",
-            json!({"task_id": 999_999, "expected_revision": 1, "title": "Unknown task"}),
+            json!({"task_id": "ffffffff-ffff-7fff-bfff-ffffffffffff", "expected_revision": 1, "title": "Unknown task"}),
         ),
-        ("list_sources", json!({"task_id": 999_999})),
-        ("get_source", json!({"source_id": 999_999})),
+        (
+            "list_sources",
+            json!({"task_id": "ffffffff-ffff-7fff-bfff-ffffffffffff"}),
+        ),
+        (
+            "get_source",
+            json!({"source_id": "ffffffff-ffff-7fff-bfff-ffffffffffff"}),
+        ),
         (
             "update_source",
-            json!({"source_id": 999_999, "expected_revision": 1, "name": "Unknown source"}),
+            json!({"source_id": "ffffffff-ffff-7fff-bfff-ffffffffffff", "expected_revision": 1, "name": "Unknown source"}),
         ),
         (
             "record_source_action",
-            json!({"source_id": 999_999, "expected_revision": 1, "result": {"outcome": "failure", "error": "Unknown source"}}),
+            json!({"source_id": "ffffffff-ffff-7fff-bfff-ffffffffffff", "expected_revision": 1, "result": {"outcome": "failure", "error": "Unknown source"}}),
         ),
         (
             "record_decision",
-            json!({"topics": ["Project workflow"], "statement": "Unknown predecessor", "rationale": "Invalid link", "supersedes_id": 999_999}),
+            json!({"topics": ["Project workflow"], "statement": "Unknown predecessor", "rationale": "Invalid link", "supersedes_id": "ffffffff-ffff-7fff-bfff-ffffffffffff"}),
         ),
     ] {
         input["project_id"] = json!(scope);
@@ -467,11 +479,11 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
         "completion_task_ids",
     ] {
         let mut patch = json!({"project_id": scope, "task_id": task["id"], "expected_revision": task["revision"], "title": "Unknown link must roll back"});
-        patch[field] = json!([999_999]);
+        patch[field] = json!(["ffffffff-ffff-7fff-bfff-ffffffffffff"]);
         rejected_without_mutation(&client, &database, "update_task", patch);
         let mut input = brief();
         input["project_id"] = json!(scope);
-        input[field] = json!([999_999]);
+        input[field] = json!(["ffffffff-ffff-7fff-bfff-ffffffffffff"]);
         rejected_without_mutation(&client, &database, "create_task", input);
     }
 }
@@ -796,9 +808,9 @@ fn ready_filter_is_project_scoped_and_only_reports_startable_todo_tasks() {
         completion_blocked["completion_task_ids"] = json!([prerequisite["id"]]);
         let completion_blocked = scoped(&client, scope, "create_task", completion_blocked);
         expected.push(BTreeSet::from([
-            ready["id"].as_i64().unwrap(),
-            prerequisite["id"].as_i64().unwrap(),
-            completion_blocked["id"].as_i64().unwrap(),
+            ready["id"].as_str().unwrap().to_owned(),
+            prerequisite["id"].as_str().unwrap().to_owned(),
+            completion_blocked["id"].as_str().unwrap().to_owned(),
         ]));
     }
     for (scope, expected) in [&a, &b].into_iter().zip(expected) {
@@ -812,7 +824,7 @@ fn ready_filter_is_project_scoped_and_only_reports_startable_todo_tasks() {
         assert_eq!(
             tasks
                 .iter()
-                .map(|task| task["id"].as_i64().unwrap())
+                .map(|task| task["id"].as_str().unwrap().to_owned())
                 .collect::<BTreeSet<_>>(),
             expected
         );
@@ -848,10 +860,334 @@ fn database_foreign_keys_also_prevent_cross_project_relationships() {
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .unwrap();
-    assert!(connection.execute("INSERT INTO task_context_sources (project_id, task_id, source_id) VALUES (?1, ?2, ?3)", rusqlite::params![a, a_task["id"].as_i64().unwrap(), b_source["id"].as_i64().unwrap()]).is_err());
+    assert!(connection.execute("INSERT INTO task_context_sources (project_id, task_id, source_id) VALUES (?1, ?2, ?3)", rusqlite::params![a, a_task["id"].as_str().unwrap().to_owned(), b_source["id"].as_str().unwrap().to_owned()]).is_err());
     for kind in ["before_start", "before_done"] {
-        assert!(connection.execute("INSERT INTO task_dependencies (project_id, task_id, depends_on_task_id, kind) VALUES (?1, ?2, ?3, ?4)", rusqlite::params![a, a_task["id"].as_i64().unwrap(), b_task["id"].as_i64().unwrap(), kind]).is_err());
+        assert!(connection.execute("INSERT INTO task_dependencies (project_id, task_id, depends_on_task_id, kind) VALUES (?1, ?2, ?3, ?4)", rusqlite::params![a, a_task["id"].as_str().unwrap().to_owned(), b_task["id"].as_str().unwrap().to_owned(), kind]).is_err());
     }
-    assert!(connection.execute("INSERT INTO decisions (project_id, statement, rationale, supersedes_id, created_at) VALUES (?1, 'Foreign replacement', 'Fixture', ?2, '2026-01-01T00:00:00Z')", rusqlite::params![a, b_decision["id"].as_i64().unwrap()]).is_err());
+    assert!(connection.execute("INSERT INTO decisions (id, project_id, statement, rationale, supersedes_id, created_at) VALUES ('ffffffff-ffff-7fff-bfff-ffffffffffff', ?1, 'Foreign replacement', 'Fixture', ?2, '2026-01-01T00:00:00Z')", rusqlite::params![a, b_decision["id"].as_str().unwrap().to_owned()]).is_err());
     assert_eq!(snapshot(&database), before);
+}
+
+#[test]
+fn all_record_and_relationship_ids_are_canonical_uuidv7_and_persist() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("uuidv7.sqlite3");
+    let client = Project::open(&database).unwrap();
+    let scope = client.project_id.clone();
+    let before = Utc::now().timestamp_millis() as u64;
+    let source = scoped(
+        &client,
+        &scope,
+        "create_source",
+        json!({
+            "topics": ["UUID identity"], "name": "UUID source", "description": "Relationship target", "content": "Evidence"
+        }),
+    );
+    let parent = scoped(&client, &scope, "create_task", brief());
+    let gate = scoped(&client, &scope, "create_task", brief());
+    let mut child_input = brief();
+    child_input["parent_task_id"] = parent["id"].clone();
+    child_input["context_source_ids"] = json!([source["id"]]);
+    child_input["prerequisite_task_ids"] = json!([gate["id"]]);
+    let child = scoped(&client, &scope, "create_task", child_input);
+    let note = scoped(
+        &client,
+        &scope,
+        "record_task_comment",
+        json!({
+            "task_id": child["id"], "task_revision": 1, "body": "UUID output and reply target.",
+            "execution_result": {"outcome": "failure", "output_source_ids": [source["id"]]}
+        }),
+    );
+    let reply = scoped(
+        &client,
+        &scope,
+        "record_task_comment",
+        json!({
+            "task_id": child["id"], "task_revision": 1, "body": "UUID reply.", "reply_to_comment_id": note["id"]
+        }),
+    );
+    let first = scoped(
+        &client,
+        &scope,
+        "record_decision",
+        json!({
+            "topics": ["UUID identity"], "statement": "Use UUIDv7", "rationale": "One ID contract"
+        }),
+    );
+    let replacement = scoped(
+        &client,
+        &scope,
+        "record_decision",
+        json!({
+            "topics": ["UUID identity"], "statement": "Use canonical UUIDv7 everywhere", "rationale": "Unify consumption", "supersedes_id": first["id"]
+        }),
+    );
+    let after = Utc::now().timestamp_millis() as u64;
+    let context = scoped(
+        &client,
+        &scope,
+        "get_context",
+        json!({"task_id": child["id"]}),
+    );
+    assert_eq!(context["parent_task"], parent);
+    assert_eq!(context["task"]["context_source_ids"], json!([source["id"]]));
+    assert_eq!(
+        context["dependency_state"]["unmet_prerequisite_task_ids"],
+        json!([gate["id"]])
+    );
+    assert_eq!(context["latest_execution"], note);
+    assert_eq!(context["recent_comments"][0], reply);
+    assert_eq!(
+        context["current_decisions"][0]["current_decision_id"],
+        replacement["id"]
+    );
+    assert_eq!(
+        context["current_decisions"][0]["supersedes_id"],
+        first["id"]
+    );
+
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    let mut identities = BTreeSet::new();
+    for table in [
+        "projects",
+        "tasks",
+        "topics",
+        "sources",
+        "decisions",
+        "task_comments",
+    ] {
+        let ids = connection
+            .prepare(&format!("SELECT id FROM {table} ORDER BY id"))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(!ids.is_empty(), "missing identity coverage for {table}");
+        for id in ids {
+            let uuid = uuid::Uuid::parse_str(&id).unwrap();
+            assert_eq!(uuid.get_version_num(), 7, "{table}: {id}");
+            assert_eq!(uuid.to_string(), id);
+            assert!(
+                identities.insert(id.clone()),
+                "duplicate identity across records: {id}"
+            );
+            if table != "projects" {
+                let millis = u64::from_str_radix(&id.replace('-', "")[..12], 16).unwrap();
+                assert!((before..=after).contains(&millis), "{table}: {id}");
+            }
+        }
+    }
+    for table in [
+        "projects",
+        "tasks",
+        "topics",
+        "sources",
+        "decisions",
+        "task_comments",
+        "task_topics",
+        "source_topics",
+        "decision_topics",
+        "task_context_sources",
+        "task_dependencies",
+        "task_comment_sources",
+    ] {
+        let columns = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for (name, kind) in columns {
+            if name == "id" || name.ends_with("_id") {
+                assert_eq!(kind, "TEXT", "{table}.{name}");
+                let values = connection
+                    .prepare(&format!(
+                        "SELECT {name} FROM {table} WHERE {name} IS NOT NULL"
+                    ))
+                    .unwrap()
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap();
+                assert!(
+                    values.iter().all(|id| identities.contains(id)),
+                    "{table}.{name}"
+                );
+            }
+        }
+    }
+    drop(connection);
+    drop(client);
+    let restarted = Project::open(&database).unwrap();
+    assert_eq!(
+        scoped(
+            &restarted,
+            &scope,
+            "get_context",
+            json!({"task_id": child["id"]})
+        ),
+        context
+    );
+    let next = scoped(&restarted, &scope, "create_task", brief());
+    assert!(next["id"].as_str().unwrap() > child["id"].as_str().unwrap());
+}
+
+#[test]
+fn every_id_input_rejects_numbers_malformed_and_non_v7_strings_without_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("uuid-inputs.sqlite3");
+    let client = Project::open(&database).unwrap();
+    let scope = client.project_id.clone();
+    let task = scoped(&client, &scope, "create_task", brief());
+    let comment = scoped(
+        &client,
+        &scope,
+        "record_task_comment",
+        json!({"task_id": task["id"], "task_revision": 1, "body": "Valid target"}),
+    );
+    for invalid in [
+        json!(1),
+        json!("1"),
+        json!("not-a-uuid"),
+        json!("0199b3d8-f600-7000-8000-000000000001\n"),
+        json!("0199b3d8-f600-4000-8000-000000000001"),
+        json!("0199B3D8-F600-7000-8000-000000000001"),
+        json!("0199b3d8f60070008000000000000001"),
+        json!("0199b3d8-f600-7000-c000-000000000001"),
+    ] {
+        for (name, mut input, field) in [
+            ("get_context", json!({}), "project_id"),
+            ("get_context", json!({}), "task_id"),
+            ("get_source", json!({}), "source_id"),
+            (
+                "get_task_comment",
+                json!({"task_id": task["id"]}),
+                "comment_id",
+            ),
+            (
+                "list_task_comments",
+                json!({"task_id": task["id"]}),
+                "before_id",
+            ),
+            ("list_sources", json!({}), "before_id"),
+            ("list_decisions", json!({}), "before_id"),
+            ("list_tasks", json!({}), "parent_task_id"),
+            ("create_task", brief(), "parent_task_id"),
+            (
+                "update_task",
+                json!({"task_id": task["id"], "expected_revision": 1}),
+                "parent_task_id",
+            ),
+            (
+                "record_task_comment",
+                json!({"task_id": task["id"], "task_revision": 1, "body": "Invalid reply"}),
+                "reply_to_comment_id",
+            ),
+            (
+                "record_decision",
+                json!({"topics": ["UUID identity"], "statement": "Invalid reference", "rationale": "Reject invalid IDs"}),
+                "supersedes_id",
+            ),
+        ] {
+            input["project_id"] = json!(scope);
+            input[field] = invalid.clone();
+            rejected_without_mutation(&client, &database, name, input);
+        }
+        for field in [
+            "context_source_ids",
+            "prerequisite_task_ids",
+            "completion_task_ids",
+        ] {
+            let mut input = brief();
+            input["project_id"] = json!(scope);
+            input[field] = json!([invalid]);
+            rejected_without_mutation(&client, &database, "create_task", input);
+        }
+        rejected_without_mutation(
+            &client,
+            &database,
+            "record_task_comment",
+            json!({
+                "project_id": scope, "task_id": task["id"], "task_revision": 1,
+                "body": "Invalid output", "reply_to_comment_id": comment["id"],
+                "execution_result": {"outcome": "failure", "output_source_ids": [invalid]}
+            }),
+        );
+    }
+}
+
+#[test]
+fn uuidv7_generation_advances_past_persisted_future_ids_across_clients_and_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("uuid-clock.sqlite3");
+    let client = Project::open(&database).unwrap();
+    let scope = client.project_id.clone();
+    let partial_carry = "fffffffd-ffff-7000-bfff-ffffffffffff";
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection.execute("INSERT INTO projects (id, name, description, revision, created_at, updated_at) VALUES (?1, 'Suffix carry fixture', 'Exercise carry across the variant bits', 1, '2026-11-06T00:00:00Z', '2026-11-06T00:00:00Z')", [partial_carry]).unwrap();
+    drop(connection);
+    let carried = client
+        .call::<Value>(
+            "create_project",
+            json!({"name": "Suffix carry", "description": "Carry into rand_a"}),
+        )
+        .unwrap();
+    assert_eq!(carried["id"], "fffffffd-ffff-7001-8000-000000000000");
+    let future = "fffffffe-ffff-7fff-bfff-ffffffffffff";
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection.execute("INSERT INTO projects (id, name, description, revision, created_at, updated_at) VALUES (?1, 'Future clock fixture', 'Simulate a regressed clock and suffix carry', 1, '2026-11-06T00:00:00Z', '2026-11-06T00:00:00Z')", [future]).unwrap();
+    drop(connection);
+    let first = client.call::<Value>("create_task", brief()).unwrap();
+    assert_eq!(first["id"], "ffffffff-0000-7000-8000-000000000000");
+    let barrier = Arc::new(Barrier::new(2));
+    let writers = (0..2)
+        .map(|_| {
+            let database = database.clone();
+            let barrier = barrier.clone();
+            let scope = scope.clone();
+            std::thread::spawn(move || {
+                let client = Project::open(database).unwrap();
+                barrier.wait();
+                scoped(&client, &scope, "create_task", brief())
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut concurrent = writers
+        .into_iter()
+        .map(|writer| writer.join().unwrap()["id"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    concurrent.sort();
+    assert_eq!(
+        concurrent,
+        [
+            "ffffffff-0000-7000-8000-000000000002",
+            "ffffffff-0000-7000-8000-000000000003"
+        ]
+    );
+    // Creating the first task also created a topic through the same generator.
+    drop(client);
+    let restarted = Project::open(&database).unwrap();
+    let next = scoped(&restarted, &scope, "create_task", brief());
+    assert_eq!(next["id"], "ffffffff-0000-7000-8000-000000000004");
+    let tasks = scoped(&restarted, &scope, "list_tasks", json!({}));
+    let actual = tasks["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| task["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        [
+            "ffffffff-0000-7000-8000-000000000000",
+            "ffffffff-0000-7000-8000-000000000002",
+            "ffffffff-0000-7000-8000-000000000003",
+            "ffffffff-0000-7000-8000-000000000004"
+        ]
+    );
 }

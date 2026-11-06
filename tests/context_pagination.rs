@@ -47,12 +47,12 @@ fn decision(client: &Project, statement: &str, extra: Value) -> Value {
     call(client, "record_decision", input)
 }
 
-fn ids(result: &Value, field: &str) -> Vec<i64> {
+fn ids(result: &Value, field: &str) -> Vec<String> {
     result[field]
         .as_array()
         .unwrap()
         .iter()
-        .map(|record| record["id"].as_i64().unwrap())
+        .map(|record| record["id"].as_str().unwrap().to_owned())
         .collect()
 }
 
@@ -125,7 +125,7 @@ fn source_and_decision_pages_have_exact_bounds_and_survive_restart() {
     ] {
         let expected: Vec<_> = records
             .iter()
-            .map(|record| record["id"].as_i64().unwrap())
+            .map(|record| record["id"].as_str().unwrap().to_owned())
             .collect();
         let default_page = call(&client, tool, json!({}));
         assert_eq!(ids(&default_page, field), expected[..20]);
@@ -180,7 +180,7 @@ fn source_and_decision_pages_have_exact_bounds_and_survive_restart() {
         let matching: Vec<_> = records
             .iter()
             .step_by(2)
-            .map(|record| record["id"].as_i64().unwrap())
+            .map(|record| record["id"].as_str().unwrap().to_owned())
             .collect();
         let filtered = call(
             &client,
@@ -270,8 +270,8 @@ fn source_filters_apply_before_pagination_and_new_appends_preserve_older_pages()
     assert_eq!(
         ids(&first, "sources"),
         vec![
-            newest["id"].as_i64().unwrap(),
-            middle["id"].as_i64().unwrap()
+            newest["id"].as_str().unwrap().to_owned(),
+            middle["id"].as_str().unwrap().to_owned()
         ]
     );
     assert_eq!(first["next_before_id"], middle["id"]);
@@ -289,13 +289,16 @@ fn source_filters_apply_before_pagination_and_new_appends_preserve_older_pages()
     let mut next = filter.clone();
     next["before_id"] = first["next_before_id"].clone();
     let older = call(&client, "list_sources", next);
-    assert_eq!(ids(&older, "sources"), vec![oldest["id"].as_i64().unwrap()]);
+    assert_eq!(
+        ids(&older, "sources"),
+        vec![oldest["id"].as_str().unwrap().to_owned()]
+    );
     assert!(older["next_before_id"].is_null());
     assert_eq!(
         ids(&call(&client, "list_sources", filter.clone()), "sources"),
         vec![
-            appended["id"].as_i64().unwrap(),
-            newest["id"].as_i64().unwrap()
+            appended["id"].as_str().unwrap().to_owned(),
+            newest["id"].as_str().unwrap().to_owned()
         ]
     );
     assert_eq!(
@@ -309,8 +312,8 @@ fn source_filters_apply_before_pagination_and_new_appends_preserve_older_pages()
     assert_eq!(
         ids(&exact, "sources"),
         vec![
-            middle["id"].as_i64().unwrap(),
-            oldest["id"].as_i64().unwrap()
+            middle["id"].as_str().unwrap().to_owned(),
+            oldest["id"].as_str().unwrap().to_owned()
         ]
     );
     assert!(exact["next_before_id"].is_null());
@@ -321,7 +324,7 @@ fn source_filters_apply_before_pagination_and_new_appends_preserve_older_pages()
     );
     assert_eq!(
         ids(&action_page, "sources"),
-        vec![due["id"].as_i64().unwrap()]
+        vec![due["id"].as_str().unwrap().to_owned()]
     );
     assert!(action_page["next_before_id"].is_null());
     let linked = call(
@@ -329,7 +332,7 @@ fn source_filters_apply_before_pagination_and_new_appends_preserve_older_pages()
         "list_sources",
         json!({"task_id": linked_task["id"]}),
     );
-    assert!(!ids(&linked, "sources").contains(&irrelevant["id"].as_i64().unwrap()));
+    assert!(!ids(&linked, "sources").contains(&irrelevant["id"].as_str().unwrap().to_owned()));
 }
 
 #[test]
@@ -531,7 +534,12 @@ fn invalid_pages_cursors_and_context_scopes_do_not_mutate_records() {
                 json!({"project_id": client.project_id, "page_size": page_size}),
             );
         }
-        for before_id in [json!(0), json!(-1), json!(999_999), foreign_id.clone()] {
+        for before_id in [
+            json!(0),
+            json!(-1),
+            json!("ffffffff-ffff-7fff-bfff-ffffffffffff"),
+            foreign_id.clone(),
+        ] {
             let mut input = json!({"project_id": client.project_id, "before_id": before_id});
             if tool == "list_sources" {
                 input["query"] = json!("no matching records");
@@ -552,7 +560,7 @@ fn invalid_pages_cursors_and_context_scopes_do_not_mutate_records() {
         json!({}),
         json!({"project_id": "missing-project"}),
         json!({"project_id": client.project_id, "task_id": foreign_task["id"]}),
-        json!({"project_id": client.project_id, "task_id": 999_999}),
+        json!({"project_id": client.project_id, "task_id": "ffffffff-ffff-7fff-bfff-ffffffffffff"}),
         json!({"project_id": client.project_id, "task_id": 0}),
     ] {
         rejected(&client, "get_context", input);
@@ -564,7 +572,7 @@ fn invalid_pages_cursors_and_context_scopes_do_not_mutate_records() {
     );
     assert_eq!(
         ids(&call(&client, "list_sources", json!({})), "sources"),
-        vec![local_source["id"].as_i64().unwrap()]
+        vec![local_source["id"].as_str().unwrap().to_owned()]
     );
     assert_eq!(
         call(&client, "list_decisions", json!({}))["decisions"],
