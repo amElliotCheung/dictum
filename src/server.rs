@@ -44,7 +44,7 @@ impl DictumServer {
 #[tool_router]
 impl DictumServer {
     #[tool(
-        description = "Create a project with a name, description, server-assigned UUIDv7 ID, revision 1, and UTC creation/update times. Names need not be unique. Create only when explicitly intended; discovery with no match does not authorize automatic creation. A project is a scope for records, not authorization to execute work or a work claim.",
+        description = "Create an explicitly intended project with a name and description. Names need not be unique. Returns a server-assigned ID, revision 1 and equal UTC creation/update times.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -60,7 +60,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Discover projects by optional name/description query. Returns IDs, names, descriptions, the compact project.topics directory, revisions, and UTC creation/update times. Topic creation does not advance the description revision. Use the latest revision as expected_revision for update_project. Resolve ambiguity or no match with the human; never implicitly choose or create a project. Once resolved, pass its project_id to list_tasks with ready_to_start=true, then get_context for the chosen task. Project selection is scope, not execution authorization or a work claim.",
+        description = "Discover projects by optional name/description query. Returns unpaginated projects with IDs, names, descriptions, complete project.topics directories, revisions and UTC creation/update times. Topic creation leaves the description revision unchanged. Use the latest revision as expected_revision for update_project. Resolve ambiguous or missing matches with the human before selecting or creating a project.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_projects(
@@ -76,7 +76,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Replace an existing project's description using project_id and the latest expected_revision from list_projects. Description is required and nonblank; null and unknown fields are rejected. Each accepted update, including identical text, increments revision and sets server UTC updated_at. Preserves ID, name, created_at and all related records. Stale revisions fail without mutation; reread and reassess before retrying. Project scope is not execution authorization or a work claim.",
+        description = "Replace only an existing project's description using project_id and the latest expected_revision. Description is required and nonblank; null and unknown fields are rejected. Every accepted update, including identical text, increments revision and sets server UTC updated_at. Preserves ID, name, created_at and related records. Stale revisions fail without mutation; reread and reassess before retrying.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -92,7 +92,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Create a task in an existing project_id with its brief, required nonempty topics, and context links atomically. Reuse specific names from project.topics before creating new concepts (User authentication rather than authentication). Topic names are reused or created within this project, ignoring case and whitespace; duplicates are deduplicated. Optional parent_task_id attaches it beneath a same-kind root in this project; subtasks cannot have children. Put shared goals, constraints and overall approach in the parent; write child-specific work, design and acceptance criteria in the subtask. Avoid duplicating shared text and read both briefs together through get_context. Parentage is organizational: lifecycle, priority, context sources and dependencies stay explicit on each task. Priority defaults to medium. Immutable kind defaults to one_time (todo); recurring defaults to active and reuses one task across executions. Optional nonblank trigger_event is recurring-only external-event metadata, not a schedule or authorization. Dependencies must target one_time tasks. Creation starts task revision 1 and does not execute work.",
+        description = "Create a task's brief, nonempty topics and context links atomically in an existing project_id. Reuse specific project.topics names (e.g. user authentication); missing names are created within this project, ignoring case/whitespace and deduplicating repeats. Optional parent_task_id requires a same-kind root in this project; subtasks cannot have children. Put shared goals, constraints and approach in the parent, specific work/design/criteria in the child; read both briefs through get_context. Lifecycle, priority, context sources and dependencies remain explicit on each task. Priority defaults to medium. Immutable kind defaults to one_time (todo); recurring defaults to active and reuses one task across executions. Optional nonblank trigger_event is recurring-only external-event metadata, not a schedule or authorization. Dependencies target one_time tasks. Creation starts revision 1 without executing work.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -107,7 +107,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id. Discover compact task summaries with topic memberships by kind, exact priority, status, readiness, exact trigger_event label, topic, or text query. Optional topic matches a project-local name ignoring case and whitespace; unknown names match nothing and blank names are invalid. It combines with every other filter. Omit parent_task_id for all tasks, pass null for roots, or an existing task ID for its direct children; these filters combine with the others. Summaries retain their compact shape; get_context exposes parentage. Results sort high, medium, low priority, then ascending ID. ready_to_start means one_time todo with all explicit before-start dependencies done; parentage and completion gates do not block starting. Recurring tasks are never ready_to_start: discover with kind=recurring,status=active. Active is eligibility metadata, not a schedule or authorization.",
+        description = "Discover compact task summaries with topics in an existing project_id. Filters combine: kind, exact priority, status, readiness, exact trigger_event label, topic and text query. Topic matches project-local names ignoring case/whitespace; unknown names match nothing and blank names are invalid. Omit parent_task_id for all tasks, pass null for roots or an existing task ID for direct children. Use get_context for full briefs and parentage. Results sort high, medium, low priority, then ascending ID. ready_to_start selects one_time todo with all before-start dependencies done; parentage and completion gates do not block starting. For recurring work use kind=recurring,status=active. Active is eligibility metadata, not a schedule or authorization.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_tasks(
@@ -123,7 +123,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Read one consistent project context using an existing project_id. Returns the full project with its compact project.topics directory, all current decisions and always sources. Record topics are included. Topic membership supports discovery through list filters; it does not expand context or inherit sources. Optional task_id adds its full brief, parent_task, progress, dependency state, explicit context sources and bounded comment history. Without a task, task/parent/dependency_state and latest execution fields are null and recent_comments is empty. Read parent and child briefs together; parent sources, dependencies and comments are not inherited. Inline sources are full and untruncated; keep always sources short and task links relevant. recent_comments holds the ten newest comments; latest_execution and latest_successful_execution may repeat their IDs. Historical task briefs are not retained; compare comment task_revision with the current task and assess whether evidence applies. Fetch older comments/replies or output Sources only as needed with list_task_comments, get_task_comment or get_source. Poll comments independently of task revisions. Reading never records work or advances freshness.",
+        description = "Read one consistent snapshot using an existing project_id: full project with complete project.topics directory, all current decisions and always sources. Record topics are included; membership supports discovery, without expanding context or inheriting sources. Optional task_id adds full task/parent briefs, progress, dependency state, explicit context sources and bounded comments. Without a task, task/parent_task/dependency_state and latest execution fields are null; recent_comments is empty. Read both briefs; parent sources, dependencies and comments are not inherited. Inline sources are returned in full; keep always sources short and task links relevant. recent_comments holds ten newest comments; latest_execution and latest_successful_execution may repeat their IDs. Historical briefs are not retained: compare comment task_revision with the current task and assess evidence applicability. Fetch older comments/replies or outputs as needed with list_task_comments, get_task_comment or get_source. Poll comments independently of task revisions. Reading never records work or advances freshness.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn get_context(
@@ -135,7 +135,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an existing project_id and latest expected_revision. Optional nonempty topics replaces membership atomically, reusing or creating project-local names ignoring case and whitespace. Omission preserves topics; empty arrays and null are rejected. Every accepted update advances task revision and updated_at, including identical values; appending comments does neither. Kind is immutable. Omitted fields preserve values; null clears nullable text/trigger_event. For parent_task_id, null detaches and an ID reparents beneath a same-kind root in this project; a task with children cannot become a child. Parentage has no implicit lifecycle or dependency effects. Supplied context/dependency arrays replace that set ([] clears). Entering one_time in_progress checks start gates; done requires all start/completion gates satisfied and at least one success/no_change execution comment, including historical task versions. Recurring uses active/paused; trigger_event is recurring-only metadata. Comments never reopen or complete tasks; request rework by explicitly editing the brief or status. Dependencies must target one_time tasks.",
+        description = "Update a task using existing project_id and latest expected_revision. Every accepted update advances revision/updated_at, including identical values. Kind is immutable. Omitted fields preserve values; null clears nullable text/trigger_event. Supplied topics atomically replace membership, reusing or creating project-local names ignoring case/whitespace; empty arrays and null are rejected. For parent_task_id, null detaches; an ID reparents beneath a same-kind root in this project. A task with children cannot become a child; parentage has no implicit lifecycle or dependency effects. Supplied context/dependency arrays replace that set ([] clears). Entering one_time in_progress checks start gates; done requires satisfied start/completion gates and at least one success/no_change execution comment targeting any task version. Recurring uses active/paused; trigger_event is recurring-only metadata. Comments preserve task revision/time/status; request rework by editing the brief or status. Dependencies target one_time tasks.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -150,7 +150,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Append only information useful to later agents: a new finding, correction, blocker, actionable next step or execution evidence. Prefer 1-3 short sentences/bullets; omit routine narration, duplicated brief/metadata and empty polling. For execution_result, identify work/checks, tested implementation or artifact, outcome and remaining limitations. No_change can supply useful fresh verification; honor explicit reporting requirements and retain applicable success/no_change evidence before marking done. Link long durable artifacts as output Sources only when needed. Requires existing project_id, task_id and task_revision actually read (1..current); historical targets remain valid without retained brief snapshots. body is nonblank Markdown, max 4000 characters, a limit not a target. reply_to_comment_id must reference this task. Optional execution_result has outcome success/no_change/failure and same-project output_source_ids. Success/no_change checks all current dependency gates; failure/ordinary comments may report unmet gates. Appends and output links are atomic; task revision, updated_at and lifecycle never change, including done/paused tasks. Output Sources remain mutable. Evidence is reported, not independently verified.",
+        description = "Every comment, with or without execution_result, must help later humans or agents understand, review or resume the task. Use 1-3 short sentences/bullets with new findings, corrections, blockers, next steps or evidence. Executions identify work/checks, tested implementation or artifact, outcome and relevant limitations. Honor required reports and completion evidence; fresh verification can warrant no_change. Link long artifacts as output Sources when needed. Requires existing project_id, task_id and task_revision actually read (1..current); historical targets remain valid without retained brief snapshots. body is nonblank Markdown, max 4000 characters, a limit not a target. reply_to_comment_id must reference this task. Optional execution_result has outcome success/no_change/failure and same-project output_source_ids. Success/no_change checks all current dependency gates; failure/ordinary comments may report unmet gates. Appends and output links are atomic; task revision, updated_at and lifecycle stay unchanged, including done/paused tasks. Output Sources remain mutable. Evidence is reported, not independently verified.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -190,7 +190,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Register reusable information in an existing project_id with a name, relevance description, required nonempty topics, and exactly one of full inline Markdown content or external locator. Reuse specific names from project.topics first; missing names are created atomically within this project, ignoring case and whitespace. context_policy defaults to when_relevant; always sources appear in every task context. Reserve always for concise essentials, such as an environment-facts inventory with scope, exact identifiers and verification references/dates where useful. Facts describe current state; decisions record accepted choices. Keep long artifacts when_relevant and link only needed task context. Create Sources for reusable information or durable outputs, not routine notes. Optional action defines agent work with a manual or interval trigger; keep instructions focused and snapshots concise. Registration does not create the external resource.",
+        description = "Register reusable information or a durable output in an existing project_id with name, description, nonempty topics, and exactly one of inline Markdown content or external locator. Reuse specific project.topics; missing names are created atomically, ignoring case and whitespace. context_policy defaults to when_relevant. always Sources enter every context; reserve them for concise essentials such as environment scope, exact identifiers and verification dates/references. Facts describe current state; decisions record accepted choices. Keep long artifacts when_relevant; link needed task context. Optional action defines agent work with a manual or interval trigger. Registration does not create an external resource.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -205,7 +205,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Discover source descriptors newest ID first within an existing project_id, without document bodies. page_size defaults to 20 (1..100); pass next_before_id as before_id for older pages. The cursor must identify a source in this project regardless of filters. Filter by topic, explicit task context links, representation, action_due or query. Optional topic matches a project-local name ignoring case and whitespace; unknown names match nothing and blank names are invalid. Descriptors include topic memberships; outputs are associated with task comments. Filters apply before the page limit. Later appends do not enter older ID pages; source edits or time-dependent due state can change filter membership. Expand needed content with get_source. Manual actions are never automatically due.",
+        description = "List source descriptors with topics, without bodies, newest ID first in project_id. page_size defaults to 20 (1..100); pass next_before_id as before_id for older pages. Cursors must identify a Source in this project regardless of filters. Filter by topic, explicit task context links, representation, action_due or query before pagination. Topic names ignore case/whitespace; unknown names match nothing and blanks fail. Outputs belong to task comments. Later appends stay outside older pages; edits and due state can change membership. Expand needed content with get_source. Manual actions are never automatically due.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_sources(
@@ -216,7 +216,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Read topic memberships and complete inline source content or external locator, configured action, latest successful snapshot, latest attempt, and computed due state. Content is never truncated. A snapshot is a short current understanding, not a transcript. Use the agent's own external tools for further reading. This read does not record action completion.",
+        description = "Read a Source in project_id: topics, full inline content or external locator, action, latest successful snapshot, latest attempt and computed due state. A snapshot summarizes current understanding. Use external tools for further reading. Reading leaves action state unchanged.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn get_source(
@@ -228,7 +228,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Update a source definition with expected_revision. Optional nonempty topics replaces membership atomically, reusing or creating specific project-local names ignoring case and whitespace; omission preserves topics, empty arrays and null are rejected. Topic-only edits preserve action state. Omitted fields preserve values; null clears content, locator, or action. Exactly one of content/locator must remain; switch them in one call. Changing content, locator, or action invalidates its prior snapshot/attempt. Name, description, and context-policy edits preserve action state.",
+        description = "Update a Source in project_id with expected_revision. Optional nonempty topics replaces membership atomically, reusing or creating project-local names ignoring case/whitespace; null and empty arrays fail. Omitted fields preserve values; null clears content, locator or action. Exactly one of content/locator must remain; switch them in one call. Changing content, locator or action clears its snapshot/attempt. Topic, name, description and context_policy edits preserve action state.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -243,7 +243,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Record an agent's execution of the configured source action using expected_revision. Success replaces the snapshot with observed_at (RFC3339, not future or backwards), short summary (max 1000 characters), checkpoint and references. No_change requires a previous snapshot, advances observation time, and preserves summary/references; omitted checkpoint preserves it, null clears. Failure records an error while retaining the successful snapshot. Targeted task lookups must not count as completing this action. The server does not execute or independently verify it.",
+        description = "Record an execution attempt of the configured Source action in project_id using expected_revision. Success replaces the snapshot with observed_at (RFC3339, neither future nor backwards), summary (max 1000 characters), checkpoint and references. No_change requires a snapshot, advances observation time and preserves summary/references; omitted checkpoint preserves it, null clears. Failure records an error while retaining the snapshot. Only completing the configured action advances freshness; targeted task lookups do not. Execution and evidence are agent-reported.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -259,7 +259,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Requires an explicit existing project_id; all records and relationships stay within that project. Record an accepted project-wide decision with required nonempty topics, a complete current statement and rationale, optional nullable Markdown alternatives_rejected, and server-assigned UTC creation time. Omitted or null alternatives_rejected stores null; empty text is allowed. Reuse specific names from project.topics first; missing names are created atomically in this project, ignoring case and whitespace. Decisions and their topic memberships are immutable; replacements supply their own topics. Optional supersedes_id replaces a current decision, preserving its original fields; each successor has its own alternatives_rejected value. A reversal creates a new decision with today's reasons. Each current decision can have only one successor. Results include server-derived current_decision_id, equal to the new record's id at creation. Replacing an already superseded decision fails with its current_decision_id; reread the current decision before retrying. This is not a proposal or voting workflow.",
+        description = "Record an accepted project-wide choice in an existing project_id with required nonempty topics, a complete current statement, rationale and optional Markdown alternatives_rejected. Keep proposals in discussion until accepted. Omitted or null alternatives_rejected stores null; empty text is allowed. Reuse specific project.topics; missing names are created atomically, ignoring case and whitespace. Decisions and topic memberships are immutable. An accepted change or reversal creates a replacement with supersedes_id, its own topics, alternatives and current reasons, preserving the predecessor. Each current decision can have only one successor. Returns server UTC created_at and server-derived current_decision_id (the new record's id). Stale replacements fail with the chain's current_decision_id; reread before retrying.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -275,7 +275,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Read full accepted decisions with topic memberships newest ID first in an existing project_id. Optional topic matches a project-local name ignoring case and whitespace and combines with history filtering before pagination; unknown names match nothing and blank names are invalid. page_size defaults to 20 (1..100); pass next_before_id as before_id for older pages. The cursor must identify a decision in this project, even if excluded by the current/history filter. Current decisions are the default; include_superseded also returns history with supersession links and each record's rationale and nullable alternatives_rejected. Each record includes server-derived current_decision_id identifying the current end of its entire chain at read time, even outside this page; it equals id when is_current is true. Follow that current decision for accepted intent. Filtering applies before the page limit. Later appends do not enter older ID pages, but supersession can change current membership and current_decision_id on subsequent reads. get_context always includes all current decisions, independently of pagination.",
+        description = "Read full accepted decisions with topic memberships newest ID first in an existing project_id. Optional topic matches a project-local name ignoring case and whitespace and combines with history filtering before pagination; unknown names match nothing and blank names are invalid. page_size defaults to 20 (1..100); pass next_before_id as before_id for older pages. The cursor must identify a decision in this project, even if excluded by the current/history filter. Current decisions are the default; include_superseded also returns history with supersession links and each record's rationale and nullable alternatives_rejected. Server-derived current_decision_id locates the latest recorded intent in each chain, even outside this page; it equals id when is_current is true. Later appends do not enter older ID pages, but supersession can change current membership and current_decision_id on subsequent reads. get_context always includes all current decisions, independently of pagination.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_decisions(

@@ -34,7 +34,7 @@ pub struct Topic {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Project {
-    /// Server-assigned UUIDv7. Names need not be unique; use this ID for scoped tools.
+    /// Server-assigned ID. Names need not be unique; use this ID for scoped tools.
     pub id: Id,
     pub name: String,
     pub description: String,
@@ -128,7 +128,7 @@ pub enum ActionTrigger {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SourceAction {
-    /// Work the agent must perform; the server does not perform it.
+    /// Focused work and completion criterion for an agent; the server does not execute it.
     pub instruction: String,
     pub trigger: ActionTrigger,
 }
@@ -313,9 +313,9 @@ pub struct RecordTaskComment {
     pub task_id: Id,
     /// Required target task version, between 1 and the current revision, inclusive.
     pub task_revision: i64,
-    /// Useful to later agents; prefer 1-3 short sentences/bullets with new findings or evidence.
-    /// For executions, identify work/checks, tested implementation, outcome and limitations.
-    /// Omit narration and duplication. Nonblank Markdown, max 4,000 characters, not a target.
+    /// Help later humans or agents understand, review or resume the task in 1-3 short sentences/bullets.
+    /// Include new findings or evidence; executions identify work/checks, tested artifact, outcome and limitations.
+    /// Nonblank Markdown, max 4,000 characters, a limit not a target.
     pub body: String,
     pub reply_to_comment_id: Option<Id>,
     pub execution_result: Option<ExecutionResult>,
@@ -478,6 +478,7 @@ pub struct CreateSource {
     #[schemars(length(min = 1))]
     pub topics: Vec<String>,
     pub name: String,
+    /// Brief contents and relevance, enough to decide when to read this Source.
     pub description: String,
     pub content: Option<String>,
     pub locator: Option<String>,
@@ -528,6 +529,7 @@ pub struct UpdateSource {
     #[schemars(with = "Vec<String>", length(min = 1))]
     pub topics: Option<Vec<String>>,
     pub name: Option<String>,
+    /// Replacement summary of contents and relevance.
     pub description: Option<String>,
     /// Omitted: preserve. Null: clear. Change content and locator together to switch representation.
     #[serde(
@@ -558,6 +560,7 @@ pub enum SourceActionResult {
     Success {
         /// RFC 3339 time when the agent observed the source, not the server receipt time.
         observed_at: String,
+        /// Current useful findings in 1-3 sentences, at most 1,000 characters.
         summary: String,
         checkpoint: Option<String>,
         #[serde(default)]
@@ -574,6 +577,7 @@ pub enum SourceActionResult {
         checkpoint: Option<Option<String>>,
     },
     Failure {
+        /// Actionable failure and relevant blocker.
         error: String,
     },
 }

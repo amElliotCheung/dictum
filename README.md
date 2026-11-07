@@ -115,7 +115,10 @@ comment exists. Comments never change lifecycle; update the brief or status
 directly with `update_task` when work changes.
 Mutable project, task and source updates require the latest `expected_revision`. See
 [AGENTS.md](AGENTS.md) for all seventeen tools and their contracts, and
-[WORKFLOW.md](WORKFLOW.md) for the embedded agent workflow.
+[WORKFLOW.md](WORKFLOW.md) for the embedded agent workflow. Its brevity principle
+applies to all guidance and record fields, including Source descriptions and
+action instructions: retain only what later humans or agents need to understand,
+decide, act or verify.
 
 ## Read project or task context
 
@@ -236,6 +239,9 @@ keep longer supporting material in separate Sources fetched when relevant.
 
 ## Record an accepted decision
 
+Follow the [workflow decision rule](WORKFLOW.md) when evidence suggests a better
+direction or the human's session instructions conflict with a stored choice.
+
 Call `record_decision` with the accepted statement and rationale. Optional
 `alternatives_rejected` preserves rejected options as Markdown:
 
@@ -320,11 +326,11 @@ Success/no-change requires satisfied start and completion dependencies. A failur
 can report unmet gates. Output IDs must belong to the same project; source
 contents remain mutable rather than becoming snapshots.
 
-Write for the next agent: preserve useful findings, corrections, blockers, next
-steps, and execution evidence, normally in 1–3 short sentences or bullets. Skip
-routine narration, duplicate information, and polling that adds no useful
-information. An execution report identifies what was done or checked, the
-implementation or artifact tested, and its outcome; include remaining limitations
+Every comment, with or without `execution_result`, must help later humans or
+agents understand, review or resume the task. Use 1–3 short sentences or bullets
+with new findings, corrections, blockers, next steps or evidence. An execution
+report identifies what was done or checked, the implementation or artifact tested,
+and its outcome; include remaining limitations
 when relevant. `task_revision` identifies the task brief, not a code revision.
 Fresh verification can justify a `no_change` report even when no files changed.
 Always satisfy explicit reporting requirements and the evidence required for
