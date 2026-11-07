@@ -414,6 +414,181 @@ fn decision_pages_filter_superseded_records_and_keep_cursors_valid() {
 }
 
 #[test]
+fn optional_topics_preserve_relational_identity_and_survive_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("optional-topics.sqlite3");
+    let client = Project::open(&database).unwrap();
+    let initial_project = call(&client, "get_context", json!({}))["project"].clone();
+
+    for (tool, input) in [
+        (
+            "create_task",
+            json!({"title": "Unclassified task", "problem_or_goal": "Create without classification", "design": "Keep topics optional", "acceptance_criteria": ["Creation succeeds"]}),
+        ),
+        (
+            "create_source",
+            json!({"name": "Unclassified source", "description": "Optional classification", "content": "A durable fact"}),
+        ),
+        (
+            "record_decision",
+            json!({"statement": "Unclassified decision", "rationale": "Classification is optional"}),
+        ),
+    ] {
+        let omitted = call(&client, tool, input.clone());
+        assert_eq!(omitted["topics"], json!([]), "{tool} omitted topics");
+        let mut input = input;
+        input["topics"] = json!([]);
+        let empty = call(&client, tool, input);
+        assert_eq!(empty["topics"], json!([]), "{tool} explicit empty topics");
+    }
+    assert_eq!(
+        call(&client, "get_context", json!({}))["project"],
+        initial_project
+    );
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    let topic_count: i64 = connection
+        .query_row("SELECT count(*) FROM topics", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(topic_count, 0, "unclassified records created no topics");
+    drop(connection);
+
+    let tagged_task = task(
+        &client,
+        "Classified task",
+        json!({"topics": ["  User \t authentication ", "user authentication", "Task only"]}),
+    );
+    assert_eq!(tagged_task["topics"].as_array().unwrap().len(), 2);
+    let shared_topic = tagged_task["topics"][0].clone();
+    assert_eq!(shared_topic["name"], "User authentication");
+    assert_eq!(shared_topic["project_id"], json!(client.project_id));
+    let tagged_source = source(
+        &client,
+        "Classified source",
+        json!({"topics": ["USER authentication", "Source only"], "action": {"instruction": "Read this fixture", "trigger": {"kind": "manual"}}}),
+    );
+    assert_eq!(tagged_source["topics"][0], shared_topic);
+    let observed_source = call(
+        &client,
+        "record_source_action",
+        json!({"source_id": tagged_source["id"], "expected_revision": tagged_source["revision"], "result": {"outcome": "success", "observed_at": tagged_source["created_at"], "summary": "Verified fixture", "checkpoint": "retained", "references": []}}),
+    );
+    let historical = decision(
+        &client,
+        "Keep historical classification",
+        json!({"topics": ["user authentication"]}),
+    );
+    assert_eq!(historical["topics"], json!([shared_topic]));
+    let replacement = call(
+        &client,
+        "record_decision",
+        json!({"statement": "Replacement without topics", "rationale": "No inheritance", "supersedes_id": historical["id"]}),
+    );
+    assert_eq!(replacement["topics"], json!([]));
+    let final_choice = call(
+        &client,
+        "record_decision",
+        json!({"statement": "Explicitly unclassified replacement", "rationale": "An empty array is valid", "supersedes_id": replacement["id"], "topics": []}),
+    );
+    assert_eq!(final_choice["topics"], json!([]));
+    let directory_before = call(&client, "get_context", json!({}))["project"]["topics"].clone();
+    assert_eq!(directory_before.as_array().unwrap().len(), 3);
+
+    let preserved_task = call(
+        &client,
+        "update_task",
+        json!({"task_id": tagged_task["id"], "expected_revision": tagged_task["revision"], "progress": "Preserve classification"}),
+    );
+    assert_eq!(preserved_task["topics"], tagged_task["topics"]);
+    let preserved_source = call(
+        &client,
+        "update_source",
+        json!({"source_id": tagged_source["id"], "expected_revision": observed_source["revision"], "description": "Preserve classification and freshness"}),
+    );
+    assert_eq!(preserved_source["topics"], tagged_source["topics"]);
+    let before_conflict = snapshot(&database);
+    rejected(
+        &client,
+        "update_task",
+        json!({"project_id": client.project_id, "task_id": tagged_task["id"], "expected_revision": tagged_task["revision"], "topics": []}),
+    );
+    assert_eq!(snapshot(&database), before_conflict);
+    let cleared_task = call(
+        &client,
+        "update_task",
+        json!({"task_id": tagged_task["id"], "expected_revision": preserved_task["revision"], "topics": []}),
+    );
+    let cleared_source = call(
+        &client,
+        "update_source",
+        json!({"source_id": tagged_source["id"], "expected_revision": preserved_source["revision"], "topics": []}),
+    );
+    assert_eq!(cleared_task["topics"], json!([]));
+    assert_eq!(cleared_source["topics"], json!([]));
+    assert_eq!(
+        cleared_task["revision"],
+        preserved_task["revision"].as_i64().unwrap() + 1
+    );
+    assert_eq!(
+        cleared_source["revision"],
+        preserved_source["revision"].as_i64().unwrap() + 1
+    );
+    for field in ["snapshot", "latest_attempt"] {
+        assert_eq!(cleared_source[field], observed_source[field]);
+    }
+    for (tool, field) in [
+        ("list_tasks", "tasks"),
+        ("list_sources", "sources"),
+        ("list_decisions", "decisions"),
+    ] {
+        assert_eq!(
+            call(&client, tool, json!({"topic": "USER authentication"}))[field],
+            json!([])
+        );
+    }
+    let history = call(
+        &client,
+        "list_decisions",
+        json!({"topic": "USER authentication", "include_superseded": true}),
+    );
+    assert_eq!(history["decisions"][0]["topics"], historical["topics"]);
+    let mut expected_project = initial_project;
+    expected_project["topics"] = directory_before.clone();
+    assert_eq!(
+        call(&client, "get_context", json!({}))["project"],
+        expected_project
+    );
+    drop(client);
+
+    let client = Project::open(&database).unwrap();
+    assert_eq!(
+        call(&client, "get_context", json!({}))["project"],
+        expected_project
+    );
+    assert_eq!(
+        call(
+            &client,
+            "get_context",
+            json!({"task_id": tagged_task["id"]})
+        )["task"]["topics"],
+        json!([])
+    );
+    assert_eq!(
+        call(
+            &client,
+            "get_source",
+            json!({"source_id": tagged_source["id"]})
+        )["topics"],
+        json!([])
+    );
+    let reused = source(
+        &client,
+        "Reuse retained topic",
+        json!({"topics": ["task ONLY"]}),
+    );
+    assert_eq!(reused["topics"][0], directory_before[1]);
+}
+
+#[test]
 fn invalid_pages_cursors_and_context_scopes_do_not_mutate_records() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("isolation.sqlite3");
@@ -461,20 +636,18 @@ fn invalid_pages_cursors_and_context_scopes_do_not_mutate_records() {
     for (tool, mut input) in [
         (
             "create_task",
-            json!({"project_id": client.project_id, "title": "Invalid classification", "problem_or_goal": "Reject missing topics", "design": "Validate atomically", "acceptance_criteria": ["No rows persist"]}),
+            json!({"project_id": client.project_id, "title": "Invalid classification", "problem_or_goal": "Reject invalid topics", "design": "Validate atomically", "acceptance_criteria": ["No rows persist"]}),
         ),
         (
             "create_source",
-            json!({"project_id": client.project_id, "name": "Invalid classification", "description": "Reject missing topics", "content": "No rows persist"}),
+            json!({"project_id": client.project_id, "name": "Invalid classification", "description": "Reject invalid topics", "content": "No rows persist"}),
         ),
         (
             "record_decision",
-            json!({"project_id": client.project_id, "statement": "Invalid classification", "rationale": "Reject missing topics"}),
+            json!({"project_id": client.project_id, "statement": "Invalid classification", "rationale": "Reject invalid topics"}),
         ),
     ] {
-        rejected(&client, tool, input.clone());
         for topics in [
-            json!([]),
             json!(null),
             json!([""]),
             json!(["New topic must roll back", "  "]),
@@ -489,11 +662,7 @@ fn invalid_pages_cursors_and_context_scopes_do_not_mutate_records() {
         ("update_task", &local_task, "task_id"),
         ("update_source", &local_source, "source_id"),
     ] {
-        for topics in [
-            json!([]),
-            json!(null),
-            json!(["New topic must roll back", "  "]),
-        ] {
+        for topics in [json!(null), json!(["New topic must roll back", "  "])] {
             let mut input = json!({"project_id": client.project_id, "expected_revision": record["revision"], "topics": topics});
             input[id_field] = record["id"].clone();
             rejected(&client, tool, input);

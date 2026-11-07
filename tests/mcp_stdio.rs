@@ -225,10 +225,23 @@ async fn workflow(discover: bool) -> Result<()> {
             "create_task" | "create_source" | "record_decision"
         ) {
             assert!(
-                required.unwrap().contains(&json!("topics")),
-                "missing required topics: {}",
+                !required.unwrap().contains(&json!("topics")),
+                "topics should be optional: {}",
                 tool.name
             );
+            assert_eq!(
+                tool.input_schema["properties"]["topics"]["default"],
+                json!([])
+            );
+        }
+        if matches!(
+            tool.name.as_ref(),
+            "create_task" | "create_source" | "record_decision" | "update_task" | "update_source"
+        ) {
+            let topics = &tool.input_schema["properties"]["topics"];
+            assert_eq!(topics["type"], "array");
+            assert_eq!(topics["items"]["type"], "string");
+            assert!(topics.get("minItems").is_none_or(|minimum| minimum == 0));
         }
         if matches!(
             tool.name.as_ref(),

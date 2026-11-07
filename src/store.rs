@@ -1129,9 +1129,6 @@ fn replace_topics(
     id: Id,
     names: &[String],
 ) -> StoreResult<()> {
-    if names.is_empty() {
-        return invalid("topics must contain at least one nonblank topic name");
-    }
     let names = names
         .iter()
         .map(|name| topic_name(name))

@@ -142,16 +142,17 @@ full and untruncated; context decisions are complete and unpaginated. Use
 
 ## Organize records with topics
 
-Every task, Source, and decision must belong to at least one project topic. Pass
-a nonempty `topics` array of names to `create_task`, `create_source`, and
-`record_decision`. These writes atomically reuse or create the named topics; no
-separate topic tool or setup step is needed. Topic names are local to a project.
+Tasks, Sources, and decisions can have zero or more project topics. Optionally
+pass a `topics` array of names to `create_task`, `create_source`, and
+`record_decision`; omission or `[]` creates an unclassified record. These writes
+atomically reuse or create supplied topics; no separate topic tool or setup step
+is needed. Topic names are local to a project.
 Whitespace and case are normalized for exact reuse, while the first collapsed
 display spelling is preserved. Repeated names in one request are deduplicated.
 
-Read `project.topics` before picking names and reuse an existing concept when it
-fits. Prefer specific names such as `user authentication` over `authentication`;
-avoid creating synonymous topics. Projects typically need tens of topics, with
+Use topics when they help discovery. Reuse an existing concept from
+`project.topics` when available. Prefer specific names such as
+`user authentication` over `authentication`; avoid creating synonymous topics. Projects typically need tens of topics, with
 no enforced count limit or topic hierarchy. All project responses include the
 complete directory, including currently unused topics, as `{id, project_id,
 name}` objects. Task records, task summaries, Sources, Source descriptors, and
@@ -169,13 +170,14 @@ filters before pagination. Unknown names return no matches; blank names fail.
 Lookup never creates a topic. Membership does not automatically include other
 records in context: keep explicit task context links and fetch needed Sources.
 
-`update_task` and `update_source` accept a nonempty replacement `topics` array
-under the record's latest `expected_revision`. Omission preserves membership;
-empty arrays and null are rejected. Topic edits advance the task or Source
-revision, while preserving Source action freshness. Topics are not inherited
+`update_task` and `update_source` accept a replacement `topics` array under the
+record's latest `expected_revision`. Omission preserves membership and `[]` clears
+it. Null arrays, non-string elements, and blank names are rejected on all writes.
+Topic edits advance the task or Source revision, while preserving Source action
+freshness. Topics are not inherited
 from parent tasks or linked Sources. Decisions and their topic memberships are
-immutable, and replacements must explicitly supply their own topics. Creating
-topics does not change the project's description revision or timestamps.
+immutable, and replacements use their own optional topics, defaulting to empty
+without inheriting the predecessor's topics. Creating topics does not change the project's description revision or timestamps.
 
 ## Browse sources and decisions
 

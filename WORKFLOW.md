@@ -5,7 +5,7 @@ Coauthor tasks; preserve intent, constraints, approach and acceptance criteria. 
 Keep all guidance and record fields concise; include only what later humans or agents need to understand, decide, act or verify.
 
 - Decisions record accepted choices. For reversals you propose, discuss strong reasons and alternatives with the human first. Human session instructions take precedence; tell the human when they conflict with stored decisions.
-- Discover: list_projects (resolve ambiguity), get_context(project_id). Reuse specific names from project.topics.
+- Discover: list_projects (resolve ambiguity), get_context(project_id). Topics are optional; reuse project.topics names when helpful.
 - Tasks: list_tasks(ready_to_start=true), get_context with task_id. Recurrence: kind=recurring,status=active; trigger_event is metadata.
 - Derive tasks/dependencies; one coordinator writes. Delegate nonoverlapping scope/files/outputs/checks. Read both parent/child briefs; shared goals/constraints in parent, specifics in children. Gates stay explicit.
 - Review substantial outputs separately; resolve failures and preserve criteria.

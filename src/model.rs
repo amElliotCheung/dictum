@@ -355,8 +355,8 @@ pub struct GetTaskComment {
 pub struct CreateTask {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: Id,
-    /// Nonempty specific topic names. Reuse the project directory; missing names are created atomically.
-    #[schemars(length(min = 1))]
+    /// Optional topic names; defaults to []. Reuse project names when helpful; missing names are created atomically.
+    #[serde(default)]
     pub topics: Vec<String>,
     /// Optional root parent in this project with the same task kind. Nesting is one level.
     pub parent_task_id: Option<Id>,
@@ -422,13 +422,13 @@ pub struct UpdateTask {
     pub project_id: Id,
     pub task_id: Id,
     pub expected_revision: i64,
-    /// Omitted: preserve. Nonempty array: replace; null and empty arrays are invalid.
+    /// Omitted: preserve. Array: replace; [] clears. Null and blank names are invalid.
     #[serde(
         default,
         deserialize_with = "non_null_patch",
         skip_serializing_if = "Option::is_none"
     )]
-    #[schemars(with = "Vec<String>", length(min = 1))]
+    #[schemars(with = "Vec<String>")]
     pub topics: Option<Vec<String>>,
     /// Omitted: preserve. Null: detach. ID: move beneath a same-kind root in this project.
     #[serde(
@@ -474,8 +474,8 @@ pub struct UpdateTask {
 pub struct CreateSource {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: Id,
-    /// Nonempty specific topic names; reuse or create within this project atomically.
-    #[schemars(length(min = 1))]
+    /// Optional topic names; defaults to []. Reuse or create within this project atomically.
+    #[serde(default)]
     pub topics: Vec<String>,
     pub name: String,
     /// Brief contents and relevance, enough to decide when to read this Source.
@@ -520,13 +520,13 @@ pub struct UpdateSource {
     pub project_id: Id,
     pub source_id: Id,
     pub expected_revision: i64,
-    /// Omitted: preserve. Nonempty array: replace; null and empty arrays are invalid.
+    /// Omitted: preserve. Array: replace; [] clears. Null and blank names are invalid.
     #[serde(
         default,
         deserialize_with = "non_null_patch",
         skip_serializing_if = "Option::is_none"
     )]
-    #[schemars(with = "Vec<String>", length(min = 1))]
+    #[schemars(with = "Vec<String>")]
     pub topics: Option<Vec<String>>,
     pub name: Option<String>,
     /// Replacement summary of contents and relevance.
@@ -597,8 +597,8 @@ pub struct RecordSourceAction {
 pub struct RecordDecision {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: Id,
-    /// Required nonempty specific topic names, including for replacements. Retained immutably.
-    #[schemars(length(min = 1))]
+    /// Optional topic names, retained immutably. Defaults to [] even for replacements.
+    #[serde(default)]
     pub topics: Vec<String>,
     pub statement: String,
     pub rationale: String,
