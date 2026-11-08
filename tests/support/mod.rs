@@ -144,9 +144,6 @@ impl Project {
     pub fn list_sources(&self, input: ListSources) -> Result<Vec<SourceDescriptor>> {
         Ok(self.call::<SourceList>("list_sources", input)?.sources)
     }
-    pub fn record_source_action(&self, input: RecordSourceAction) -> Result<Source> {
-        self.call("record_source_action", input)
-    }
     pub fn record_decision(&self, input: RecordDecision) -> Result<Decision> {
         self.call("record_decision", input)
     }

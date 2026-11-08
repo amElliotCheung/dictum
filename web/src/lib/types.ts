@@ -90,26 +90,8 @@ export interface TaskList {
 
 export type ContextPolicy = 'always' | 'when_relevant';
 
-export type ActionTrigger =
-  | { kind: 'manual' }
-  | { kind: 'interval'; every_minutes: number };
-
 export interface SourceAction {
   instruction: string;
-  trigger: ActionTrigger;
-}
-
-export interface SourceSnapshot {
-  observed_at: string;
-  summary: string;
-  checkpoint: string | null;
-  references: string[];
-}
-
-export interface SourceAttempt {
-  recorded_at: string;
-  outcome: 'success' | 'no_change' | 'failure';
-  error: string | null;
 }
 
 export interface Source {
@@ -122,10 +104,6 @@ export interface Source {
   locator: string | null;
   context_policy: ContextPolicy;
   action: SourceAction | null;
-  snapshot: SourceSnapshot | null;
-  latest_attempt: SourceAttempt | null;
-  action_due: boolean;
-  next_action_at: string | null;
   revision: number;
   created_at: string;
   updated_at: string;
@@ -140,8 +118,6 @@ export interface SourceDescriptor {
   representation: 'inline' | 'external';
   context_policy: ContextPolicy;
   has_action: boolean;
-  action_due: boolean;
-  next_action_at: string | null;
   revision: number;
 }
 

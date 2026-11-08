@@ -1,7 +1,6 @@
 //! Real-process dashboard tests: MCP seeds/mutates SQLite, HTTP reads it.
 mod support;
 
-use chrono::{SecondsFormat, Utc};
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -674,7 +673,6 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     let database = dashboard_database(&directory);
     let client = Project::open(&database).unwrap();
     let project_id = client.project_id.clone();
-    let observed_at = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let adversarial = "# Adversarial context\n\n<script>window.__xss = 1</script>\n\n[bad](javascript:alert(1))\n\n![remote](https://evil.example/tracker.png)\n\n**Readable fallback** with `inline code`.\n\n```\nliteral <b>markup</b>\n```";
 
     let inline_source = call(
@@ -687,24 +685,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
             "content": adversarial,
             "context_policy": "always",
             "action": {
-                "instruction": "Review the document without fetching anything remotely.",
-                "trigger": {"kind": "manual"}
-            }
-        }),
-    );
-    let inline_source = call(
-        &client,
-        "record_source_action",
-        json!({
-            "project_id": project_id,
-            "source_id": inline_source["id"],
-            "expected_revision": inline_source["revision"],
-            "result": {
-                "outcome": "success",
-                "observed_at": observed_at,
-                "summary": "The document is current.",
-                "checkpoint": "checkpoint-1",
-                "references": ["https://example.com/reference"]
+                "instruction": "Review the document without fetching anything remotely."
             }
         }),
     );
@@ -717,24 +698,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
             "description": "A locator that must never be fetched by the dashboard",
             "locator": "https://example.com/not-fetched",
             "action": {
-                "instruction": "Re-read the external document.",
-                "trigger": {"kind": "interval", "every_minutes": 1440}
-            }
-        }),
-    );
-    let external_source = call(
-        &client,
-        "record_source_action",
-        json!({
-            "project_id": project_id,
-            "source_id": external_source["id"],
-            "expected_revision": external_source["revision"],
-            "result": {
-                "outcome": "success",
-                "observed_at": observed_at,
-                "summary": "External state is current.",
-                "checkpoint": null,
-                "references": []
+                "instruction": "Re-read the external document."
             }
         }),
     );
@@ -804,7 +768,13 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
         .find(|source| source["id"] == inline_source["id"])
         .unwrap();
     assert_eq!(embedded["content"], adversarial);
-    assert_eq!(embedded["snapshot"]["checkpoint"], "checkpoint-1");
+    assert_eq!(
+        embedded["action"]["instruction"],
+        "Review the document without fetching anything remotely."
+    );
+    for field in ["snapshot", "latest_attempt", "action_due", "next_action_at"] {
+        assert!(embedded.get(field).is_none());
+    }
     assert_eq!(context["latest_execution"]["id"], latest_execution_id);
     assert_eq!(
         context["latest_successful_execution"]["id"],
@@ -864,10 +834,12 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
         .json();
     assert_eq!(external["locator"], "https://example.com/not-fetched");
     assert_eq!(
-        external["snapshot"]["summary"],
-        "External state is current."
+        external["action"],
+        json!({"instruction": "Re-read the external document."})
     );
-    assert_eq!(external["action"]["trigger"]["every_minutes"], 1440);
+    for field in ["snapshot", "latest_attempt", "action_due", "next_action_at"] {
+        assert!(external.get(field).is_none());
+    }
 
     // Repeat reads, then compare MCP state before and after.
     let context_before = call(&client, "get_context", json!({"task_id": task["id"]}));
@@ -928,16 +900,7 @@ fn dashboard_read_api_is_bounded_read_only_and_reflects_concurrent_mcp_writes() 
     );
     assert_eq!(source_before["revision"], source_after["revision"]);
     assert_eq!(source_before["updated_at"], source_after["updated_at"]);
-    assert_eq!(source_before["snapshot"], source_after["snapshot"]);
-    assert_eq!(
-        source_before["latest_attempt"],
-        source_after["latest_attempt"]
-    );
-    assert_eq!(source_before["action_due"], source_after["action_due"]);
-    assert_eq!(
-        source_before["next_action_at"],
-        source_after["next_action_at"]
-    );
+    assert_eq!(source_before, source_after);
     assert_eq!(history_before["comments"], history_after["comments"]);
     assert_eq!(tasks_before["tasks"], tasks_after["tasks"]);
 
@@ -1146,11 +1109,10 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
         "create_source",
         json!({"topics": ["Project workflow"],
             "name": "External specification",
-            "description": "An unlinked locator with a manual action",
+            "description": "An unlinked locator with an action",
             "locator": "https://example.com/specification",
             "action": {
-                "instruction": "Review the external specification.",
-                "trigger": {"kind": "manual"}
+                "instruction": "Review the external specification."
             }
         }),
     );
@@ -1285,8 +1247,9 @@ fn dashboard_exposes_project_decisions_and_sources_with_scope_and_persistence() 
     assert_eq!(external_descriptor["representation"], "external");
     assert_eq!(external_descriptor["context_policy"], "when_relevant");
     assert_eq!(external_descriptor["has_action"], true);
-    assert_eq!(external_descriptor["action_due"], false);
-    assert!(external_descriptor["next_action_at"].is_null());
+    for field in ["snapshot", "latest_attempt", "action_due", "next_action_at"] {
+        assert!(external_descriptor.get(field).is_none());
+    }
 
     let other_decisions = dashboard
         .get(&format!("/api/projects/{other_project}/decisions"))

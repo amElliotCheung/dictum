@@ -3,7 +3,6 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::{Context, Result, ensure};
-use chrono::{TimeDelta, Utc};
 use rmcp::{
     ClientLifecycleMode, ClientServiceExt, RoleClient, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ClientConfig, ProtocolVersion},
@@ -189,7 +188,6 @@ async fn workflow(discover: bool) -> Result<()> {
             "list_task_comments",
             "list_tasks",
             "record_decision",
-            "record_source_action",
             "record_task_comment",
             "update_project",
             "update_source",
@@ -266,6 +264,37 @@ async fn workflow(discover: bool) -> Result<()> {
                 tool.input_schema["properties"]["project_id"]["type"],
                 "string"
             );
+        }
+    }
+    for name in ["get_source", "get_context"] {
+        let tool = tools.iter().find(|tool| tool.name == name).unwrap();
+        assert!(
+            tool.description
+                .as_deref()
+                .unwrap()
+                .contains("If a Source action fails, warn the user.")
+        );
+    }
+    for tool in &tools {
+        for schema in [
+            serde_json::to_value(&tool.input_schema)?,
+            serde_json::to_value(&tool.output_schema)?,
+        ] {
+            let serialized = schema.to_string();
+            for removed in [
+                "\"snapshot\"",
+                "\"latest_attempt\"",
+                "\"action_due\"",
+                "\"next_action_at\"",
+                "\"ActionTrigger\"",
+                "\"trigger\"",
+            ] {
+                assert!(
+                    !serialized.contains(removed),
+                    "removed source schema {removed} in {}",
+                    tool.name
+                );
+            }
         }
     }
     let context_tool = tools
@@ -513,7 +542,7 @@ async fn workflow(discover: bool) -> Result<()> {
     let project_id = project["id"].as_str().unwrap().to_owned();
     let connection = rusqlite::Connection::open(&database)?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(version, 16);
+    assert_eq!(version, 17);
     let tables = connection
         .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")?
         .query_map([], |row| row.get::<_, String>(0))?
@@ -534,6 +563,26 @@ async fn workflow(discover: bool) -> Result<()> {
             "task_topics",
             "tasks",
             "topics",
+        ]
+    );
+    let source_columns = connection
+        .prepare("SELECT name FROM pragma_table_info('sources') ORDER BY cid")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    assert_eq!(
+        source_columns,
+        [
+            "id",
+            "project_id",
+            "name",
+            "description",
+            "content",
+            "locator",
+            "context_policy",
+            "action",
+            "revision",
+            "created_at",
+            "updated_at"
         ]
     );
     let result_columns = connection
@@ -583,13 +632,43 @@ async fn workflow(discover: bool) -> Result<()> {
         }),
     )
     .await?;
-    let external = scoped_call(&client, &project_id, "create_source", json!({"topics": ["Project workflow"],
-        "name": "Team channel", "description": "Recent project decisions and blockers",
-        "locator": "slack://workspace/project-channel",
-        "action": {"instruction": "Read project-relevant messages since checkpoint", "trigger": {"kind": "interval", "every_minutes": 1440}}
-    })).await?;
-    assert_eq!(external["action_due"], true);
+    let external = scoped_call(
+        &client,
+        &project_id,
+        "create_source",
+        json!({"topics": ["Project workflow"],
+            "name": "Team channel", "description": "Recent project decisions and blockers",
+            "locator": "slack://workspace/project-channel",
+            "action": {"instruction": "Read current project-relevant messages"}
+        }),
+    )
+    .await?;
+    assert_eq!(
+        external["action"],
+        json!({"instruction": "Read current project-relevant messages"})
+    );
+    for field in ["snapshot", "latest_attempt", "action_due", "next_action_at"] {
+        assert!(external.get(field).is_none());
+    }
 
+    for (name, input) in [
+        (
+            "create_source",
+            json!({"name": "Obsolete trigger", "description": "Must reject old action fields", "locator": "https://example.test/source", "action": {"instruction": "Read", "trigger": {"kind": "manual"}}}),
+        ),
+        (
+            "update_source",
+            json!({"source_id": external["id"], "expected_revision": external["revision"], "action": {"instruction": "Read", "trigger": {"kind": "interval", "every_minutes": 60}}}),
+        ),
+        ("list_sources", json!({"action_due": true})),
+    ] {
+        assert_eq!(
+            scoped_raw(&client, &project_id, name, input)
+                .await?
+                .is_error,
+            Some(true)
+        );
+    }
     let decision = scoped_call(
         &client,
         &project_id,
@@ -694,6 +773,11 @@ async fn workflow(discover: bool) -> Result<()> {
     assert_eq!(context["current_decisions"], json!([decision]));
     let sources = context["sources"].as_array().unwrap();
     assert_eq!(sources.len(), 2);
+    for source in sources {
+        for removed in ["snapshot", "latest_attempt", "action_due", "next_action_at"] {
+            assert!(source.get(removed).is_none());
+        }
+    }
     assert_eq!(
         sources
             .iter()
@@ -726,16 +810,10 @@ async fn workflow(discover: bool) -> Result<()> {
     .await?;
     assert_eq!(rejected.is_error, Some(true));
 
-    let observed_at = (Utc::now() - TimeDelta::seconds(1)).to_rfc3339();
-    let observed = scoped_call(&client, &project_id, "record_source_action", json!({
-        "source_id": external["id"], "expected_revision": external["revision"],
-        "result": {"outcome": "success", "observed_at": observed_at, "summary": "Team agreed on a local MVP.", "checkpoint": "message-123", "references": ["slack://workspace/project-channel/message-123"]}
-    })).await?;
-    assert_eq!(observed["action_due"], false);
     let edited = scoped_call(&client, &project_id, "update_source", json!({
-        "source_id": external["id"], "expected_revision": observed["revision"], "description": "Project team context"
+        "source_id": external["id"], "expected_revision": external["revision"], "description": "Project team context"
     })).await?;
-    assert_eq!(edited["snapshot"], observed["snapshot"]);
+    assert_eq!(edited["action"], external["action"]);
     let expanded = scoped_call(
         &client,
         &project_id,

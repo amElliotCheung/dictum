@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api, queryKeys } from '../lib/api';
-import { formatDate } from '../lib/format';
 import type { Source, Topic } from '../lib/types';
 import { Markdown } from '../lib/markdown';
 import { Button } from './ui/button';
@@ -117,69 +116,13 @@ export function SourceBody({ source }: { source: Source }) {
           </code>
         </div>
       )}
-      {source.action || source.snapshot || source.latest_attempt ? (
-        <SourceState source={source} />
+      {source.action ? (
+        <dl className="text-sm">
+          <Meta label="Action instruction">
+            <Markdown text={source.action.instruction} />
+          </Meta>
+        </dl>
       ) : null}
     </div>
-  );
-}
-
-function SourceState({ source }: { source: Source }) {
-  const action = source.action;
-  return (
-    <dl className="grid gap-3 text-sm sm:grid-cols-2">
-      {action ? (
-        <Meta label="Action instruction">
-          <Markdown text={action.instruction} />
-        </Meta>
-      ) : null}
-      {action ? (
-        <Meta label="Action trigger">
-          {action.trigger.kind === 'manual'
-            ? 'Manual'
-            : `Every ${action.trigger.every_minutes} minutes`}
-        </Meta>
-      ) : null}
-      <Meta label="Action due">
-        {source.action_due ? 'Due now' : 'Not due'}
-      </Meta>
-      <Meta label="Next action">{formatDate(source.next_action_at)}</Meta>
-      {source.snapshot ? (
-        <div className="sm:col-span-2">
-          <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            Latest successful snapshot
-          </dt>
-          <dd className="mt-0.5">
-            <Markdown text={source.snapshot.summary} />
-            <p className="mt-1 text-xs text-muted-foreground">
-              Observed {formatDate(source.snapshot.observed_at)}
-              {source.snapshot.checkpoint
-                ? ` · checkpoint ${source.snapshot.checkpoint}`
-                : ''}
-            </p>
-            {source.snapshot.references.length > 0 ? (
-              <ul className="mt-1 space-y-1">
-                {source.snapshot.references.map((reference) => (
-                  <li key={reference}>
-                    <code className="break-all text-xs">{reference}</code>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </dd>
-        </div>
-      ) : null}
-      {source.latest_attempt ? (
-        <Meta label="Latest attempt">
-          <span className="capitalize">{source.latest_attempt.outcome}</span>{' '}
-          · {formatDate(source.latest_attempt.recorded_at)}
-          {source.latest_attempt.error ? (
-            <span className="mt-1 block text-xs text-destructive">
-              {source.latest_attempt.error}
-            </span>
-          ) : null}
-        </Meta>
-      ) : null}
-    </dl>
   );
 }

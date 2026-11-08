@@ -47,8 +47,6 @@ CREATE TABLE sources (
     locator TEXT,
     context_policy TEXT NOT NULL CHECK (context_policy IN ('always', 'when_relevant')),
     action TEXT CHECK (action IS NULL OR json_valid(action)),
-    snapshot TEXT CHECK (snapshot IS NULL OR json_valid(snapshot)),
-    latest_attempt TEXT CHECK (latest_attempt IS NULL OR json_valid(latest_attempt)),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,

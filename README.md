@@ -114,7 +114,7 @@ after all dependency gates are satisfied and at least one successful execution
 comment exists. Comments never change lifecycle; update the brief or status
 directly with `update_task` when work changes.
 Mutable project, task and source updates require the latest `expected_revision`. See
-[AGENTS.md](AGENTS.md) for all seventeen tools and their contracts, and
+[AGENTS.md](AGENTS.md) for all sixteen tools and their contracts, and
 [WORKFLOW.md](WORKFLOW.md) for the embedded agent workflow. Its brevity principle
 applies to all guidance and record fields, including Source descriptions and
 action instructions: retain only what later humans or agents need to understand,
@@ -140,6 +140,23 @@ deduplicated task-linked plus always Sources, and bounded comments and execution
 evidence. Both modes read one consistent database snapshot. Inline Sources remain
 full and untruncated; context decisions are complete and unpaginated. Use
 `get_context` in place of the former `get_task_context` tool.
+
+## Use Source actions
+
+A Source may include an optional action instruction:
+
+```json
+{"action": {"instruction": "Read the current release notes for relevant changes."}}
+```
+
+Agents perform configured actions afresh when using the Source for current
+authorized work. Dictum returns the instruction but does not execute it, cache its
+result, or require a follow-up recording call. If a Source action fails, warn the
+user. Actions have no triggers, due dates, or freshness state.
+
+With `update_source`, omitting `action` preserves it, `null` removes it, and a new
+object replaces it; the instruction must be nonblank. Only Source updates advance
+its revision and update time. Reading a Source leaves both unchanged.
 
 ## Organize records with topics
 
@@ -174,8 +191,7 @@ records in context: keep explicit task context links and fetch needed Sources.
 `update_task` and `update_source` accept a replacement `topics` array under the
 record's latest `expected_revision`. Omission preserves membership and `[]` clears
 it. Null arrays, non-string elements, and blank names are rejected on all writes.
-Topic edits advance the task or Source revision, while preserving Source action
-freshness. Topics are not inherited
+Topic edits advance the task or Source revision. Topics are not inherited
 from parent tasks or linked Sources. Decisions and their topic memberships are
 immutable, and replacements use their own optional topics, defaulting to empty
 without inheriting the predecessor's topics. Creating topics does not change the project's description revision or timestamps.
@@ -196,12 +212,12 @@ respectively, in the same project. Cursor validation is independent of filters;
 the cursor record need not match them. `next_before_id` is null when no older
 matching record remains, even if the page is full.
 
-Source filters include `task_id`, `representation`, `action_due`, `query`, and `topic`;
+Source filters include `task_id`, `representation`, `query`, and `topic`;
 task filtering covers explicit context links. Decision listings default to
 current choices; `include_superseded: true` includes their history, and `topic`
 filters either view. Later appends
-have higher IDs and do not appear on older pages. Edits, action freshness, and
-decision supersession can change data or filter membership between requests.
+have higher IDs and do not appear on older pages. Edits and decision supersession
+can change data or filter membership between requests.
 Project discovery through `list_projects` remains unpaginated.
 
 ## Update a project and promote foundational decisions
@@ -439,9 +455,9 @@ npm ci
 npm run build
 ```
 
-Only the current schema (v16) is supported. Startup rejects older databases
+Only the current schema (v17) is supported. Startup rejects older databases
 without modifying them; preserve the file and use a fresh path such as
-`.dictum/dictum-v16.sqlite3`. Re-create needed records through MCP rather than
+`.dictum/dictum-v17.sqlite3`. Re-create needed records through MCP rather than
 migrating the older database.
 
 ## License

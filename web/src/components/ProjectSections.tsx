@@ -1,7 +1,6 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { api, queryKeys } from '../lib/api';
-import { formatDate } from '../lib/format';
 import type { SourceDescriptor } from '../lib/types';
 import { Button } from './ui/button';
 import { DecisionCard } from './DecisionCard';
@@ -138,13 +137,7 @@ function sourceMeta(source: SourceDescriptor): string {
   return [
     source.representation,
     source.context_policy === 'always' ? 'always included' : 'when relevant',
-    source.has_action
-      ? source.action_due
-        ? 'action due'
-        : source.next_action_at
-          ? `next action ${formatDate(source.next_action_at)}`
-          : 'manual action'
-      : null,
+    source.has_action ? 'has action' : null,
   ]
     .filter((value): value is string => value !== null)
     .join(' · ');

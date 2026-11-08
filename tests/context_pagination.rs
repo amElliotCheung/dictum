@@ -252,20 +252,20 @@ fn source_filters_apply_before_pagination_and_new_appends_preserve_older_pages()
         "Keep newest",
         json!({"topics": ["User authentication"]}),
     );
-    let due = source(
+    let action_source = source(
         &client,
-        "Keep due",
+        "Action fixture",
         json!({
             "topics": ["User authentication"],
-            "action": {"instruction": "Inspect current release notes.", "trigger": {"kind": "interval", "every_minutes": 30}}
+            "action": {"instruction": "Inspect current release notes."}
         }),
     );
     let linked_task = task(
         &client,
         "Linked sources",
-        json!({"context_source_ids": [oldest["id"], middle["id"], newest["id"], due["id"]]}),
+        json!({"context_source_ids": [oldest["id"], middle["id"], newest["id"], action_source["id"]]}),
     );
-    let filter = json!({"topic": "User authentication", "query": "KEEP", "representation": "inline", "task_id": linked_task["id"], "action_due": false, "page_size": 2});
+    let filter = json!({"topic": "User authentication", "query": "KEEP", "representation": "inline", "task_id": linked_task["id"], "page_size": 2});
     let first = call(&client, "list_sources", filter.clone());
     assert_eq!(
         ids(&first, "sources"),
@@ -284,7 +284,7 @@ fn source_filters_apply_before_pagination_and_new_appends_preserve_older_pages()
     call(
         &writer,
         "update_task",
-        json!({"task_id": linked_task["id"], "expected_revision": linked_task["revision"], "context_source_ids": [oldest["id"], middle["id"], newest["id"], due["id"], appended["id"]]}),
+        json!({"task_id": linked_task["id"], "expected_revision": linked_task["revision"], "context_source_ids": [oldest["id"], middle["id"], newest["id"], action_source["id"], appended["id"]]}),
     );
     let mut next = filter.clone();
     next["before_id"] = first["next_before_id"].clone();
@@ -320,11 +320,11 @@ fn source_filters_apply_before_pagination_and_new_appends_preserve_older_pages()
     let action_page = call(
         &client,
         "list_sources",
-        json!({"action_due": true, "task_id": linked_task["id"], "page_size": 1}),
+        json!({"query": "Action fixture", "task_id": linked_task["id"], "page_size": 1}),
     );
     assert_eq!(
         ids(&action_page, "sources"),
-        vec![due["id"].as_str().unwrap().to_owned()]
+        vec![action_source["id"].as_str().unwrap().to_owned()]
     );
     assert!(action_page["next_before_id"].is_null());
     let linked = call(
@@ -464,14 +464,9 @@ fn optional_topics_preserve_relational_identity_and_survive_restart() {
     let tagged_source = source(
         &client,
         "Classified source",
-        json!({"topics": ["USER authentication", "Source only"], "action": {"instruction": "Read this fixture", "trigger": {"kind": "manual"}}}),
+        json!({"topics": ["USER authentication", "Source only"], "action": {"instruction": "Read this fixture"}}),
     );
     assert_eq!(tagged_source["topics"][0], shared_topic);
-    let observed_source = call(
-        &client,
-        "record_source_action",
-        json!({"source_id": tagged_source["id"], "expected_revision": tagged_source["revision"], "result": {"outcome": "success", "observed_at": tagged_source["created_at"], "summary": "Verified fixture", "checkpoint": "retained", "references": []}}),
-    );
     let historical = decision(
         &client,
         "Keep historical classification",
@@ -502,7 +497,7 @@ fn optional_topics_preserve_relational_identity_and_survive_restart() {
     let preserved_source = call(
         &client,
         "update_source",
-        json!({"source_id": tagged_source["id"], "expected_revision": observed_source["revision"], "description": "Preserve classification and freshness"}),
+        json!({"source_id": tagged_source["id"], "expected_revision": tagged_source["revision"], "description": "Preserve classification and action"}),
     );
     assert_eq!(preserved_source["topics"], tagged_source["topics"]);
     let before_conflict = snapshot(&database);
@@ -532,8 +527,9 @@ fn optional_topics_preserve_relational_identity_and_survive_restart() {
         cleared_source["revision"],
         preserved_source["revision"].as_i64().unwrap() + 1
     );
-    for field in ["snapshot", "latest_attempt"] {
-        assert_eq!(cleared_source[field], observed_source[field]);
+    assert_eq!(cleared_source["action"], tagged_source["action"]);
+    for field in ["snapshot", "latest_attempt", "action_due", "next_action_at"] {
+        assert!(cleared_source.get(field).is_none());
     }
     for (tool, field) in [
         ("list_tasks", "tasks"),

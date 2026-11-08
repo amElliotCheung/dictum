@@ -265,7 +265,6 @@ async fn dispatch(store: &Store, request: &Request, port: u16, token: &str) -> R
                     before_id,
                     task_id: None,
                     representation: None,
-                    action_due: None,
                     query: None,
                 })
             })

@@ -1,7 +1,7 @@
 //! Behavioral scenarios against the real MCP binary. See support for transport setup.
 mod support;
 
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use chrono::{DateTime, Duration, Utc};
 use dictum_mcp::model::*;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -71,8 +71,7 @@ fn external(store: &Project, name: &str) -> Source {
             "description": "Daily discussion of project requirements.",
             "locator": "slack://workspace/channel",
             "action": {
-                "instruction": "Review new messages and summarize current project-relevant context.",
-                "trigger": {"kind": "interval", "every_minutes": 1440}
+                "instruction": "Read current project-relevant messages."
             }
         })))
         .unwrap()
@@ -82,33 +81,6 @@ fn source_patch(source: &Source, mut patch: Value) -> UpdateSource {
     patch["source_id"] = json!(source.id);
     patch["expected_revision"] = json!(source.revision);
     input(patch)
-}
-
-fn action_input(source: &Source, result: Value) -> RecordSourceAction {
-    input(json!({
-        "source_id": source.id,
-        "expected_revision": source.revision,
-        "result": result
-    }))
-}
-
-fn observed(minutes_ago: i64) -> String {
-    (Utc::now() - Duration::minutes(minutes_ago)).to_rfc3339_opts(SecondsFormat::Millis, true)
-}
-
-fn success(store: &Project, source: &Source, minutes_ago: i64) -> Source {
-    store
-        .record_source_action(action_input(
-            source,
-            json!({
-                "outcome": "success",
-                "observed_at": observed(minutes_ago),
-                "summary": "The API is approved. Authentication remains an open question.",
-                "checkpoint": "message:123",
-                "references": ["slack://workspace/channel/thread123"]
-            }),
-        ))
-        .unwrap()
 }
 
 #[test]
@@ -203,10 +175,10 @@ fn full_inline_context_is_deduplicated_and_outputs_are_not_automatic_inputs() {
             .any(|source| source.id == context.id)
     );
 
-    // Loading context is a read, not a source-action completion.
+    // Loading context leaves Source definitions unchanged.
     let reread = store.get_source(shared.id).unwrap();
     assert_eq!(reread.revision, shared.revision);
-    assert!(reread.latest_attempt.is_none());
+    assert_eq!(reread.updated_at, shared.updated_at);
 }
 
 #[test]
@@ -396,226 +368,197 @@ fn task_creation_rejects_empty_brief_sections_and_completion_conditions() {
 }
 
 #[test]
-fn source_actions_preserve_one_successful_snapshot_across_no_change_and_failure() {
-    let (_directory, store) = database();
+fn source_actions_are_instructions_without_result_bookkeeping() {
+    let (directory, store) = database();
     let initial = external(&store, "Project Slack");
-    assert!(initial.action_due);
-    assert!(initial.next_action_at.is_none());
     let mut brief = task_input("Read channel context");
     brief["context_source_ids"] = json!([initial.id]);
     let reader = store.create_task(input(brief)).unwrap();
-    let context = store.get_context(reader.id).unwrap();
-    assert_eq!(context.sources[0].revision, initial.revision);
-    assert!(context.sources[0].snapshot.is_none());
-    assert!(context.sources[0].latest_attempt.is_none());
-    assert!(context.sources[0].action_due);
+    let expected_action = json!({"instruction": "Read current project-relevant messages."});
+    let original: Value = store
+        .call("get_source", json!({"source_id": initial.id}))
+        .unwrap();
+    assert_eq!(original["action"], expected_action);
+    assert_eq!(original["description"], initial.description);
+    assert_eq!(
+        original["locator"],
+        initial.locator.as_ref().unwrap().as_str()
+    );
+
+    for _ in 0..2 {
+        let context: Value = store
+            .call("get_context", json!({"task_id": reader.id}))
+            .unwrap();
+        let full: Value = store
+            .call("get_source", json!({"source_id": initial.id}))
+            .unwrap();
+        let listed: Value = store
+            .call("list_sources", json!({"task_id": reader.id}))
+            .unwrap();
+        assert_eq!(full, original);
+        assert_eq!(context["sources"][0], original);
+        assert_eq!(listed["sources"][0]["has_action"], true);
+        for response in [&full, &context["sources"][0], &listed["sources"][0]] {
+            for field in ["snapshot", "latest_attempt", "action_due", "next_action_at"] {
+                assert!(
+                    response.get(field).is_none(),
+                    "unexpected {field}: {response}"
+                );
+            }
+        }
+    }
     assert!(
         store
-            .record_source_action(action_input(
-                &initial,
-                json!({"outcome": "no_change", "observed_at": observed(5)})
-            ))
+            .call::<Value>(
+                "record_source_action",
+                json!({
+                    "source_id": initial.id,
+                    "expected_revision": initial.revision,
+                    "result": {"outcome": "failure", "error": "No result should be recorded."}
+                })
+            )
             .is_err()
     );
-    let failed = store
-        .record_source_action(action_input(
-            &initial,
-            json!({"outcome": "failure", "error": "Slack is unavailable."}),
-        ))
-        .unwrap();
-    assert!(failed.snapshot.is_none());
-    assert!(failed.action_due);
     assert_eq!(
-        failed.latest_attempt.as_ref().unwrap().outcome,
-        ActionOutcome::Failure
+        store
+            .call::<Value>("get_source", json!({"source_id": initial.id}))
+            .unwrap(),
+        original
     );
 
-    let succeeded = success(&store, &failed, 4);
-    assert!(!succeeded.action_due);
-    assert!(succeeded.next_action_at.is_some());
-    let snapshot = succeeded.snapshot.clone().unwrap();
-    let unchanged = store
-        .record_source_action(action_input(
-            &succeeded,
-            json!({
-                "outcome": "no_change", "observed_at": observed(3)
-            }),
-        ))
+    let connection = rusqlite::Connection::open(directory.path().join("project.sqlite3")).unwrap();
+    let columns = connection
+        .prepare("PRAGMA table_info(sources)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
-    let retained = unchanged.snapshot.as_ref().unwrap();
-    assert_eq!(retained.summary, snapshot.summary);
-    assert_eq!(retained.references, snapshot.references);
-    assert_eq!(retained.checkpoint, snapshot.checkpoint);
-    assert_ne!(retained.observed_at, snapshot.observed_at);
-    assert_eq!(
-        unchanged.latest_attempt.as_ref().unwrap().outcome,
-        ActionOutcome::NoChange
+    assert!(
+        !columns
+            .iter()
+            .any(|name| name == "snapshot" || name == "latest_attempt")
     );
-    let advanced = store
-        .record_source_action(action_input(
-            &unchanged,
-            json!({
-                "outcome": "no_change", "observed_at": observed(2), "checkpoint": "message:456"
-            }),
-        ))
-        .unwrap();
-    assert_eq!(
-        advanced.snapshot.as_ref().unwrap().checkpoint.as_deref(),
-        Some("message:456")
-    );
-    let advanced = store
-        .record_source_action(action_input(
-            &advanced,
-            json!({
-                "outcome": "no_change", "observed_at": observed(1), "checkpoint": null
-            }),
-        ))
-        .unwrap();
-    assert!(advanced.snapshot.as_ref().unwrap().checkpoint.is_none());
-    let failed_again = store
-        .record_source_action(action_input(
-            &advanced,
-            json!({"outcome": "failure", "error": "Rate limited."}),
-        ))
-        .unwrap();
-    assert_eq!(failed_again.snapshot, advanced.snapshot);
-    assert_eq!(
-        failed_again
-            .latest_attempt
-            .as_ref()
-            .unwrap()
-            .error
-            .as_deref(),
-        Some("Rate limited.")
-    );
-    assert!(!failed_again.action_due);
-
-    let replaced = store.record_source_action(action_input(&failed_again, json!({
-        "outcome": "success", "observed_at": observed(0), "summary": "Authentication has now been decided.",
-        "references": ["slack://workspace/channel/new-thread"]
-    }))).unwrap();
-    assert_eq!(
-        replaced.snapshot.as_ref().unwrap().summary,
-        "Authentication has now been decided."
-    );
-    assert_eq!(
-        replaced.snapshot.as_ref().unwrap().references,
-        vec!["slack://workspace/channel/new-thread"]
-    );
-    assert!(replaced.snapshot.as_ref().unwrap().checkpoint.is_none());
-    assert_eq!(
-        replaced.latest_attempt.as_ref().unwrap().outcome,
-        ActionOutcome::Success
-    );
-    assert!(replaced.latest_attempt.as_ref().unwrap().error.is_none());
 }
 
 #[test]
-fn source_action_cas_time_validation_and_summary_limit_leave_state_unchanged() {
+fn source_action_updates_preserve_omissions_clear_null_and_reject_invalid_definitions() {
     let (_directory, store) = database();
-    let initial = external(&store, "Action validation");
-    let current = success(&store, &initial, 5);
+    let initial = external(&store, "Editable source");
+    let metadata = store.update_source(source_patch(&initial, json!({
+        "name": "Renamed source", "description": "A clearer explanation.", "context_policy": "always"
+    }))).unwrap();
+    assert_eq!(metadata.action, initial.action);
+    assert_eq!(metadata.created_at, initial.created_at);
+    assert_eq!(metadata.revision, initial.revision + 1);
+    let retargeted = store
+        .update_source(source_patch(
+            &metadata,
+            json!({
+                "locator": "slack://workspace/other-channel"
+            }),
+        ))
+        .unwrap();
+    assert_eq!(retargeted.action, initial.action);
+    let changed = store
+        .update_source(source_patch(
+            &retargeted,
+            json!({
+                "action": {"instruction": "Read current security changes."}
+            }),
+        ))
+        .unwrap();
+    assert_eq!(
+        changed.action.as_ref().unwrap().instruction,
+        "Read current security changes."
+    );
+    assert_eq!(changed.revision, retargeted.revision + 1);
     assert!(
         store
-            .record_source_action(action_input(
-                &initial,
-                json!({"outcome": "failure", "error": "Stale attempt"})
-            ))
+            .update_source(source_patch(&retargeted, json!({"action": null})))
             .is_err()
     );
-    for observation in [
-        observed(10),
-        "2099-01-01T00:00:00Z".to_owned(),
-        "not a date".to_owned(),
-    ] {
+    assert_eq!(store.get_source(changed.id).unwrap().action, changed.action);
+
+    let invalid_actions = [
+        json!({}),
+        json!({"instruction": "   "}),
+        json!({"instruction": null}),
+        json!("Read this source"),
+        json!({"instruction": "Read", "trigger": {"kind": "manual"}}),
+        json!({"instruction": "Read", "trigger": {"kind": "interval", "every_minutes": 30}}),
+    ];
+    let before: Value = store
+        .call("get_source", json!({"source_id": changed.id}))
+        .unwrap();
+    let before_list: Value = store.call("list_sources", json!({})).unwrap();
+    for action in invalid_actions {
         assert!(
             store
-                .record_source_action(action_input(
-                    &current,
-                    json!({"outcome": "no_change", "observed_at": observation})
-                ))
+                .call::<Value>(
+                    "create_source",
+                    json!({
+                        "name": "Rejected action", "description": "Must not be saved.",
+                        "content": "Input", "action": action
+                    })
+                )
                 .is_err()
+        );
+        assert!(
+            store
+                .call::<Value>(
+                    "update_source",
+                    json!({
+                        "source_id": changed.id, "expected_revision": changed.revision,
+                        "name": "Must roll back", "action": action
+                    })
+                )
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .call::<Value>("get_source", json!({"source_id": changed.id}))
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            store.call::<Value>("list_sources", json!({})).unwrap(),
+            before_list
         );
     }
     assert!(
         store
-            .record_source_action(action_input(
-                &current,
-                json!({
-                    "outcome": "success", "observed_at": observed(4), "summary": "界".repeat(1001)
-                })
-            ))
+            .call::<Value>("list_sources", json!({"action_due": true}))
             .is_err()
     );
-    let reread = store.get_source(current.id).unwrap();
-    assert_eq!(reread.revision, current.revision);
-    assert_eq!(reread.snapshot, current.snapshot);
-    assert_eq!(reread.latest_attempt, current.latest_attempt);
-    let at_limit = store
-        .record_source_action(action_input(
-            &current,
+    let cleared = store
+        .update_source(source_patch(&changed, json!({"action": null})))
+        .unwrap();
+    assert!(cleared.action.is_none());
+    assert_eq!(cleared.revision, changed.revision + 1);
+    let descriptors = store.list_sources(input(json!({}))).unwrap();
+    assert!(!descriptors[0].has_action);
+    let recreated = store
+        .update_source(source_patch(
+            &cleared,
             json!({
-                "outcome": "success", "observed_at": observed(4), "summary": "界".repeat(1000)
+                "action": {"instruction": "Inspect current messages again."}
             }),
         ))
         .unwrap();
-    assert_eq!(at_limit.snapshot.unwrap().summary.chars().count(), 1000);
-}
-
-#[test]
-fn source_definition_changes_invalidate_state_but_metadata_edits_do_not() {
-    let (_directory, store) = database();
-    let source = external(&store, "Editable source");
-    let source = success(&store, &source, 5);
-    let metadata = store.update_source(source_patch(&source, json!({"topics": ["Project workflow"],
-        "name": "Renamed source", "description": "A clearer explanation.", "context_policy": "always"
-    }))).unwrap();
-    assert_eq!(metadata.snapshot, source.snapshot);
-    assert_eq!(metadata.latest_attempt, source.latest_attempt);
-    let retargeted = store
-        .update_source(source_patch(
-            &metadata,
-            json!({"locator": "slack://workspace/other-channel"}),
-        ))
-        .unwrap();
-    assert!(retargeted.snapshot.is_none());
-    assert!(retargeted.latest_attempt.is_none());
-    assert!(retargeted.action_due);
-    assert!(
-        store
-            .record_source_action(action_input(
-                &metadata,
-                json!({"outcome": "failure", "error": "Result from old target"})
-            ))
-            .is_err()
+    assert_eq!(
+        recreated.action.as_ref().unwrap().instruction,
+        "Inspect current messages again."
     );
-    let retargeted = success(&store, &retargeted, 4);
-    let changed_action = store.update_source(source_patch(&retargeted, json!({
-        "action": {"instruction": "Review security changes only.", "trigger": {"kind": "interval", "every_minutes": 60}}
-    }))).unwrap();
-    assert!(changed_action.snapshot.is_none());
-    assert!(changed_action.latest_attempt.is_none());
-    let changed_action = success(&store, &changed_action, 3);
-    let removed = store
-        .update_source(source_patch(&changed_action, json!({"action": null})))
-        .unwrap();
-    assert!(removed.action.is_none());
-    assert!(removed.snapshot.is_none());
-    assert!(removed.latest_attempt.is_none());
-    assert!(!removed.action_due);
-    assert!(removed.next_action_at.is_none());
-    assert!(
-        store
-            .record_source_action(action_input(
-                &removed,
-                json!({"outcome": "failure", "error": "No configured action"})
-            ))
-            .is_err()
+    let context: Value = store.call("get_context", json!({})).unwrap();
+    assert_eq!(
+        context["sources"][0]["action"],
+        json!({"instruction": "Inspect current messages again."})
     );
 }
 
 #[test]
-fn source_representation_switches_are_atomic_and_inline_edits_invalidate_actions() {
+fn source_representation_switches_are_atomic_and_inline_edits_preserve_actions() {
     let (_directory, store) = database();
     for definition in [
         json!({"topics": ["Project workflow"], "name": "Neither", "description": "Invalid"}),
@@ -644,50 +587,16 @@ fn source_representation_switches_are_atomic_and_inline_edits_invalidate_actions
         source.content.as_deref(),
         Some("# Inline document\nFull content.")
     );
-    let source = success(&store, &source, 2);
     let source = store
         .update_source(source_patch(
             &source,
             json!({"content": "# Updated document\nNew content."}),
         ))
         .unwrap();
-    assert!(source.snapshot.is_none());
-    assert!(source.latest_attempt.is_none());
-    assert!(source.action_due);
-}
-
-#[test]
-fn manual_actions_are_unscheduled_and_interval_freshness_is_computed() {
-    let (_directory, store) = database();
-    let manual = store.create_source(input(json!({"topics": ["Project workflow"],
-        "name": "Manual reference", "description": "Inspect only when needed.", "locator": "https://example.test/doc",
-        "action": {"instruction": "Inspect the current document.", "trigger": {"kind": "manual"}}
-    }))).unwrap();
-    assert!(!manual.action_due);
-    assert!(manual.next_action_at.is_none());
-    let manual = success(&store, &manual, 10_000);
-    assert!(!manual.action_due);
-    assert!(manual.next_action_at.is_none());
-
-    let overdue = external(&store, "Overdue source");
-    let overdue = success(&store, &overdue, 2 * 1440);
-    assert!(overdue.action_due);
-    let recent = external(&store, "Recently observed source");
-    let recent = success(&store, &recent, 2);
-    assert!(!recent.action_due);
-    let due = store
-        .list_sources(input(json!({"action_due": true})))
-        .unwrap();
     assert_eq!(
-        due.iter().map(|source| source.id).collect::<Vec<_>>(),
-        vec![overdue.id]
+        source.action.as_ref().unwrap().instruction,
+        "Read current project-relevant messages."
     );
-    for minutes in [0, -1, i64::MAX] {
-        assert!(store.create_source(input(json!({"topics": ["Project workflow"],
-            "name": "Invalid interval", "description": "Must be positive.", "locator": "https://example.test/doc",
-            "action": {"instruction": "Review document.", "trigger": {"kind": "interval", "every_minutes": minutes}}
-        }))).is_err());
-    }
 }
 
 #[test]
@@ -796,15 +705,32 @@ fn decisions_are_timestamped_immutable_and_have_one_current_successor() {
 fn mutable_records_persist_and_revisions_coordinate_separate_processes() {
     let (directory, first_store) = database();
     let source = external(&first_store, "Persistent source");
-    let source = success(&first_store, &source, 3);
     let mut brief = task_input("Persistent task");
     brief["context_source_ids"] = json!([source.id]);
     let task = first_store.create_task(input(brief)).unwrap();
     let second_store = Project::open(directory.path().join("project.sqlite3")).unwrap();
     assert_eq!(
-        second_store.get_source(source.id).unwrap().snapshot,
-        source.snapshot
+        second_store.get_source(source.id).unwrap().action,
+        source.action
     );
+    let current_source = second_store
+        .update_source(source_patch(
+            &source,
+            json!({
+                "action": {"instruction": "Read the current release discussion."}
+            }),
+        ))
+        .unwrap();
+    assert!(
+        first_store
+            .update_source(source_patch(&source, json!({"action": null})))
+            .is_err()
+    );
+    assert_eq!(
+        first_store.get_source(source.id).unwrap().action,
+        current_source.action
+    );
+    let source = current_source;
     let changed = second_store
         .update_task(task_patch(
             &task,
@@ -822,7 +748,9 @@ fn mutable_records_persist_and_revisions_coordinate_separate_processes() {
     let context = reopened.get_context(task.id).unwrap();
     assert_eq!(context.task.progress, changed.progress);
     assert_eq!(context.sources.len(), 1);
-    assert_eq!(context.sources[0].snapshot, source.snapshot);
+    assert_eq!(context.sources[0].action, source.action);
+    assert_eq!(context.sources[0].revision, source.revision);
+    assert_eq!(context.sources[0].updated_at, source.updated_at);
 }
 
 #[test]

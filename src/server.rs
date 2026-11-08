@@ -123,7 +123,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Read one consistent snapshot using an existing project_id: full project with topics, ordered promoted_decision_ids and promoted_decisions summaries (stable reference_id, current id and statement), all full current decisions and always sources. Promoted chains resolve to their current decision in this snapshot without rewriting references or advancing project revision. Promotion emphasizes foundational choices; all current decisions remain effective. Record topics support discovery without expanding context or inheriting sources. Optional task_id adds full task/parent briefs, progress, dependency state, explicit context sources and bounded comments. Without a task, task/parent_task/dependency_state and latest execution fields are null; recent_comments is empty. Read both briefs; parent sources, dependencies and comments are not inherited. Inline sources are returned in full; keep always sources short and task links relevant. recent_comments holds ten newest comments; latest_execution and latest_successful_execution may repeat their IDs. Historical briefs are not retained: compare comment task_revision with the current task and assess evidence applicability. Fetch older comments/replies or outputs as needed with list_task_comments, get_task_comment or get_source. Poll comments independently of task revisions. Reading never records work or advances freshness.",
+        description = "Read one consistent snapshot using an existing project_id: full project with topics, ordered promoted_decision_ids and promoted_decisions summaries (stable reference_id, current id and statement), all full current decisions and always sources. Promoted chains resolve to their current decision in this snapshot without rewriting references or advancing project revision. Promotion emphasizes foundational choices; all current decisions remain effective. Record topics support discovery without expanding context or inheriting sources. Optional task_id adds full task/parent briefs, progress, dependency state, explicit context sources and bounded comments. Without a task, task/parent_task/dependency_state and latest execution fields are null; recent_comments is empty. Read both briefs; parent sources, dependencies and comments are not inherited. Inline sources are returned in full; keep always sources short and task links relevant. recent_comments holds ten newest comments; latest_execution and latest_successful_execution may repeat their IDs. Historical briefs are not retained: compare comment task_revision with the current task and assess evidence applicability. Fetch older comments/replies or outputs as needed with list_task_comments, get_task_comment or get_source. Poll comments independently of task revisions. Reading never records work. When using a Source, perform its action afresh within current task authorization; results are not cached or recorded. If a Source action fails, warn the user.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn get_context(
@@ -190,7 +190,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Register reusable information or a durable output in an existing project_id with name, description, optional topics (default []), and exactly one of inline Markdown content or external locator. Reuse project.topics when helpful; missing names are created atomically, ignoring case and whitespace. Null arrays and blank names fail. context_policy defaults to when_relevant. always Sources enter every context; reserve them for concise essentials such as environment scope, exact identifiers and verification dates/references. Facts describe current state; decisions record accepted choices. Keep long artifacts when_relevant; link needed task context. Optional action defines agent work with a manual or interval trigger. Registration does not create an external resource.",
+        description = "Register reusable information or a durable output in an existing project_id with name, description, optional topics (default []), and exactly one of inline Markdown content or external locator. Reuse project.topics when helpful; missing names are created atomically, ignoring case and whitespace. Null arrays and blank names fail. context_policy defaults to when_relevant. always Sources enter every context; reserve them for concise essentials such as environment scope, exact identifiers and verification dates/references. Facts describe current state; decisions record accepted choices. Keep long artifacts when_relevant; link needed task context. Optional action contains an instruction for the agent to perform afresh when using this Source, within current task authorization; results are not cached or recorded. Registration does not create an external resource.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -205,7 +205,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "List source descriptors with topics, without bodies, newest ID first in project_id. page_size defaults to 20 (1..100); pass next_before_id as before_id for older pages. Cursors must identify a Source in this project regardless of filters. Filter by topic, explicit task context links, representation, action_due or query before pagination. Topic names ignore case/whitespace; unknown names match nothing and blanks fail. Outputs belong to task comments. Later appends stay outside older pages; edits and due state can change membership. Expand needed content with get_source. Manual actions are never automatically due.",
+        description = "List source descriptors with topics, without bodies, newest ID first in project_id. page_size defaults to 20 (1..100); pass next_before_id as before_id for older pages. Cursors must identify a Source in this project regardless of filters. Filter by topic, explicit task context links, representation or query before pagination. Topic names ignore case/whitespace; unknown names match nothing and blanks fail. Outputs belong to task comments. Later appends stay outside older pages; edits can change membership. Expand needed content with get_source.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_sources(
@@ -216,7 +216,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Read a Source in project_id: topics, full inline content or external locator, action, latest successful snapshot, latest attempt and computed due state. A snapshot summarizes current understanding. Use external tools for further reading. Reading leaves action state unchanged.",
+        description = "Read a Source in project_id: topics, full inline content or external locator, and optional action instruction. When using this Source, perform its action afresh within current task authorization using external tools; results are not cached or recorded. If a Source action fails, warn the user. Reading does not execute the action or modify the Source.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn get_source(
@@ -228,7 +228,7 @@ impl DictumServer {
     }
 
     #[tool(
-        description = "Update a Source in project_id with expected_revision. Supplied topics replace membership atomically, reusing or creating project-local names ignoring case/whitespace; [] clears membership; null and blank names fail. Omitted fields preserve values; null clears content, locator or action. Exactly one of content/locator must remain; switch them in one call. Changing content, locator or action clears its snapshot/attempt. Topic, name, description and context_policy edits preserve action state.",
+        description = "Update a Source in project_id with expected_revision. Supplied topics replace membership atomically, reusing or creating project-local names ignoring case/whitespace; [] clears membership; null and blank names fail. Omitted fields preserve values; null clears content, locator or action. Exactly one of content/locator must remain; switch them in one call. Optional action contains only a nonblank instruction; results are not cached or recorded.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -240,22 +240,6 @@ impl DictumServer {
         Parameters(input): Parameters<UpdateSource>,
     ) -> Result<Json<Source>, String> {
         self.database(move |store| store.update_source(input)).await
-    }
-
-    #[tool(
-        description = "Record an execution attempt of the configured Source action in project_id using expected_revision. Success replaces the snapshot with observed_at (RFC3339, neither future nor backwards), summary (max 1000 characters), checkpoint and references. No_change requires a snapshot, advances observation time and preserves summary/references; omitted checkpoint preserves it, null clears. Failure records an error while retaining the snapshot. Only completing the configured action advances freshness; targeted task lookups do not. Execution and evidence are agent-reported.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = true,
-            open_world_hint = false
-        )
-    )]
-    async fn record_source_action(
-        &self,
-        Parameters(input): Parameters<RecordSourceAction>,
-    ) -> Result<Json<Source>, String> {
-        self.database(move |store| store.record_source_action(input))
-            .await
     }
 
     #[tool(

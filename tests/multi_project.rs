@@ -378,7 +378,7 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
         &client,
         &scope,
         "create_source",
-        json!({"topics": ["Project workflow"], "name": "Input", "description": "Scoped source", "locator": "https://example.test/input", "action": {"instruction": "Read", "trigger": {"kind": "manual"}}}),
+        json!({"topics": ["Project workflow"], "name": "Input", "description": "Scoped source", "locator": "https://example.test/input", "action": {"instruction": "Read"}}),
     );
     let task = scoped(&client, &scope, "create_task", brief());
     let requests = [
@@ -411,10 +411,6 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
         (
             "update_source",
             json!({"source_id": source["id"], "expected_revision": source["revision"], "name": "Should never be saved"}),
-        ),
-        (
-            "record_source_action",
-            json!({"source_id": source["id"], "expected_revision": source["revision"], "result": {"outcome": "failure", "error": "Should never be saved"}}),
         ),
         (
             "record_decision",
@@ -467,10 +463,6 @@ fn every_existing_tool_requires_a_known_explicit_project_without_side_effects() 
             json!({"source_id": "ffffffff-ffff-7fff-bfff-ffffffffffff", "expected_revision": 1, "name": "Unknown source"}),
         ),
         (
-            "record_source_action",
-            json!({"source_id": "ffffffff-ffff-7fff-bfff-ffffffffffff", "expected_revision": 1, "result": {"outcome": "failure", "error": "Unknown source"}}),
-        ),
-        (
             "record_decision",
             json!({"topics": ["Project workflow"], "statement": "Unknown predecessor", "rationale": "Invalid link", "supersedes_id": "ffffffff-ffff-7fff-bfff-ffffffffffff"}),
         ),
@@ -513,7 +505,7 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
             client,
             scope,
             "create_source",
-            json!({"topics": ["Project workflow"], "name": "Action", "description": "Own action state", "locator": format!("https://example.test/{scope}"), "action": {"instruction": "Read", "trigger": {"kind": "interval", "every_minutes": 60}}}),
+            json!({"topics": ["Project workflow"], "name": "Action", "description": "Own action instruction", "locator": format!("https://example.test/{scope}"), "action": {"instruction": "Read"}}),
         );
         let decision = scoped(
             client,
@@ -551,10 +543,6 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
             (
                 "update_source",
                 json!({"source_id": foreign_source["id"], "expected_revision": foreign_source["revision"], "name": "Foreign edit"}),
-            ),
-            (
-                "record_source_action",
-                json!({"source_id": foreign_source["id"], "expected_revision": foreign_source["revision"], "result": {"outcome": "failure", "error": "Foreign edit"}}),
             ),
             (
                 "record_decision",
@@ -646,22 +634,19 @@ fn projects_isolate_records_links_context_actions_and_supersession_across_client
                 .iter()
                 .all(|source| source["project_id"] == *scope)
         );
-        assert_eq!(
-            scoped(&first, scope, "list_sources", json!({"action_due": true}))["sources"][0]["id"],
-            external["id"]
-        );
+        assert_eq!(sources["sources"][0]["id"], external["id"]);
+        assert_eq!(sources["sources"][0]["has_action"], true);
     }
-    let observed_at = (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
     let changed = scoped(
         &second,
         &a,
-        "record_source_action",
-        json!({"source_id": a_external["id"], "expected_revision": a_external["revision"], "result": {"outcome": "success", "observed_at": observed_at, "summary": "Only A is refreshed.", "references": []}}),
+        "update_source",
+        json!({"source_id": a_external["id"], "expected_revision": a_external["revision"], "action": {"instruction": "Read current A information."}}),
     );
     assert_eq!(changed["project_id"], a);
     assert_eq!(
-        scoped(&first, &a, "list_sources", json!({"action_due": true}))["sources"],
-        json!([])
+        changed["action"]["instruction"],
+        "Read current A information."
     );
     assert_eq!(
         scoped(

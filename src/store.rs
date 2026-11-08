@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 16;
+const SCHEMA_VERSION: i64 = 17;
 const APPLICATION_ID: i64 = 0x4449_4354; // DICT
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -38,7 +38,7 @@ pub enum StoreError {
         actual: i64,
     },
     #[error(
-        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 16 only; preserve the existing file"
+        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 17 only; preserve the existing file"
     )]
     UnsupportedSchema { version: i64, application_id: i64 },
 }
@@ -368,7 +368,6 @@ impl Store {
             .as_ref()
             .map(|task| dependency_state(&transaction, task))
             .transpose()?;
-        let now = Utc::now();
         let source_ids = {
             let mut statement = transaction.prepare("SELECT id FROM sources WHERE project_id=?2 AND (context_policy = 'always' OR id IN (SELECT source_id FROM task_context_sources WHERE task_id = ?1 AND project_id=?2)) ORDER BY id")?;
             statement
@@ -377,7 +376,7 @@ impl Store {
         };
         let sources = source_ids
             .into_iter()
-            .map(|id| source_by_id(&transaction, project_id, id, now))
+            .map(|id| source_by_id(&transaction, project_id, id))
             .collect::<StoreResult<Vec<_>>>()?;
         let current_decisions = current_decisions(&transaction, project_id)?;
         let promoted_decisions = promoted_decisions(&transaction, &project, &current_decisions)?;
@@ -657,7 +656,7 @@ impl Store {
             params![input.name, input.description, input.content, input.locator, policy_name(input.context_policy), encode_optional(&input.action)?, timestamp(now), input.project_id, id],
         )?;
         replace_topics(&transaction, &input.project_id, "source", id, &input.topics)?;
-        let result = source_by_id(&transaction, &input.project_id, id, now)?;
+        let result = source_by_id(&transaction, &input.project_id, id)?;
         transaction.commit()?;
         Ok(result)
     }
@@ -689,7 +688,6 @@ impl Store {
         } else {
             None
         };
-        let now = Utc::now();
         let query = input.query.as_deref().map(str::to_lowercase);
         let mut result = Vec::new();
         {
@@ -705,12 +703,11 @@ impl Store {
                 if linked.as_ref().is_some_and(|ids| !ids.contains(&id)) {
                     continue;
                 }
-                let source = source_by_id(&transaction, &input.project_id, id, now)?;
+                let source = source_by_id(&transaction, &input.project_id, id)?;
                 let item = descriptor(&source);
                 if input
                     .representation
                     .is_some_and(|representation| representation != item.representation)
-                    || input.action_due.is_some_and(|due| due != item.action_due)
                     || query.as_ref().is_some_and(|query| {
                         ![
                             source.name.as_str(),
@@ -743,7 +740,7 @@ impl Store {
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         ensure_project(&transaction, project_id)?;
-        let source = source_by_id(&transaction, project_id, source_id, Utc::now())?;
+        let source = source_by_id(&transaction, project_id, source_id)?;
         transaction.commit()?;
         Ok(source)
     }
@@ -753,16 +750,13 @@ impl Store {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         ensure_project(&transaction, &input.project_id)?;
         let now = Utc::now();
-        let mut source = source_by_id(&transaction, &input.project_id, input.source_id, now)?;
+        let mut source = source_by_id(&transaction, &input.project_id, input.source_id)?;
         check_revision(
             "source",
             source.id,
             input.expected_revision,
             source.revision,
         )?;
-        let previous_content = source.content.clone();
-        let previous_locator = source.locator.clone();
-        let previous_action = source.action.clone();
         if let Some(value) = input.name {
             source.name = value;
         }
@@ -797,91 +791,11 @@ impl Store {
                 &topics,
             )?;
         }
-        if source.content != previous_content
-            || source.locator != previous_locator
-            || source.action != previous_action
-        {
-            source.snapshot = None;
-            source.latest_attempt = None;
-        }
         transaction.execute(
-            "UPDATE sources SET name=?1, description=?2, content=?3, locator=?4, context_policy=?5, action=?6, snapshot=?7, latest_attempt=?8, revision=revision+1, updated_at=?9 WHERE id=?10 AND project_id=?11",
-            params![source.name, source.description, source.content, source.locator, policy_name(source.context_policy), encode_optional(&source.action)?, encode_optional(&source.snapshot)?, encode_optional(&source.latest_attempt)?, timestamp(now), source.id, input.project_id],
+            "UPDATE sources SET name=?1, description=?2, content=?3, locator=?4, context_policy=?5, action=?6, revision=revision+1, updated_at=?7 WHERE id=?8 AND project_id=?9",
+            params![source.name, source.description, source.content, source.locator, policy_name(source.context_policy), encode_optional(&source.action)?, timestamp(now), source.id, input.project_id],
         )?;
-        let result = source_by_id(&transaction, &input.project_id, source.id, now)?;
-        transaction.commit()?;
-        Ok(result)
-    }
-
-    pub fn record_source_action(&self, input: RecordSourceAction) -> StoreResult<Source> {
-        let mut connection = self.connect()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        ensure_project(&transaction, &input.project_id)?;
-        let now = Utc::now();
-        let mut source = source_by_id(&transaction, &input.project_id, input.source_id, now)?;
-        check_revision(
-            "source",
-            source.id,
-            input.expected_revision,
-            source.revision,
-        )?;
-        if source.action.is_none() {
-            return invalid("source has no configured action to record");
-        }
-        let (outcome, error) = match input.result {
-            SourceActionResult::Success {
-                observed_at,
-                summary,
-                checkpoint,
-                references,
-            } => {
-                required(&summary, "summary")?;
-                if summary.chars().count() > 1_000 {
-                    return invalid("summary must not exceed 1,000 characters");
-                }
-                for reference in &references {
-                    required(reference, "reference")?;
-                }
-                let observed_at = observation_time(&observed_at, source.snapshot.as_ref(), now)?;
-                source.snapshot = Some(SourceSnapshot {
-                    observed_at,
-                    summary,
-                    checkpoint,
-                    references,
-                });
-                (ActionOutcome::Success, None)
-            }
-            SourceActionResult::NoChange {
-                observed_at,
-                checkpoint,
-            } => {
-                let observed_at = observation_time(&observed_at, source.snapshot.as_ref(), now)?;
-                let Some(snapshot) = source.snapshot.as_mut() else {
-                    return invalid(
-                        "no_change requires an existing successful snapshot; record success first",
-                    );
-                };
-                snapshot.observed_at = observed_at;
-                if let Some(value) = checkpoint {
-                    snapshot.checkpoint = value;
-                }
-                (ActionOutcome::NoChange, None)
-            }
-            SourceActionResult::Failure { error } => {
-                required(&error, "error")?;
-                (ActionOutcome::Failure, Some(error))
-            }
-        };
-        let latest_attempt = SourceAttempt {
-            recorded_at: timestamp(now),
-            outcome,
-            error,
-        };
-        transaction.execute(
-            "UPDATE sources SET snapshot=?1, latest_attempt=?2, revision=revision+1, updated_at=?3 WHERE id=?4 AND project_id=?5",
-            params![encode_optional(&source.snapshot)?, encode(&latest_attempt)?, timestamp(now), source.id, input.project_id],
-        )?;
-        let result = source_by_id(&transaction, &input.project_id, source.id, now)?;
+        let result = source_by_id(&transaction, &input.project_id, source.id)?;
         transaction.commit()?;
         Ok(result)
     }
@@ -1034,17 +948,6 @@ fn validate_source(
     }
     if let Some(action) = action {
         required(&action.instruction, "action instruction")?;
-        if let ActionTrigger::Interval { every_minutes } = action.trigger {
-            if every_minutes <= 0 {
-                return invalid("every_minutes must be positive");
-            }
-            let Some(duration) = chrono::Duration::try_minutes(every_minutes) else {
-                return invalid("every_minutes exceeds supported timestamp range");
-            };
-            if Utc::now().checked_add_signed(duration).is_none() {
-                return invalid("every_minutes exceeds supported timestamp range");
-            }
-        }
     }
     Ok(())
 }
@@ -1526,12 +1429,7 @@ fn latest_task_execution(
         .transpose()
 }
 
-fn source_by_id(
-    connection: &Connection,
-    project_id: &Id,
-    id: Id,
-    now: DateTime<Utc>,
-) -> StoreResult<Source> {
+fn source_by_id(connection: &Connection, project_id: &Id, id: Id) -> StoreResult<Source> {
     let mut source = connection
         .query_row(
             "SELECT * FROM sources WHERE id=?1 AND project_id=?2",
@@ -1547,10 +1445,6 @@ fn source_by_id(
                     locator: row.get("locator")?,
                     context_policy: enum_column(row, "context_policy")?,
                     action: optional_json_column(row, "action")?,
-                    snapshot: optional_json_column(row, "snapshot")?,
-                    latest_attempt: optional_json_column(row, "latest_attempt")?,
-                    action_due: false,
-                    next_action_at: None,
                     revision: row.get("revision")?,
                     created_at: row.get("created_at")?,
                     updated_at: row.get("updated_at")?,
@@ -1563,24 +1457,6 @@ fn source_by_id(
             id,
         })?;
     source.topics = record_topics(connection, project_id, "source", id)?;
-    if let Some(SourceAction {
-        trigger: ActionTrigger::Interval { every_minutes },
-        ..
-    }) = &source.action
-    {
-        if let Some(snapshot) = &source.snapshot {
-            let observed = parse_time(&snapshot.observed_at)?;
-            let next = chrono::Duration::try_minutes(*every_minutes)
-                .and_then(|duration| observed.checked_add_signed(duration))
-                .ok_or_else(|| {
-                    StoreError::Validation("stored action interval exceeds timestamp range".into())
-                })?;
-            source.action_due = now >= next;
-            source.next_action_at = Some(timestamp(next));
-        } else {
-            source.action_due = true;
-        }
-    }
     Ok(source)
 }
 
@@ -1598,8 +1474,6 @@ fn descriptor(source: &Source) -> SourceDescriptor {
         },
         context_policy: source.context_policy,
         has_action: source.action.is_some(),
-        action_due: source.action_due,
-        next_action_at: source.next_action_at.clone(),
         revision: source.revision,
     }
 }
@@ -1655,31 +1529,6 @@ fn map_decision(row: &Row<'_>) -> rusqlite::Result<Decision> {
 
 fn timestamp(value: DateTime<Utc>) -> String {
     value.to_rfc3339_opts(SecondsFormat::AutoSi, true)
-}
-
-fn parse_time(value: &str) -> StoreResult<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|value| value.with_timezone(&Utc))
-        .map_err(|_| {
-            StoreError::Validation("observed_at must be a valid RFC 3339 timestamp".into())
-        })
-}
-
-fn observation_time(
-    value: &str,
-    previous: Option<&SourceSnapshot>,
-    now: DateTime<Utc>,
-) -> StoreResult<String> {
-    let observed = parse_time(value)?;
-    if observed > now {
-        return invalid("observed_at must not be in the future");
-    }
-    if let Some(snapshot) = previous
-        && observed < parse_time(&snapshot.observed_at)?
-    {
-        return invalid("observed_at must not move backwards from the last successful snapshot");
-    }
-    Ok(timestamp(observed))
 }
 
 fn status_name(status: TaskStatus) -> &'static str {

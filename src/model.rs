@@ -136,27 +136,11 @@ pub enum Representation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ActionTrigger {
-    Manual,
-    Interval { every_minutes: i64 },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SourceAction {
-    /// Focused work and completion criterion for an agent; the server does not execute it.
+    /// Perform afresh when using this Source, within task authorization; warn the user on failure.
+    /// The server neither executes this action nor records its results.
     pub instruction: String,
-    pub trigger: ActionTrigger,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct SourceSnapshot {
-    pub observed_at: String,
-    /// Current project-relevant understanding: one to three sentences, at most 1,000 characters.
-    pub summary: String,
-    pub checkpoint: Option<String>,
-    pub references: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -165,13 +149,6 @@ pub enum ActionOutcome {
     Success,
     NoChange,
     Failure,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct SourceAttempt {
-    pub recorded_at: String,
-    pub outcome: ActionOutcome,
-    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -186,12 +163,6 @@ pub struct Source {
     pub locator: Option<String>,
     pub context_policy: ContextPolicy,
     pub action: Option<SourceAction>,
-    pub snapshot: Option<SourceSnapshot>,
-    pub latest_attempt: Option<SourceAttempt>,
-    /// True only for interval actions with no snapshot or an elapsed interval.
-    pub action_due: bool,
-    /// None for unscheduled actions or an interval action that has never succeeded.
-    pub next_action_at: Option<String>,
     pub revision: i64,
     pub created_at: String,
     pub updated_at: String,
@@ -207,8 +178,6 @@ pub struct SourceDescriptor {
     pub representation: Representation,
     pub context_policy: ContextPolicy,
     pub has_action: bool,
-    pub action_due: bool,
-    pub next_action_at: Option<String>,
     pub revision: i64,
 }
 
@@ -531,7 +500,6 @@ pub struct ListSources {
     /// Filter by explicit task context links, not execution outputs or implicit always sources.
     pub task_id: Option<Id>,
     pub representation: Option<Representation>,
-    pub action_due: Option<bool>,
     pub query: Option<String>,
     /// Default 20; must be between 1 and 100.
     pub page_size: Option<i64>,
@@ -579,51 +547,13 @@ pub struct UpdateSource {
     )]
     pub locator: Option<Option<String>>,
     pub context_policy: Option<ContextPolicy>,
-    /// Omitted: preserve. Null: remove action and its previous state.
+    /// Omitted: preserve. Null: remove action.
     #[serde(
         default,
         deserialize_with = "nullable_patch",
         skip_serializing_if = "Option::is_none"
     )]
     pub action: Option<Option<SourceAction>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
-pub enum SourceActionResult {
-    Success {
-        /// RFC 3339 time when the agent observed the source, not the server receipt time.
-        observed_at: String,
-        /// Current useful findings in 1-3 sentences, at most 1,000 characters.
-        summary: String,
-        checkpoint: Option<String>,
-        #[serde(default)]
-        references: Vec<String>,
-    },
-    NoChange {
-        observed_at: String,
-        /// Omitted: preserve. Null: clear. String: advance.
-        #[serde(
-            default,
-            deserialize_with = "nullable_patch",
-            skip_serializing_if = "Option::is_none"
-        )]
-        checkpoint: Option<Option<String>>,
-    },
-    Failure {
-        /// Actionable failure and relevant blocker.
-        error: String,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RecordSourceAction {
-    /// Existing project ID from list_projects. Scope is not authorization or a work claim.
-    pub project_id: Id,
-    pub source_id: Id,
-    pub expected_revision: i64,
-    pub result: SourceActionResult,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
