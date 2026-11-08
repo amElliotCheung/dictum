@@ -122,6 +122,8 @@ export const queryKeys = {
   projects: ['projects'] as const,
   tasks: (projectId: string | null, topic?: string | null) =>
     ['projects', projectId, 'tasks', 'list', topic ?? null] as const,
+  projectContext: (projectId: string) =>
+    ['projects', projectId, 'context'] as const,
   context: (projectId: string, taskId: string) =>
     ['projects', projectId, 'tasks', taskId, 'context'] as const,
   children: (projectId: string, taskId: string) =>

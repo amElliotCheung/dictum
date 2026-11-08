@@ -129,7 +129,8 @@ creating a task:
 {"project_id": "PROJECT_ID"}
 ```
 
-The result contains the full `project` with its `topics` directory, all `always` Sources, and all current
+The result contains the full `project` with its `topics` directory, ordered
+`promoted_decision_ids` and resolved `promoted_decisions` summaries, all `always` Sources, and all current
 decisions in ascending ID order with their full statement, rationale, and alternatives. `task`,
 `parent_task`, and `dependency_state` are null; `recent_comments` is empty and
 both `latest_execution` and `latest_successful_execution` are null.
@@ -203,27 +204,46 @@ have higher IDs and do not appear on older pages. Edits, action freshness, and
 decision supersession can change data or filter membership between requests.
 Project discovery through `list_projects` remains unpaginated.
 
-## Update a project description
+## Update a project and promote foundational decisions
 
 Call `list_projects` to identify the project and read its latest `revision`, then
-call `update_project` with that revision and the required nonblank replacement:
+call `update_project` with that revision and optional replacements:
 
 ```json
 {
   "project_id": "PROJECT_ID",
   "expected_revision": 1,
-  "description": "The project's current purpose and scope."
+  "description": "The project's current purpose and scope.",
+  "promoted_decision_ids": ["DECISION_ID"]
 }
 ```
 
 The tool returns the updated project, increments `revision`, and sets server UTC
 `updated_at`. New projects start at revision 1 with matching `created_at` and
-`updated_at`. Each accepted update increments revision, including identical text.
-The project ID, name, creation time and related records are preserved. Null or
-blank descriptions and unknown fields are rejected. On a revision conflict,
-reread with `list_projects` and reassess the edit before retrying. The
-dashboard displays the new description on its next project refresh (every 30
-seconds).
+`updated_at`. Each accepted update increments revision, including identical values
+or an update with both optional fields omitted. Omitted fields preserve their
+values; descriptions must be nonblank when supplied. `promoted_decision_ids`
+replaces the ordered references, `[]` clears them, and null values and unknown
+fields are rejected. References must identify decisions in this project;
+duplicate references to the same decision chain retain the first supplied ID and
+position. Description and references are validated and written atomically.
+The project ID, name and creation time are preserved. On a revision conflict,
+reread with `list_projects` and reassess the edit before retrying.
+
+Promote a small set of foundational choices, such as core product boundaries or
+storage choices. Keep statements in decisions; the project stores references.
+Every project response includes `promoted_decision_ids`; only `get_context`
+expands `project.promoted_decisions` into `{reference_id, id, statement}` summaries.
+If promoted A is replaced by B, its stored reference remains A while the summary
+returns `reference_id: A`, `id: B` and B's current statement. Resolution follows
+the entire chain in the same context snapshot, without rewriting references or
+changing project revision or timestamps. Full rationale remains available in
+`current_decisions`, which still includes every current decision.
+
+Promotion changes prominence; all current decisions retain their meaning and
+execution authorization remains separate. The dashboard shows promoted summaries
+near the project description, independent of topic filters and task selection,
+and refreshes them with project context.
 
 ## Keep environment facts available
 
@@ -375,7 +395,8 @@ DICTUM_DATABASE=/absolute/path/to/shared/dictum.sqlite3 \
 Open <http://127.0.0.1:3000>, select a project, and switch between the One-time
 and Recurring task tabs. Select a project topic to filter tasks and the project
 Decisions and Sources sections together. Choose a task to see its brief, dependencies, and
-versioned conversation. Expand a subtask row to load its details; collapsed
+versioned conversation. Promoted decisions remain visible near the project
+description across topic filters. Expand a subtask row to load its details; collapsed
 children do not fetch full context. Project decisions and sources appear below
 the task board, newest first, with **Load more** for older pages. Expand a source
 to read inline Markdown or external metadata.
@@ -418,9 +439,9 @@ npm ci
 npm run build
 ```
 
-Only the current schema (v15) is supported. Startup rejects older databases
+Only the current schema (v16) is supported. Startup rejects older databases
 without modifying them; preserve the file and use a fresh path such as
-`.dictum/dictum-v15.sqlite3`. Re-create needed records through MCP rather than
+`.dictum/dictum-v16.sqlite3`. Re-create needed records through MCP rather than
 migrating the older database.
 
 ## License

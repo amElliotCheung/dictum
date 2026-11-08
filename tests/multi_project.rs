@@ -206,6 +206,7 @@ fn project_description_edits_preserve_identity_context_and_restart_state() {
     assert_eq!(edited_at.offset().local_minus_utc(), 0);
     assert!(edited_at >= before && edited_at <= after);
     context["project"] = updated.clone();
+    context["project"]["promoted_decisions"] = json!([]);
     assert_eq!(
         scoped(
             &client,
@@ -252,6 +253,7 @@ fn project_description_edits_preserve_identity_context_and_restart_state() {
     assert!(listed["projects"].as_array().unwrap().contains(&other));
     assert!(listed["projects"].as_array().unwrap().contains(&same_text));
     context["project"] = same_text;
+    context["project"]["promoted_decisions"] = json!([]);
     drop(client);
     let restarted = Project::open(&database).unwrap();
     assert_eq!(call(&restarted, "list_projects", json!({})), listed);
@@ -274,7 +276,7 @@ fn invalid_project_edits_do_not_mutate_durable_records() {
     let scope = client.project_id.clone();
     let valid =
         json!({"project_id": scope, "expected_revision": 1, "description": "Updated purpose"});
-    for field in ["project_id", "expected_revision", "description"] {
+    for field in ["project_id", "expected_revision"] {
         let mut missing = valid.clone();
         missing.as_object_mut().unwrap().remove(field);
         rejected_without_mutation(&client, &database, "update_project", missing);
@@ -282,6 +284,9 @@ fn invalid_project_edits_do_not_mutate_durable_records() {
         null[field] = Value::Null;
         rejected_without_mutation(&client, &database, "update_project", null);
     }
+    let mut null_description = valid.clone();
+    null_description["description"] = Value::Null;
+    rejected_without_mutation(&client, &database, "update_project", null_description);
     for description in [json!(""), json!(" \t\n"), json!(14), json!(["purpose"])] {
         let mut input = valid.clone();
         input["description"] = description;
@@ -865,6 +870,7 @@ fn database_foreign_keys_also_prevent_cross_project_relationships() {
         assert!(connection.execute("INSERT INTO task_dependencies (project_id, task_id, depends_on_task_id, kind) VALUES (?1, ?2, ?3, ?4)", rusqlite::params![a, a_task["id"].as_str().unwrap().to_owned(), b_task["id"].as_str().unwrap().to_owned(), kind]).is_err());
     }
     assert!(connection.execute("INSERT INTO decisions (id, project_id, statement, rationale, supersedes_id, created_at) VALUES ('ffffffff-ffff-7fff-bfff-ffffffffffff', ?1, 'Foreign replacement', 'Fixture', ?2, '2026-01-01T00:00:00Z')", rusqlite::params![a, b_decision["id"].as_str().unwrap().to_owned()]).is_err());
+    assert!(connection.execute("INSERT INTO project_promoted_decisions (project_id, decision_id, position) VALUES (?1, ?2, 0)", rusqlite::params![a, b_decision["id"].as_str().unwrap()]).is_err());
     assert_eq!(snapshot(&database), before);
 }
 

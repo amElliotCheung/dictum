@@ -9,6 +9,7 @@ export interface Project {
   id: string;
   name: string;
   description: string;
+  promoted_decision_ids: string[];
   revision: number;
   created_at: string;
   updated_at: string;
@@ -16,6 +17,16 @@ export interface Project {
 
 export interface ProjectList {
   projects: Project[];
+}
+
+export interface PromotedDecision {
+  reference_id: string;
+  id: string;
+  statement: string;
+}
+
+export interface ContextProject extends Project {
+  promoted_decisions: PromotedDecision[];
 }
 
 export type TaskKind = 'one_time' | 'recurring';
@@ -188,7 +199,7 @@ export interface RecordTaskComment {
 }
 
 export interface Context {
-  project: Project;
+  project: ContextProject;
   task: Task | null;
   parent_task: Task | null;
   dependency_state: DependencyState | null;

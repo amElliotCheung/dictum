@@ -38,9 +38,11 @@ pub struct Project {
     pub id: Id,
     pub name: String,
     pub description: String,
+    /// Ordered stable references to foundational decision chains, without copied statements.
+    pub promoted_decision_ids: Vec<Id>,
     /// Compact directory, ordered by topic ID. Membership does not advance project revision.
     pub topics: Vec<Topic>,
-    /// Read the latest revision with list_projects before updating the description.
+    /// Read the latest revision with list_projects before updating project metadata.
     pub revision: i64,
     pub created_at: String,
     pub updated_at: String,
@@ -59,8 +61,23 @@ pub struct UpdateProject {
     /// Existing project ID from list_projects. Scope is not authorization or a work claim.
     pub project_id: Id,
     pub expected_revision: i64,
-    /// Required nonblank replacement description. Each accepted update increments revision.
-    pub description: String,
+    /// Optional nonblank replacement description. Omission preserves; null is invalid.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "non_null_patch"
+    )]
+    #[schemars(with = "String")]
+    pub description: Option<String>,
+    /// Replace ordered decision references; omission preserves, [] clears, null is invalid.
+    /// Same-chain duplicates retain the first supplied reference and its order.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "non_null_patch"
+    )]
+    #[schemars(with = "Vec<Id>")]
+    pub promoted_decision_ids: Option<Vec<Id>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -263,8 +280,25 @@ pub struct Decision {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct Context {
+pub struct PromotedDecision {
+    /// Stable reference stored on the project, which may identify a historical decision.
+    pub reference_id: Id,
+    /// Current decision in the referenced chain, resolved within the context read snapshot.
+    pub id: Id,
+    pub statement: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContextProject {
+    #[serde(flatten)]
     pub project: Project,
+    /// Ordered current summaries; prominence does not change decision authority.
+    pub promoted_decisions: Vec<PromotedDecision>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Context {
+    pub project: ContextProject,
     /// Full selected task, or null for project-only context.
     pub task: Option<Task>,
     /// Full current parent brief, without inherited sources, dependencies or comments.

@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 const APPLICATION_ID: i64 = 0x4449_4354; // DICT
 const SCHEMA: &str = include_str!("schema.sql");
 
@@ -38,7 +38,7 @@ pub enum StoreError {
         actual: i64,
     },
     #[error(
-        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 15 only; preserve the existing file"
+        "unsupported database schema (version {version}, application ID {application_id}); this build supports schema version 16 only; preserve the existing file"
     )]
     UnsupportedSchema { version: i64, application_id: i64 },
 }
@@ -117,6 +117,7 @@ impl Store {
             id: new_id(&transaction)?,
             name: input.name,
             description: input.description,
+            promoted_decision_ids: vec![],
             topics: vec![],
             revision: 1,
             created_at: now.clone(),
@@ -159,13 +160,17 @@ impl Store {
             .collect();
         for project in &mut projects {
             project.topics = project_topics(&transaction, &project.id)?;
+            project.promoted_decision_ids =
+                project_promoted_decision_ids(&transaction, &project.id)?;
         }
         transaction.commit()?;
         Ok(projects)
     }
 
     pub fn update_project(&self, input: UpdateProject) -> StoreResult<Project> {
-        required(&input.description, "description")?;
+        if let Some(description) = &input.description {
+            required(description, "description")?;
+        }
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut project = transaction
@@ -182,7 +187,13 @@ impl Store {
             input.expected_revision,
             project.revision,
         )?;
-        project.description = input.description;
+        if let Some(description) = input.description {
+            project.description = description;
+        }
+        if let Some(ids) = input.promoted_decision_ids {
+            replace_promoted_decisions(&transaction, &project.id, &ids)?;
+        }
+        project.promoted_decision_ids = project_promoted_decision_ids(&transaction, &project.id)?;
         project.revision += 1;
         project.updated_at = timestamp(Utc::now());
         project.topics = project_topics(&transaction, &project.id)?;
@@ -349,6 +360,7 @@ impl Store {
             map_project,
         )?;
         project.topics = project_topics(&transaction, project_id)?;
+        project.promoted_decision_ids = project_promoted_decision_ids(&transaction, project_id)?;
         let task = task_id
             .map(|id| task_by_id(&transaction, project_id, id))
             .transpose()?;
@@ -368,6 +380,7 @@ impl Store {
             .map(|id| source_by_id(&transaction, project_id, id, now))
             .collect::<StoreResult<Vec<_>>>()?;
         let current_decisions = current_decisions(&transaction, project_id)?;
+        let promoted_decisions = promoted_decisions(&transaction, &project, &current_decisions)?;
         let parent_task = task
             .as_ref()
             .and_then(|task| task.parent_task_id)
@@ -384,7 +397,10 @@ impl Store {
                 (Vec::new(), None, None)
             };
         let result = Context {
-            project,
+            project: ContextProject {
+                project,
+                promoted_decisions,
+            },
             task,
             parent_task,
             dependency_state,
@@ -1064,6 +1080,7 @@ fn map_project(row: &Row<'_>) -> rusqlite::Result<Project> {
         id: row.get("id")?,
         name: row.get("name")?,
         description: row.get("description")?,
+        promoted_decision_ids: vec![],
         topics: vec![],
         revision: row.get("revision")?,
         created_at: row.get("created_at")?,
@@ -1095,6 +1112,70 @@ fn project_topics(connection: &Connection, project_id: &Id) -> StoreResult<Vec<T
     Ok(statement
         .query_map([project_id], map_topic)?
         .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn project_promoted_decision_ids(connection: &Connection, project_id: &Id) -> StoreResult<Vec<Id>> {
+    let mut statement = connection.prepare(
+        "SELECT decision_id FROM project_promoted_decisions WHERE project_id=?1 ORDER BY position",
+    )?;
+    Ok(statement
+        .query_map([project_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Validate and deduplicate whole chains before replacing links inside the project's
+/// immediate write transaction. Keep the first supplied anchor, including historical IDs.
+fn replace_promoted_decisions(
+    connection: &Connection,
+    project_id: &Id,
+    ids: &[Id],
+) -> StoreResult<()> {
+    let mut seen = BTreeSet::new();
+    let mut anchors = Vec::new();
+    for &id in ids {
+        ensure_exists(connection, project_id, "decision", id)?;
+        if seen.insert(current_decision_id(connection, project_id, id)?) {
+            anchors.push(id);
+        }
+    }
+    connection.execute(
+        "DELETE FROM project_promoted_decisions WHERE project_id=?1",
+        [project_id],
+    )?;
+    for (position, id) in anchors.into_iter().enumerate() {
+        connection.execute(
+            "INSERT INTO project_promoted_decisions (project_id, decision_id, position) VALUES (?1, ?2, ?3)",
+            params![project_id, id, position as i64],
+        )?;
+    }
+    Ok(())
+}
+
+fn promoted_decisions(
+    connection: &Connection,
+    project: &Project,
+    current_decisions: &[Decision],
+) -> StoreResult<Vec<PromotedDecision>> {
+    let mut seen = BTreeSet::new();
+    let mut summaries = Vec::new();
+    for &reference_id in &project.promoted_decision_ids {
+        let id = current_decision_id(connection, &project.id, reference_id)?;
+        if seen.insert(id) {
+            let decision = current_decisions
+                .iter()
+                .find(|decision| decision.id == id)
+                .ok_or(StoreError::NotFound {
+                    entity: "decision",
+                    id,
+                })?;
+            summaries.push(PromotedDecision {
+                reference_id,
+                id,
+                statement: decision.statement.clone(),
+            });
+        }
+    }
+    Ok(summaries)
 }
 
 // Both identifiers come only from this internal whitelist, never from tool input.

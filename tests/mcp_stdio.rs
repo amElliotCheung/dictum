@@ -285,13 +285,20 @@ async fn workflow(discover: bool) -> Result<()> {
         .unwrap();
     let project_schema = &project_update.input_schema;
     let required = project_schema["required"].as_array().unwrap();
-    for field in ["project_id", "expected_revision", "description"] {
+    for field in ["project_id", "expected_revision"] {
         assert!(required.contains(&json!(field)));
+    }
+    for field in ["description", "promoted_decision_ids"] {
+        assert!(!required.contains(&json!(field)));
     }
     assert_eq!(project_schema["additionalProperties"], false);
     assert_eq!(
         project_schema["properties"]["description"]["type"],
         "string"
+    );
+    assert_eq!(
+        project_schema["properties"]["promoted_decision_ids"]["type"],
+        "array"
     );
     assert_eq!(
         project_schema["properties"]["expected_revision"]["type"],
@@ -302,6 +309,7 @@ async fn workflow(discover: bool) -> Result<()> {
         "id",
         "name",
         "description",
+        "promoted_decision_ids",
         "revision",
         "created_at",
         "updated_at",
@@ -505,7 +513,7 @@ async fn workflow(discover: bool) -> Result<()> {
     let project_id = project["id"].as_str().unwrap().to_owned();
     let connection = rusqlite::Connection::open(&database)?;
     let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(version, 15);
+    assert_eq!(version, 16);
     let tables = connection
         .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")?
         .query_map([], |row| row.get::<_, String>(0))?
@@ -515,6 +523,7 @@ async fn workflow(discover: bool) -> Result<()> {
         [
             "decision_topics",
             "decisions",
+            "project_promoted_decisions",
             "projects",
             "source_topics",
             "sources",

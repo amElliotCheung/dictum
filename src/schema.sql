@@ -69,6 +69,15 @@ CREATE TABLE decisions (
     CHECK (supersedes_id IS NULL OR supersedes_id != id)
 );
 
+CREATE TABLE project_promoted_decisions (
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    decision_id TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    PRIMARY KEY (project_id, decision_id),
+    UNIQUE (project_id, position),
+    FOREIGN KEY (project_id, decision_id) REFERENCES decisions(project_id, id)
+);
+
 CREATE TABLE task_context_sources (
     project_id TEXT NOT NULL REFERENCES projects(id),
     task_id TEXT NOT NULL,

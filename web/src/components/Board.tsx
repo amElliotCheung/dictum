@@ -1,6 +1,7 @@
 import { useRef, type KeyboardEvent } from 'react';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
+import { PromotedDecisions } from './PromotedDecisions';
 import { cn, compareIds } from '../lib/utils';
 import { formatIds, statusLabels } from '../lib/format';
 import type {
@@ -155,6 +156,7 @@ export function Board({
           <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
             {project.id}
           </p>
+          <PromotedDecisions projectId={project.id} />
         </div>
       ) : null}
 

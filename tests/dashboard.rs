@@ -220,6 +220,18 @@ fn dashboard_project_descriptions_reflect_mcp_edits_and_persist() {
         "create_project",
         json!({"name": "Test project", "description": "Another project with the same name"}),
     );
+    let first = call(
+        &client,
+        "record_decision",
+        json!({"statement": "Use DynamoDB for storage.", "rationale": "Fits accepted access patterns.", "topics": ["Storage"]}),
+    );
+    let task = create_task(
+        &client,
+        &project_id,
+        "Mobile navigation",
+        "one_time",
+        json!({"topics": ["Mobile interface"]}),
+    );
     let dashboard = Dashboard::start(&database, 0);
     let before = dashboard.get("/api/projects").json();
     let original = before["projects"]
@@ -237,6 +249,7 @@ fn dashboard_project_descriptions_reflect_mcp_edits_and_persist() {
         json!({
             "project_id": project_id,
             "expected_revision": original["revision"],
+            "promoted_decision_ids": [first["id"]],
             "description": "Updated through MCP while the dashboard is running.\nKeep the full description."
         }),
     );
@@ -246,6 +259,47 @@ fn dashboard_project_descriptions_reflect_mcp_edits_and_persist() {
     let projects = after["projects"].as_array().unwrap();
     assert!(projects.iter().any(|project| project == &updated));
     assert!(projects.iter().any(|project| project == &other));
+    assert!(updated.get("promoted_decisions").is_none());
+    let replacement = call(
+        &client,
+        "record_decision",
+        json!({"statement": "Use PostgreSQL for storage.", "rationale": "Accepted requirements now need joins.", "supersedes_id": first["id"], "topics": ["Storage"]}),
+    );
+    assert_eq!(
+        dashboard
+            .get(&format!(
+                "/api/projects/{project_id}/decisions?topic=Mobile%20interface"
+            ))
+            .json()["decisions"],
+        json!([])
+    );
+    let context_path = format!("/api/projects/{project_id}/context");
+    let context = dashboard.get(&context_path).json();
+    assert_eq!(context, call(&client, "get_context", json!({})));
+    assert_eq!(
+        context["project"]["promoted_decisions"],
+        json!([{"reference_id": first["id"], "id": replacement["id"], "statement": replacement["statement"]}])
+    );
+    assert_eq!(context["project"]["revision"], updated["revision"]);
+    assert_eq!(context["project"]["updated_at"], updated["updated_at"]);
+    assert_eq!(
+        dashboard
+            .get(&format!(
+                "/api/projects/{project_id}/tasks/{}",
+                task["id"].as_str().unwrap()
+            ))
+            .json()["project"],
+        context["project"]
+    );
+    assert_eq!(
+        dashboard
+            .get(&format!(
+                "/api/projects/{}/context",
+                other["id"].as_str().unwrap()
+            ))
+            .json()["project"]["promoted_decisions"],
+        json!([])
+    );
 
     for path in [
         "/api/projects".to_string(),
@@ -265,6 +319,7 @@ fn dashboard_project_descriptions_reflect_mcp_edits_and_persist() {
     let restarted_client = Project::open(&database).unwrap();
     let restarted_dashboard = Dashboard::start(&database, 0);
     assert_eq!(restarted_dashboard.get("/api/projects").json(), after);
+    assert_eq!(restarted_dashboard.get(&context_path).json(), context);
     assert_eq!(call(&restarted_client, "list_projects", json!({})), after);
 }
 

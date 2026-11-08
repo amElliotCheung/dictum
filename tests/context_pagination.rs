@@ -870,11 +870,12 @@ fn project_and_task_contexts_remain_complete_read_only_and_persisted() {
         "record_task_comment",
         json!({"task_id": original["id"], "task_revision": updated["revision"], "reply_to_comment_id": failure["id"], "body": "Preserve the earlier success as historical evidence only."}),
     );
-    let project = call(
+    let mut project = call(
         &client,
         "update_project",
         json!({"expected_revision": 1, "description": "# Current purpose\n\nInclude the full project description in every context."}),
     );
+    project["promoted_decisions"] = json!([]);
     let before = snapshot(&database);
     let project_context = call(&client, "get_context", json!({}));
     assert_eq!(project_context["project"], project);
